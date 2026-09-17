@@ -5,9 +5,21 @@ pub async fn token_spend(days:u32,state:State<'_,AppState>)->Result<crate::ledge
     let _gate=state.ledger_gate.lock().await;
     tauri::async_runtime::spawn_blocking(move||crate::ledger::scan(days)).await.map_err(|_|"统计任务失败")?
 }
+#[derive(serde::Serialize)]
+pub struct MonitorOption{pub name:String,pub label:String}
 #[tauri::command]
-pub fn monitors(app:AppHandle)->Result<Vec<String>,String>{
-    Ok(app.get_webview_window("main").ok_or("窗口不存在")?.available_monitors().map_err(|_|"显示器查询失败")?.iter().filter_map(|m|m.name().cloned()).collect())
+pub fn monitors(app:AppHandle)->Result<Vec<MonitorOption>,String>{
+    let window=app.get_webview_window("main").ok_or("窗口不存在")?;
+    let friendly=crate::window::friendly_monitor_names();
+    let primary=window.primary_monitor().ok().flatten().and_then(|m|m.name().cloned());
+    Ok(window.available_monitors().map_err(|_|"显示器查询失败")?.iter().enumerate().filter_map(|(i,m)|{
+        // `name` stays the stable GDI id the settings file stores; only the label is human.
+        let name=m.name()?.clone();let size=m.size();let scale=(m.scale_factor()*100.0).round() as u32;
+        let model=friendly.get(&name).cloned().unwrap_or_else(||format!("显示器 {}",i+1));
+        let mut label=format!("{model} · {}×{} @{scale}%",size.width,size.height);
+        if primary.as_deref()==Some(name.as_str()){label.push_str(" · 主屏");}
+        Some(MonitorOption{name,label})
+    }).collect())
 }
 #[tauri::command]
 pub async fn get_settings(state:State<'_,AppState>)->Result<AppSettings,String>{

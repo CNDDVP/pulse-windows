@@ -41,6 +41,8 @@ impl ProviderUsage {
 pub struct ProviderConfig {
     pub provider_id: String, pub label: String, pub enabled: bool, pub order: u32,
     pub use_local: bool, pub credential_configured: bool, pub primary_window: Option<String>,
+    /// Window the outer elapsed-time ring tracks; `None` picks the soonest reset.
+    pub elapsed_window: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]

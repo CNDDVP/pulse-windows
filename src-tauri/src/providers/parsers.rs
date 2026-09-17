@@ -184,7 +184,23 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
                     "TIME_LIMIT" => "请求频次",
                     _ => kind,
                 };
-                if let Some(p)=used{let duration=if kind=="TIME_LIMIT" && unit==Some(5) && number(&l["number"])==Some(1.0){None}else{seconds};add(&mut w,window(&format!("{kind}-{i}"),label,p.max(0.0),&l["nextResetTime"],duration));}
+                if let Some(p)=used{
+                    let duration=if kind=="TIME_LIMIT" && unit==Some(5) && number(&l["number"])==Some(1.0){None}else{seconds};
+                    // Console naming (每5小时使用额度 / 每周使用额度 / MCP 每月额度). The MCP allowance is
+                    // reported as a TIME_LIMIT whose unit is a per-minute count, so recognise it by a
+                    // reset weeks away instead: a real per-minute rate limit resets within the minute.
+                    let reset_in=date(&l["nextResetTime"]).and_then(|s|DateTime::parse_from_rfc3339(&s).ok()).map(|d|d.timestamp()-now);
+                    let monthly_mcp=kind=="TIME_LIMIT" && (duration.is_some_and(|s|s>=28*86400) || reset_in.is_some_and(|r|r>2*86400));
+                    let duration=if monthly_mcp{duration.filter(|s|*s>=28*86400).or(Some(2_592_000))}else{duration};
+                    let name:String=match (kind,duration){
+                        _ if monthly_mcp=>"MCP 每月额度".into(),
+                        (_,Some(18000))=>"每5小时使用额度".into(),
+                        (_,Some(604800))=>"每周使用额度".into(),
+                        (_,Some(86400))=>"每日使用额度".into(),
+                        _=>label.into(),
+                    };
+                    add(&mut w,window(&format!("{kind}-{i}"),&name,p.max(0.0),&l["nextResetTime"],duration));
+                }
             }}
         }
         "minimax"|"minimax-cn"=>{
@@ -246,6 +262,20 @@ fn count_window(id:&str,name:&str,v:&Value,seconds:Option<i64>)->Option<UsageWin
     #[test]fn zero_limit_is_not_reading(){assert_ne!(parse("kimi",&json!({"usage":{"limit":"0","used":"0"}}),0).state,"live");}
     #[test]fn grok_implicit_zero_only_inside_period(){let v=json!({"config":{"currentPeriod":{"start":"2026-09-01T00:00:00Z","end":"2026-10-01T00:00:00Z"}}});assert_eq!(parse("grok",&v,1789600000).primary_percent,Some(0.0));assert_eq!(parse("grok",&v,0).primary_percent,None);}
     #[test]fn glm_finer_counts(){let r=parse("zhipu",&json!({"success":true,"data":{"limits":[{"type":"CREDIT_LIMIT","unit":3,"number":5,"usage":2000,"remaining":1000}]}}),0);assert_eq!(r.primary_percent,Some(50.0));}
+    #[test]fn zhipu_windows_use_console_names(){
+        let r=parse("zhipu",&json!({"success":true,"data":{"limits":[
+            {"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":20},
+            {"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":30},
+            {"type":"TIME_LIMIT","unit":1,"number":30,"percentage":8},
+            {"type":"TIME_LIMIT","unit":5,"number":1,"percentage":1}]}}),0);
+        let names:Vec<_>=r.windows.iter().map(|w|w.name.as_str()).collect();
+        assert_eq!(names,["每5小时使用额度","每周使用额度","MCP 每月额度","请求频次"]);
+        assert_eq!(r.windows[2].window_seconds,Some(2592000));assert_eq!(r.windows[3].window_seconds,None);
+        // The live API reports the MCP allowance with a per-minute unit but a reset weeks away.
+        let now=1_789_000_000;
+        let live=parse("zhipu",&json!({"success":true,"data":{"limits":[{"type":"TIME_LIMIT","unit":5,"number":1,"percentage":8.1,"nextResetTime":(now+19*86400)*1000}]}}),now);
+        assert_eq!(live.windows[0].name,"MCP 每月额度");assert_eq!(live.windows[0].window_seconds,Some(2592000));
+    }
     #[test]fn minimax_remaining_count(){let r=parse("minimax",&json!({"model_remains":[{"current_weekly_total_count":"100","current_weekly_usage_count":"96"}]}),0);assert_eq!(r.primary_percent,Some(4.0));}
     #[test]fn volcengine_coding_and_afp(){let r=parse("volcengine",&json!({"coding":{"Result":{"QuotaUsage":[{"Level":"5h","Percent":12.5,"ResetTimestamp":1788780000}]}},"afp":{"Result":{"AFPWeekly":{"Quota":1000,"Used":300,"ResetTime":1789085506}}}}),0);assert_eq!(r.windows.len(),2);assert_eq!(r.windows[0].used_percent,12.5);assert_eq!(r.windows[1].used_percent,30.0);assert_eq!(r.primary_percent,Some(30.0));}
     #[test]fn command_code_credits_and_limits(){let r=parse("command-code",&json!({"credits":{"credits":{"monthlyCredits":10,"purchasedCredits":5,"planId":"pro"},"windowLimits":{"fiveHour":{"used":2,"cap":10,"resetAt":1788780000000i64}}}}),0);assert_eq!(r.windows.len(),1);assert_eq!(r.windows[0].used_percent,20.0);assert_eq!(r.balances[0].amount,15.0);assert_eq!(r.plan_name,Some("Pro".into()));}

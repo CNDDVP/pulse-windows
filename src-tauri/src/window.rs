@@ -19,6 +19,55 @@ pub fn get_cursor_screen_pos() -> Option<(i32, i32)> {
     None
 }
 
+/// GDI device name (`\\.\DISPLAY1`) → the monitor name Windows Settings shows
+/// ("DELL U2723QE"). The GDI numbering is meaningless to a person.
+#[cfg(windows)]
+pub fn friendly_monitor_names() -> std::collections::HashMap<String, String> {
+    use windows::Win32::Devices::Display::*;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    let mut map = std::collections::HashMap::new();
+    unsafe {
+        let (mut paths, mut modes) = (0u32, 0u32);
+        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut paths, &mut modes) != ERROR_SUCCESS {
+            return map;
+        }
+        let mut path_buf = vec![DISPLAYCONFIG_PATH_INFO::default(); paths as usize];
+        let mut mode_buf = vec![DISPLAYCONFIG_MODE_INFO::default(); modes as usize];
+        if QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut paths, path_buf.as_mut_ptr(), &mut modes, mode_buf.as_mut_ptr(), None) != ERROR_SUCCESS {
+            return map;
+        }
+        for p in path_buf.iter().take(paths as usize) {
+            let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+            source.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                adapterId: p.sourceInfo.adapterId,
+                id: p.sourceInfo.id,
+            };
+            let mut target = DISPLAYCONFIG_TARGET_DEVICE_NAME::default();
+            target.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+                size: std::mem::size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32,
+                adapterId: p.targetInfo.adapterId,
+                id: p.targetInfo.id,
+            };
+            if DisplayConfigGetDeviceInfo(&mut source.header) != 0 || DisplayConfigGetDeviceInfo(&mut target.header) != 0 {
+                continue;
+            }
+            let gdi = String::from_utf16_lossy(&source.viewGdiDeviceName).trim_end_matches('\0').to_string();
+            let name = String::from_utf16_lossy(&target.monitorFriendlyDeviceName).trim_end_matches('\0').trim().to_string();
+            if !gdi.is_empty() && !name.is_empty() {
+                map.insert(gdi, name);
+            }
+        }
+    }
+    map
+}
+#[cfg(not(windows))]
+pub fn friendly_monitor_names() -> std::collections::HashMap<String, String> {
+    std::collections::HashMap::new()
+}
+
 pub fn geometry(area:Rect,scale:f64,side:&str,state:&str,count:usize,fx:f64,fy:f64)->Rect{
     let horizontal=side=="top";
     let length=((count.max(4) as f64*76.0)+20.0).clamp(320.0,900.0);

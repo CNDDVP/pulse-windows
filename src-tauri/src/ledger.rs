@@ -28,8 +28,11 @@ fn parse(source:&str,v:&Value,state:&mut State,offset:u64)->Option<Event>{
     if source=="claude"{
         if v["type"]!="assistant"{return None}let m=&v["message"];let u=m.get("usage")?;
         let ts=timestamp(&v["timestamp"])?;
+        let counts=[count(&u["input_tokens"]),count(&u["output_tokens"]),count(&u["cache_read_input_tokens"]),count(&u["cache_creation_input_tokens"])];
+        // Claude Code writes "<synthetic>" assistant placeholders with an all-zero usage block.
+        if counts.iter().all(|c|*c==0){return None}
         let id=m["id"].as_str().map(str::to_string).unwrap_or_else(||format!("offset-{offset}"));
-        return Some(Event{id,ts,model:m["model"].as_str().unwrap_or("unknown").into(),counts:[count(&u["input_tokens"]),count(&u["output_tokens"]),count(&u["cache_read_input_tokens"]),count(&u["cache_creation_input_tokens"])],partial:m["id"].is_null()||u["input_tokens"].is_null()||u["output_tokens"].is_null()});
+        return Some(Event{id,ts,model:m["model"].as_str().unwrap_or("unknown").into(),counts,partial:m["id"].is_null()||u["input_tokens"].is_null()||u["output_tokens"].is_null()});
     }
     if ["cline","roocode","kilocode"].contains(&source){
         if v["say"]!="api_req_started"{return None}let text:Value=serde_json::from_str(v["text"].as_str()?).ok()?;
@@ -47,7 +50,7 @@ fn parse(source:&str,v:&Value,state:&mut State,offset:u64)->Option<Event>{
     None
 }
 fn discover(root:&Path,source:&str,out:&mut Vec<(String,PathBuf)>,depth:usize){
-    if depth>18||out.len()>=20000{return}
+    if depth>18||out.len()>=10000{return}
     let Ok(entries)=fs::read_dir(root)else{return};
     for entry in entries.flatten(){let Ok(kind)=entry.file_type()else{continue};if kind.is_symlink(){continue}let path=entry.path();
         if kind.is_dir(){discover(&path,source,out,depth+1)}else if path.extension().is_some_and(|e|e=="jsonl"||e=="json"){
@@ -59,13 +62,19 @@ fn discover(root:&Path,source:&str,out:&mut Vec<(String,PathBuf)>,depth:usize){
         }
     }
 }
+/// Each source gets its own discovery budget: a pathological directory (gemini
+/// tmp can hold tens of thousands of transcripts) must not starve the sources
+/// that are discovered after it.
+fn collect(root:&Path,source:&str,out:&mut Vec<(String,PathBuf)>){
+    let mut part=vec![];discover(root,source,&mut part,0);out.extend(part);
+}
 fn sources()->Vec<(String,PathBuf)>{
     let mut out=vec![];
-    if let Some(root)=crate::providers::credentials::home_path("CLAUDE_CONFIG_DIR",".claude"){discover(&root.join("projects"),"claude",&mut out,0)}
-    if let Some(root)=crate::providers::credentials::home_path("CODEX_HOME",".codex"){discover(&root.join("sessions"),"codex",&mut out,0);discover(&root.join("archived_sessions"),"codex",&mut out,0)}
-    if let Some(root)=crate::providers::credentials::home_path("GEMINI_CLI_HOME",".gemini"){discover(&root.join("tmp"),"gemini",&mut out,0)}
-    if let Some(home)=dirs::home_dir(){discover(&home.join(".openclaw/agents"),"openclaw",&mut out,0)}
-    if let Some(app)=dirs::config_dir(){for editor in ["Code","Code - Insiders","VSCodium"]{for (source,ext) in [("cline","saoudrizwan.claude-dev"),("roocode","rooveterinaryinc.roo-cline"),("kilocode","kilocode.kilo-code")]{discover(&app.join(editor).join("User/globalStorage").join(ext).join("tasks"),source,&mut out,0)}}}
+    if let Some(root)=crate::providers::credentials::home_path("CLAUDE_CONFIG_DIR",".claude"){collect(&root.join("projects"),"claude",&mut out)}
+    if let Some(root)=crate::providers::credentials::home_path("CODEX_HOME",".codex"){collect(&root.join("sessions"),"codex",&mut out);collect(&root.join("archived_sessions"),"codex",&mut out)}
+    if let Some(root)=crate::providers::credentials::home_path("GEMINI_CLI_HOME",".gemini"){collect(&root.join("tmp"),"gemini",&mut out)}
+    if let Some(home)=dirs::home_dir(){collect(&home.join(".openclaw/agents"),"openclaw",&mut out)}
+    if let Some(app)=dirs::config_dir(){for editor in ["Code","Code - Insiders","VSCodium"]{for (source,ext) in [("cline","saoudrizwan.claude-dev"),("roocode","rooveterinaryinc.roo-cline"),("kilocode","kilocode.kilo-code")]{collect(&app.join(editor).join("User/globalStorage").join(ext).join("tasks"),source,&mut out)}}}
     out
 }
 fn database(path:&Path)->Result<Connection,String>{
@@ -80,6 +89,10 @@ pub fn scan(days:u32)->Result<Summary,String>{
 }
 fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>)->Result<Summary,String>{
     let mut db=database(db_path)?;let mut changed=0;let mut skipped=0;let scanned=paths.len();
+    let today=chrono::Local::now().date_naive();let first=today-chrono::Duration::days(days as i64-1);
+    // A log file is append-only, so every event in it is older than its mtime: files
+    // untouched since before the window cannot contribute and are parsed lazily later.
+    let window_start_ns=first.and_hms_opt(0,0,0).and_then(|t|t.and_local_timezone(chrono::Local).single()).and_then(|t|t.timestamp_nanos_opt()).unwrap_or(0);
     let live:Vec<String>=paths.iter().map(|(_,p)|format!("{:x}",Sha256::digest(p.to_string_lossy().as_bytes()))).collect();
     for (source,path) in paths{
         let result=(||->Result<(),String>{
@@ -87,10 +100,17 @@ fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>)->Result<Summar
             if metadata.len()>256*1024*1024{return Err("large".into())}
             let mtime=metadata.modified().ok().and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok()).map(|t|t.as_nanos().min(i64::MAX as u128) as i64).unwrap_or(0);
             let path_key=format!("{:x}",Sha256::digest(path.to_string_lossy().as_bytes()));
-            let mut file=File::open(&path).map_err(|_|"read")?;let mut start=vec![0;metadata.len().min(1024) as usize];file.read_exact(&mut start).map_err(|_|"read")?;
-            let prefix=format!("{:x}",Sha256::digest(&start));
             let old:Option<(u64,i64,String,u64,String)>=db.query_row("SELECT size,mtime,prefix,offset,state FROM files WHERE path=?",[&path_key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).ok();
             if old.as_ref().is_some_and(|(size,time,_,_,_)|*size==metadata.len()&&*time==mtime){return Ok(())}
+            if old.is_none() && mtime>0 && mtime<window_start_ns {return Ok(())}
+            let mut file=File::open(&path).map_err(|_|"read")?;let mut start=vec![0;metadata.len().min(1024) as usize];file.read_exact(&mut start).map_err(|_|"read")?;
+            let prefix=format!("{:x}",Sha256::digest(&start));
+            if source=="gemini" && !start.windows(8).any(|w|w==b"\"tokens\"") {
+                // A chat transcript, not a usage log: remember it as fully consumed so the
+                // hundreds of megabytes under gemini/tmp are never parsed.
+                db.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?)",params![path_key,source,metadata.len(),mtime,prefix,metadata.len(),"{}"]).map_err(|_|"checkpoint")?;
+                return Ok(())
+            }
             let jsonl=path.extension().is_some_and(|e|e=="jsonl");
             let append=jsonl&&old.as_ref().is_some_and(|(size,_,p,_,_)|metadata.len()>*size&&*size>=1024&&p==&prefix);
             let (mut offset,mut state)=match if append{old.as_ref()}else{None}{Some((_,_,_,o,s))=>(*o,serde_json::from_str::<State>(s).unwrap_or_default()),_=>(0,State::default())};
@@ -127,12 +147,14 @@ fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>)->Result<Summar
     {
         let tx=db.transaction().map_err(|_|"lock")?;
         tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS live(path TEXT PRIMARY KEY); DELETE FROM live;").map_err(|_|"db")?;
-        for key in &live{tx.execute("INSERT OR IGNORE INTO live VALUES(?)",[key]).map_err(|_|"db")?;}
+        {
+            let mut insert=tx.prepare("INSERT OR IGNORE INTO live VALUES(?)").map_err(|_|"db")?;
+            for key in &live{insert.execute([key]).map_err(|_|"db")?;}
+        }
         tx.execute("DELETE FROM events WHERE path NOT IN (SELECT path FROM live)",[]).map_err(|_|"db")?;
         tx.execute("DELETE FROM files WHERE path NOT IN (SELECT path FROM live)",[]).map_err(|_|"db")?;
         tx.commit().map_err(|_|"commit")?;
     }
-    let today=chrono::Local::now().date_naive();let first=today-chrono::Duration::days(days as i64-1);
     let mut stmt=db.prepare("SELECT source,model,ts,MAX(input),MAX(output),MAX(cache_read),MAX(cache_write),MAX(partial) FROM events GROUP BY source,event_id").map_err(|_|"统计查询失败")?;
     let result=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,[r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?],r.get::<_,bool>(7)?))).map_err(|_|"统计读取失败")?;
     let mut buckets:BTreeMap<(String,String,String,String),Row>=BTreeMap::new();
@@ -149,6 +171,27 @@ fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>)->Result<Summar
     #[test]fn codex_cumulative_counts_cache_once(){let mut s=State{model:"model".into(),..Default::default()};let v=json!({"type":"event_msg","timestamp":"2026-09-17T00:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20}}}});assert_eq!(parse("codex",&v,&mut s,0).unwrap().counts,[70,20,30,0]);assert!(parse("codex",&v,&mut s,1).is_none());}
     #[test]fn incremental_roundtrip_no_double_count(){let d=tempfile::tempdir().unwrap();let file=d.path().join("session.jsonl");let db=d.path().join("cache.db");let v=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"m1","model":"x","usage":{"input_tokens":10,"output_tokens":5}}});fs::write(&file,format!("{v}\n{v}\n")).unwrap();let paths=vec![("claude".into(),file)];let a=scan_paths(7,&db,paths.clone()).unwrap();let b=scan_paths(7,&db,paths).unwrap();assert_eq!(a.rows[0].input,10);assert_eq!(b.rows[0].input,10);assert_eq!(b.changed_files,0);}
     #[test]fn malformed_lines_are_partial(){let d=tempfile::tempdir().unwrap();let file=d.path().join("x.jsonl");fs::write(&file,"{bad}\n").unwrap();assert!(scan_paths(7,&d.path().join("db"),vec![("claude".into(),file)]).unwrap().partial);}
+    #[test]fn files_older_than_the_window_are_parsed_lazily(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");let file=d.path().join("old.jsonl");
+        let v=json!({"type":"assistant","timestamp":(chrono::Utc::now()-chrono::Duration::days(20)).to_rfc3339(),"message":{"id":"m1","model":"x","usage":{"input_tokens":10,"output_tokens":5}}});
+        fs::write(&file,format!("{v}\n")).unwrap();
+        File::options().write(true).open(&file).unwrap().set_modified(std::time::SystemTime::now()-std::time::Duration::from_secs(20*86400)).unwrap();
+        let week=scan_paths(7,&db,vec![("claude".into(),file.clone())]).unwrap();
+        assert_eq!(week.changed_files,0,"a file untouched since before the window is not parsed for a 7-day query");
+        let quarter=scan_paths(90,&db,vec![("claude".into(),file)]).unwrap();
+        assert_eq!(quarter.changed_files,1);assert_eq!(quarter.rows.iter().map(|r|r.input).sum::<u64>(),10);
+    }
+    #[test]fn gemini_transcripts_are_not_parsed(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");let file=d.path().join("session-x.jsonl");
+        fs::write(&file,"{\"sessionId\":\"a2a-server\",\"kind\":\"main\"}\n{\"$set\":{\"messages\":[]}}\n").unwrap();
+        let s=scan_paths(7,&db,vec![("gemini".into(),file)]).unwrap();
+        assert_eq!(s.changed_files,0);assert!(s.rows.is_empty());assert_eq!(s.skipped_files,0);
+    }
+    #[test]fn claude_synthetic_placeholder_is_not_an_event(){
+        let mut s=State::default();
+        let v=json!({"type":"assistant","timestamp":"2026-09-17T00:00:00Z","message":{"id":"m","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}});
+        assert!(parse("claude",&v,&mut s,0).is_none());
+    }
     #[test]fn archived_codex_session_is_not_double_counted(){
         let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
         let live=d.path().join("sessions");let archive=d.path().join("archived_sessions");fs::create_dir_all(&live).unwrap();fs::create_dir_all(&archive).unwrap();
