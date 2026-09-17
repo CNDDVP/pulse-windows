@@ -3,10 +3,23 @@ import {invoke} from "@tauri-apps/api/core";
 import {listen} from "@tauri-apps/api/event";
 import {UsageRing} from "./UsageRing";
 import {UsageDetailCard} from "./UsageDetailCard";
+import {orderedIds} from "../ordering";
 import type {AppSettings,ProviderUsage} from "../types";
 export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:AppSettings}){
   const [hovered,setHovered]=useState<string|null>(null),[inside,setInside]=useState(false),[collapsed,setCollapsed]=useState(false),[pinned,setPinned]=useState(false);
   const leave=useRef<ReturnType<typeof setTimeout>|null>(null);
+  const railRef=useRef<HTMLDivElement>(null);
+  // Measured rail box (border-box) lets the collapsed edge bar mirror the rail's exact
+  // height — never a fixed stub — and the ResizeObserver keeps it in sync when the
+  // account set, order or font scale changes, including while collapsed.
+  const [railBox,setRailBox]=useState<{w:number;h:number}|null>(null);
+  useEffect(()=>{
+    const el=railRef.current;if(!el)return;
+    const measure=()=>setRailBox({w:el.offsetWidth,h:el.offsetHeight});
+    measure();
+    const ro=new ResizeObserver(measure);ro.observe(el);
+    return()=>ro.disconnect();
+  },[]);
   useEffect(()=>{
     let alive=true;
     const stop=listen("reveal-rail",()=>{
@@ -44,46 +57,53 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     }, 250);
   };
 
+  // The rail follows the account order from settings, not the arrival order of readings.
+  const rank=new Map(orderedIds(settings.providers).map((id,i)=>[id,i]));
+  const ordered=[...usages].sort((a,b)=>(rank.get(a.account_id)??Number.MAX_SAFE_INTEGER)-(rank.get(b.account_id)??Number.MAX_SAFE_INTEGER));
+
   // Only real readings drive the pressure glow; an account in an error state is
   // "unknown", not healthy-green.
-  const readings=usages.filter(u=>["live","stale"].includes(u.state));
-  const maxPressure=readings.length?readings.reduce((max,u)=>Math.max(max,u.primary_percent??0),0):(usages.length?Number.NaN:0);
+  const readings=ordered.filter(u=>["live","stale"].includes(u.state));
+  const maxPressure=readings.length?readings.reduce((max,u)=>Math.max(max,u.primary_percent??0),0):(ordered.length?Number.NaN:0);
   const glowClass=Number.isNaN(maxPressure)?"bg-zinc-500 shadow-[0_0_8px_#71717a]":maxPressure>=90?"bg-red-500 shadow-[0_0_10px_#ef4444]":maxPressure>=75?"bg-amber-400 shadow-[0_0_8px_#f59e0b]":"bg-emerald-400 shadow-[0_0_8px_#10b981]";
 
   return <div
-    className={`w-full h-full flex ${top?"flex-col items-center":left?"flex-row items-center":"flex-row-reverse items-center"} select-none`}
+    className={`relative w-full h-full flex ${top?"flex-col items-center":left?"flex-row items-center":"flex-row-reverse items-center"} select-none overflow-hidden`}
     onMouseEnter={enter}
     onMouseLeave={exit}
     onContextMenu={e=>{e.preventDefault();void invoke("open_settings")}}
   >
-    {collapsed ? (
-      <button
+    {/* The rail stays mounted (invisible) while collapsed so its live measurements keep driving the edge bar. */}
+    <div
+      ref={railRef}
+      className={`relative flex ${top ? "flex-row max-w-full" : "flex-col max-h-full"} shrink-0 ${
+        top
+          ? "rounded-b-2xl border-b border-x border-t-0"
+          : left
+          ? "rounded-r-2xl border-r border-y border-l-0"
+          : "rounded-l-2xl border-l border-y border-r-0"
+      } p-1.5 ${dark ? "glass-obsidian text-zinc-200" : "glass-translucent text-zinc-800"} ${collapsed ? "invisible" : ""}`}
+    >
+      <div className={`flex ${top ? "flex-row space-x-2" : "flex-col space-y-1.5"} overflow-y-auto max-h-full scrollbar-none`}>
+        {ordered.map(u => (
+          <UsageRing key={u.account_id} usage={u} settings={settings} onHover={() => setHovered(u.account_id)} />
+        ))}
+        {!ordered.length && (
+          <button className="text-xs p-2 text-zinc-400 hover:text-zinc-200" onClick={() => void invoke("open_settings")}>
+            添加账号
+          </button>
+        )}
+      </div>
+    </div>
+    {/* Collapsed edge hint: 4 dip visual, flush to the docked edge, exactly as tall/wide
+        as the rail. The hover hit area is the whole (10 dip) window, not just the bar. */}
+    {collapsed && (
+      <div
         aria-label="展开 Pulse"
         onMouseEnter={enter}
-        onFocus={enter}
-        className={`${top ? "w-28 h-2.5 rounded-b-full" : left ? "w-2.5 h-28 rounded-r-full" : "w-2.5 h-28 rounded-l-full"} ${glowClass} transition-all duration-300 hover:scale-110 cursor-pointer`}
+        className={`absolute cursor-pointer rounded-full ${top ? "top-0 left-1/2 -translate-x-1/2 h-1" : left ? "left-0 top-1/2 -translate-y-1/2 w-1" : "right-0 top-1/2 -translate-y-1/2 w-1"} ${glowClass}`}
+        style={top ? { width: railBox?.w ?? "100%" } : { height: railBox?.h ?? "100%" }}
       />
-    ) : (
-      <div
-        className={`relative flex ${top ? "flex-row max-w-full" : "flex-col max-h-full"} shrink-0 ${
-          top
-            ? "rounded-b-2xl border-b border-x border-t-0"
-            : left
-            ? "rounded-r-2xl border-r border-y border-l-0"
-            : "rounded-l-2xl border-l border-y border-r-0"
-        } p-1.5 ${dark ? "glass-obsidian text-zinc-200" : "glass-translucent text-zinc-800"}`}
-      >
-        <div className={`flex ${top ? "flex-row space-x-2" : "flex-col space-y-1.5"} overflow-y-auto max-h-full scrollbar-none`}>
-          {usages.map(u => (
-            <UsageRing key={u.account_id} usage={u} settings={settings} onHover={() => setHovered(u.account_id)} />
-          ))}
-          {!usages.length && (
-            <button className="text-xs p-2 text-zinc-400 hover:text-zinc-200" onClick={() => void invoke("open_settings")}>
-              添加账号
-            </button>
-          )}
-        </div>
-      </div>
     )}
     {!collapsed && active && (
       <div className="p-2 min-h-0 max-h-full">

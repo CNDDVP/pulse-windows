@@ -46,6 +46,8 @@ pub async fn update_settings(new_settings:AppSettings,state:State<'_,AppState>,a
         crate::cache::apply_primary_window(u,pin);
     }
     cached.retain(|u|new_settings.providers.get(&u.account_id).is_some_and(|c|c.enabled));
+    // The rail renders readings in array order; a saved reorder must reach it now, not at the next refresh.
+    cached.sort_by_key(|u|new_settings.providers.get(&u.account_id).map(|c|c.order).unwrap_or(u32::MAX));
     let retained=cached.clone();drop(cached);
     app.emit("settings-updated",&new_settings).map_err(|_|"设置已保存，但窗口通知失败")?;
     app.emit("usages-updated",&retained).map_err(|_|"窗口通知失败")?;

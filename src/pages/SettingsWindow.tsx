@@ -5,6 +5,7 @@ import type { AppSettings, ProviderUsage, ProviderConfig, MonitorOption } from "
 import { ProviderIcon } from "../components/icons/ProviderIcons";
 import { TokenSpend } from "./TokenSpend";
 import { resetText, pickElapsedWindow } from "../presentation";
+import { orderedIds, moveItem, applyOrder } from "../ordering";
 
 const PROVIDERS: [string, string][] = [
   ["kimi", "Kimi Code"],
@@ -107,6 +108,10 @@ export function SettingsWindow({
     toastTimerRef.current = setTimeout(() => setToast(null), 3500);
   };
 
+  // A running "save and test" already holds the backend refresh gate; letting
+  // other cards or the header save fire meanwhile only scrambles the toasts.
+  const locked = busy || testingId !== null;
+
   const hasUnsaved = useMemo(() => {
     return JSON.stringify(settings) !== JSON.stringify(initialSettings);
   }, [settings, initialSettings]);
@@ -164,15 +169,15 @@ export function SettingsWindow({
     }));
   };
 
-  const save = async () => {
+  const persist = async (next: AppSettings, message: string) => {
     setBusy(true);
     try {
-      const updated = await invoke<AppSettings>("update_settings", { newSettings: settings });
+      const updated = await invoke<AppSettings>("update_settings", { newSettings: next });
       appliedRef.current = updated;
       setPendingRemote(null);
       onSaved(updated);
       setSettings(updated);
-      showToast("success", "设置已保存并同步至悬浮栏");
+      showToast("success", message);
       return updated;
     } catch (e) {
       showToast("error", `保存失败: ${String(e)}`);
@@ -181,6 +186,29 @@ export function SettingsWindow({
       setBusy(false);
     }
   };
+
+  const save = () => persist(settings, "设置已保存并同步至悬浮栏");
+
+  // Rail order is per account (the rail draws one ring per account, so two Codex
+  // accounts can sit apart). A drop renumbers 0..n-1 and saves at once so the rail
+  // follows immediately; the numeric field stays in the data model for compatibility.
+  const railOrder = useMemo(() => orderedIds(settings.providers), [settings.providers]);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const commitOrder = async (ids: string[]) => {
+    const next = { ...settings, providers: applyOrder(settings.providers, ids) };
+    setSettings(next);
+    if (locked) {
+      showToast("info", "顺序已调整；当前有测试在进行，稍后点击“保存更改”即可生效");
+      return;
+    }
+    try {
+      await persist(next, "悬浮栏顺序已保存并同步");
+    } catch {
+      /* toast already shown */
+    }
+  };
+  const moveAccount = (from: number, to: number) => void commitOrder(moveItem(railOrder, from, to));
 
   const test = async (id: string) => {
     setTestingId(id);
@@ -279,9 +307,6 @@ export function SettingsWindow({
     }
   };
 
-  // A running "save and test" already holds the backend refresh gate; letting
-  // other cards or the header save fire meanwhile only scrambles the toasts.
-  const locked = busy || testingId !== null;
   const totalAccounts = Object.keys(settings.providers).length;
   const enabledAccounts = Object.values(settings.providers).filter(p => p.enabled).length;
   const draftAccountsCount = Object.values(settings.providers).filter(
@@ -462,10 +487,76 @@ export function SettingsWindow({
                 </div>
               </div>
 
+              {/* Rail order (drag & drop) */}
+              {railOrder.length > 1 && (
+                <div className="p-5 rounded-2xl bg-zinc-900/40 border border-white/10 space-y-3">
+                  <div className="flex justify-between items-start gap-4">
+                    <div>
+                      <h3 className="text-sm font-semibold text-white">悬浮栏显示顺序</h3>
+                      <p className="text-[11px] text-zinc-400 mt-0.5">
+                        拖动左侧 ☰ 或点击箭头调整，松手后立即保存并同步到悬浮栏；已禁用的账号不会出现在悬浮栏。
+                      </p>
+                    </div>
+                    <span className="text-[11px] text-zinc-500 shrink-0">{railOrder.length} 个账号</span>
+                  </div>
+                  <ul className="space-y-1.5" onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropIndex(null); }}>
+                    {railOrder.map((id, index) => {
+                      const c = settings.providers[id];
+                      const providerName = PROVIDERS.find(p => p[0] === c.provider_id)?.[1] || c.provider_id;
+                      return (
+                        <li
+                          key={id}
+                          draggable={!locked}
+                          onDragStart={e => { setDragging(id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", id); }}
+                          onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (dropIndex !== index) setDropIndex(index); }}
+                          onDrop={e => {
+                            e.preventDefault();
+                            const from = railOrder.indexOf(dragging ?? e.dataTransfer.getData("text/plain"));
+                            setDragging(null); setDropIndex(null);
+                            if (from >= 0 && from !== index) void commitOrder(moveItem(railOrder, from, index));
+                          }}
+                          onDragEnd={() => { setDragging(null); setDropIndex(null); }}
+                          className={`flex items-center gap-3 px-3 py-2 rounded-xl border transition-colors ${
+                            dropIndex === index && dragging !== id
+                              ? "border-emerald-500/70 bg-emerald-950/30"
+                              : "border-white/5 bg-zinc-950/40 hover:border-white/15"
+                          } ${dragging === id ? "opacity-40" : ""} ${!c.enabled ? "opacity-60" : ""}`}
+                        >
+                          <span className={`text-zinc-500 select-none text-base leading-none ${locked ? "" : "cursor-grab active:cursor-grabbing"}`} title="拖动排序">☰</span>
+                          <span className="w-5 text-[11px] font-mono text-zinc-500 text-right">{index + 1}</span>
+                          <span className="w-6 h-6 rounded-lg bg-zinc-800/90 border border-zinc-700/50 flex items-center justify-center text-zinc-200 shrink-0">
+                            <ProviderIcon id={c.provider_id} size={14} />
+                          </span>
+                          <span className="text-xs text-zinc-200 truncate">{c.label}</span>
+                          <span className="text-[11px] text-zinc-500 truncate">{providerName}</span>
+                          {!c.enabled && (
+                            <span className="text-[10px] px-1.5 py-[2px] bg-zinc-800 text-zinc-400 rounded border border-zinc-700/60 shrink-0">已禁用</span>
+                          )}
+                          <span className="ml-auto flex items-center gap-1 shrink-0">
+                            <button
+                              disabled={locked || index === 0}
+                              onClick={() => moveAccount(index, index - 1)}
+                              className="w-6 h-6 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-30 disabled:hover:bg-transparent cursor-pointer text-xs"
+                              title="上移"
+                            >▲</button>
+                            <button
+                              disabled={locked || index === railOrder.length - 1}
+                              onClick={() => moveAccount(index, index + 1)}
+                              className="w-6 h-6 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-30 disabled:hover:bg-transparent cursor-pointer text-xs"
+                              title="下移"
+                            >▼</button>
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
               {/* Accounts List */}
               <div className="space-y-4">
-                {Object.entries(settings.providers)
-                  .sort((a, b) => a[1].order - b[1].order)
+                {railOrder
+                  .map(id => [id, settings.providers[id]] as const)
                   .map(([id, c]) => {
                     const reading = usages.find(u => u.account_id === id);
                     const isHighlighted = highlightedId === id;
@@ -562,16 +653,13 @@ export function SettingsWindow({
                             />
                           </label>
 
-                          <label className="block space-y-1">
-                            <span className="text-xs text-zinc-400">悬浮栏排序</span>
-                            <input
-                              className="w-full bg-zinc-800/80 border border-zinc-700/70 rounded-xl px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500 transition-colors"
-                              type="number"
-                              min={0}
-                              value={c.order}
-                              onChange={e => patch(id, { order: Math.max(0, Number(e.target.value)) })}
-                            />
-                          </label>
+                          <div className="block space-y-1">
+                            <span className="text-xs text-zinc-400">悬浮栏位置</span>
+                            <div className="w-full bg-zinc-800/40 border border-zinc-700/40 rounded-xl px-3 py-1.5 text-xs text-zinc-300">
+                              第 {railOrder.indexOf(id) + 1} 位
+                              <span className="text-zinc-500"> · 在上方“悬浮栏显示顺序”中拖动调整</span>
+                            </div>
+                          </div>
                         </div>
 
                         {/* Credential Store Box */}

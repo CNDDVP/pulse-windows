@@ -42,6 +42,8 @@ pub fn open_settings_window(app:&AppHandle){
         .decorations(true)
         .always_on_top(true)
         .center()
+        // Windows: the native drop handler swallows HTML5 drag events the reorder list relies on.
+        .disable_drag_drop_handler()
         .build();
     }
 }
