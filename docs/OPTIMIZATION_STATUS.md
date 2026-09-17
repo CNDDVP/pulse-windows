@@ -49,3 +49,14 @@
 | 智谱 / z.ai 图标 | 新增粗体 Z 字标 `ZhipuIcon` | 真机悬浮栏可见 |
 | 显示器选项只有 `\\.\DISPLAYn` | `DisplayConfig` API（`QueryDisplayConfig` + `DisplayConfigGetDeviceInfo`）取系统设置同款型号名，标签为“型号 · 分辩率 @缩放 · 主屏”，存储值仍为稳定的 GDI 名；已保存但未连接的显示器保留可选 | 真机下拉：P2410R / P32A2V（主屏）/ 124s-28 |
 | 外圈时间环可按账号选周期 | `ProviderConfig.elapsed_window`（旧配置默认自动）；账号卡新增“外圈时间环跟随的额度周期”选择器，默认倒计时最短，读数列表加“时间环”徽标；`pickElapsedWindow` 纯函数 + 测试；`UsageRing` 内圈额度与外圈周期独立选择 | tsc / 5 项前端测试 / 构建；选择器 UI 因全屏程序阻断截图未做视觉核对 |
+
+## 2026-09-17 第五轮：账号自由排序 + 折叠条等高细化
+
+| 需求 | 改动 | 验证 |
+|---|---|---|
+| 拖拽排序 | 账号与凭据顶部新增“悬浮栏显示顺序”（原生 HTML5 拖拽 ☰ + ▲▼），松手即 `applyOrder` 重编号 0..n-1 并调用 `update_settings` 立即保存；数字输入框改为只读位置；卡片列表与拖拽列表同序。排序单位为账号（`settings.providers[account_id].order`），同 Provider 多账号可分开排 | tsc / 8 项前端测试（新增 `ordering.test.ts` 3 项）/ 构建；实机拖拽因用户正在使用设置窗口未由 agent 代操作 |
+| 保存后悬浮栏即时同步 | 根因：`update_settings` 推送 `usages-updated` 前未按新 order 重排，要等下一次刷新。已在推送前 `sort_by_key(order)`；悬浮栏额外按 settings 顺序客户端稳定排序 | 代码 + 38 项 Rust 测试 |
+| Windows 上 HTML5 拖拽 | 设置窗口 `dragDropEnabled: false` / `.disable_drag_drop_handler()`，否则 Tauri 原生拖放接管会吞掉 drag 事件 | 构建 |
+| 折叠条太粗太短 | 原：窗口 14 dip、可见按钮 `w-2.5 h-28`（10×112 dip）。现：窗口 10 dip 作为 hover 命中区，可见条 4 dip（`w-1`）、紧贴停靠边、高度=轨道实测高度（ResizeObserver，折叠时轨道保持挂载 invisible 以持续测量） | 实机：150% 屏折叠态 bounds [0,687,15,714]，可见条约 6 物理 px 宽、约 710 px 高，与展开态窗口等高 |
+
+剩余：拖拽 → 保存 → 悬浮栏重排的实机演示待用户空出鼠标后由 agent 或用户执行（逻辑已由单元测试与后端排序覆盖）。
