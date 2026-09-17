@@ -1,71 +1,47 @@
-import React, { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import type { AppSettings, ProviderUsage } from "./types";
-import { FloatingRail } from "./components/FloatingRail";
-import { SettingsWindow } from "./pages/SettingsWindow";
+import {useEffect,useState} from "react";
+import {invoke} from "@tauri-apps/api/core";
+import {listen} from "@tauri-apps/api/event";
+import {getCurrentWebviewWindow} from "@tauri-apps/api/webviewWindow";
+import type {AppSettings,ProviderUsage} from "./types";
+import {FloatingRail} from "./components/FloatingRail";
+import {SettingsWindow} from "./pages/SettingsWindow";
 
-export const App: React.FC = () => {
-  const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [usages, setUsages] = useState<ProviderUsage[]>([]);
-  
-  const isSettingsView = (() => {
-    try {
-      if (getCurrentWebviewWindow().label === "settings") return true;
-    } catch (_) {}
-    return window.location.hash.includes("settings") || window.location.search.includes("settings");
-  })();
-
-  useEffect(() => {
-    // 1. Fetch initial settings
-    invoke<AppSettings>("get_settings")
-      .then((s) => setSettings(s))
-      .catch(console.error);
-
-    // 2. Fetch initial usages (only for rail view)
-    if (!isSettingsView) {
-      invoke<ProviderUsage[]>("get_usages")
-        .then((u) => setUsages(u))
-        .catch(console.error);
-
-      // 3. Listen to realtime usage updates from Rust backend
-      const unlistenPromise = listen<ProviderUsage[]>("usages-updated", (event) => {
-        setUsages(event.payload);
-      });
-
-      return () => {
-        unlistenPromise.then((unlisten) => unlisten());
-      };
-    }
-  }, [isSettingsView]);
-
-  if (!settings) {
-    return isSettingsView ? (
-      <div className="w-screen h-screen flex items-center justify-center bg-[#16161a] text-zinc-400 text-[13px]">
-        加载设置中...
-      </div>
-    ) : null;
+function getIsSettings(): boolean {
+  // The settings window is created by Rust with label "settings" on the same
+  // index.html; hash/search probing would misfire on any unrelated anchor.
+  try {
+    return getCurrentWebviewWindow().label === "settings";
+  } catch {
+    return false;
   }
+}
 
-  if (isSettingsView) {
-    return (
-      <SettingsWindow
-        initialSettings={settings}
-        onSaved={(newS) => setSettings(newS)}
-      />
-    );
-  }
-
-  return (
-    <div className="w-screen h-screen bg-transparent overflow-visible flex items-center justify-end pointer-events-none">
-      <FloatingRail
-        usages={usages}
-        settings={settings}
-        onRefresh={() => invoke("refresh_usages")}
-      />
-    </div>
-  );
-};
-
-export default App;
+export default function App(){
+  const [settings,setSettings]=useState<AppSettings|null>(null);
+  const [usages,setUsages]=useState<ProviderUsage[]>([]);
+  const [error,setError]=useState("");
+  const isSettings = getIsSettings();
+  useEffect(()=>{
+    let alive=true;const stops:(()=>void)[]=[];let settingsVersion=0,usageVersion=0;
+    void(async()=>{
+      // A dead event channel degrades to polling-free display; only settings
+      // failing to load is fatal for rendering.
+      const a=await listen<AppSettings>("settings-updated",e=>{settingsVersion++;if(alive)setSettings(e.payload)}).catch(()=>null);
+      if(a){if(!alive){void a();return}stops.push(a)}
+      const b=await listen<ProviderUsage[]>("usages-updated",e=>{usageVersion++;if(alive)setUsages(e.payload)}).catch(()=>null);
+      if(b){if(!alive){void b();return}stops.push(b)}
+      const sv=settingsVersion,uv=usageVersion;
+      try{
+        const s=await invoke<AppSettings>("get_settings");
+        if(alive&&sv===settingsVersion)setSettings(s);
+      }catch{if(alive)setError("无法加载配置。原设置已保留；请检查配置文件或查看启动诊断后重启 Pulse。");return}
+      try{
+        const u=await invoke<ProviderUsage[]>("get_usages");
+        if(alive&&uv===usageVersion)setUsages(u);
+      }catch{/* 读数加载失败不阻塞界面；下一次刷新事件会补上 */}
+    })();return()=>{alive=false;stops.forEach(f=>f())};
+  },[]);
+  if(error)return <div className="p-4 bg-zinc-900 text-amber-300 text-sm">{error}</div>;
+  if(!settings)return <div className="p-3 bg-zinc-900 text-zinc-400 text-xs">正在加载…</div>;
+  return isSettings?<SettingsWindow initialSettings={settings} usages={usages} onSaved={setSettings}/>:<FloatingRail usages={usages} settings={settings}/>;
+}
