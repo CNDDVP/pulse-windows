@@ -60,6 +60,13 @@ export const DeepSeekIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size 
   </svg>
 );
 
+export const ZhipuIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
+    {/* Zhipu / z.ai wordmark: a heavy slab Z with slanted bar ends */}
+    <path d="M5.5 4H20v3.3L11.1 16.7H19v3.3H4v-3.3L12.9 7.3H5.5z" />
+  </svg>
+);
+
 export const ProviderIcon: React.FC<{ id: string; className?: string; size?: number }> = ({ id, className, size }) => {
   switch (id.toLowerCase()) {
     case "claude":
@@ -77,6 +84,9 @@ export const ProviderIcon: React.FC<{ id: string; className?: string; size?: num
       return <CopilotIcon className={className} size={size} />;
     case "deepseek":
       return <DeepSeekIcon className={className} size={size} />;
+    case "zai":
+    case "zhipu":
+      return <ZhipuIcon className={className} size={size} />;
     default:
       return (
         <svg width={size || 18} height={size || 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>

@@ -15,6 +15,14 @@ export function elapsed(w:UsageWindow,now=Date.now()):number|null{
   if(!w.window_seconds||!w.resets_at)return null;const end=Date.parse(w.resets_at);if(!Number.isFinite(end)||end<=now)return null;
   const fraction=1-(end-now)/(w.window_seconds*1000);return fraction>=0&&fraction<=1?fraction:null;
 }
+/** Window the outer time ring follows: the pinned one, else the soonest reset. A pinned
+ *  window without timing data yields null rather than silently switching to another. */
+export function pickElapsedWindow(windows:UsageWindow[],pinned:string|null,now=Date.now()):UsageWindow|null{
+  if(pinned){const w=windows.find(w=>w.id===pinned);return w&&elapsed(w,now)!==null?w:null}
+  const usable=windows.filter(w=>elapsed(w,now)!==null);
+  if(!usable.length)return null;
+  return usable.reduce((best,w)=>Date.parse(w.resets_at!)<Date.parse(best.resets_at!)?w:best);
+}
 export function forecast(w:UsageWindow,now=Date.now()):string|null{
   // One source of truth: prefer the fraction, fall back to percent/100, so a
   // window carrying only one of the two fields never reports a bogus rate.

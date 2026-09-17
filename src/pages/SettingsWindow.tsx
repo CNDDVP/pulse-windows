@@ -1,10 +1,10 @@
 import { useEffect, useState, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import type { AppSettings, ProviderUsage, ProviderConfig } from "../types";
+import type { AppSettings, ProviderUsage, ProviderConfig, MonitorOption } from "../types";
 import { ProviderIcon } from "../components/icons/ProviderIcons";
 import { TokenSpend } from "./TokenSpend";
-import { resetText } from "../presentation";
+import { resetText, pickElapsedWindow } from "../presentation";
 
 const PROVIDERS: [string, string][] = [
   ["kimi", "Kimi Code"],
@@ -89,7 +89,7 @@ export function SettingsWindow({
   const [testingId, setTestingId] = useState<string | null>(null);
   const [diagnostic, setDiagnostic] = useState("");
   const [newProvider, setNewProvider] = useState("kimi");
-  const [screens, setScreens] = useState<string[]>([]);
+  const [screens, setScreens] = useState<MonitorOption[]>([]);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ type: "success" | "info" | "error"; text: string } | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -112,7 +112,7 @@ export function SettingsWindow({
   }, [settings, initialSettings]);
 
   useEffect(() => {
-    void invoke<string[]>("monitors").then(setScreens).catch(() => setScreens([]));
+    void invoke<MonitorOption[]>("monitors").then(setScreens).catch(() => setScreens([]));
   }, []);
 
   useEffect(() => {
@@ -211,7 +211,8 @@ export function SettingsWindow({
       order: Object.values(settings.providers).reduce((max, c) => Math.max(max, c.order), -1) + 1,
       use_local: false,
       credential_configured: false,
-      primary_window: null
+      primary_window: null,
+      elapsed_window: null
     });
     setHighlightedId(id);
     showToast("success", `已添加 ${providerName} 账号，已为您定位到配置卡片`);
@@ -685,6 +686,31 @@ export function SettingsWindow({
                           </div>
                         )}
 
+                        {/* Outer elapsed-time ring */}
+                        {reading?.windows && reading.windows.some(w => w.window_seconds && w.resets_at) && (
+                          <div className="p-3.5 bg-zinc-950/40 rounded-xl border border-white/5 space-y-2">
+                            <div className="flex justify-between items-center">
+                              <span className="text-xs font-semibold text-zinc-300">外圈时间环跟随的额度周期</span>
+                              <span className="text-[11px] text-zinc-500">{settings.show_elapsed ? "保存后即刻在悬浮栏生效" : "已在通用设置中关闭外圈"}</span>
+                            </div>
+                            <select
+                              className="w-full bg-zinc-800/90 border border-zinc-700/80 rounded-xl px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500 transition-colors cursor-pointer"
+                              value={c.elapsed_window || ""}
+                              onChange={e => patch(id, { elapsed_window: e.target.value || null })}
+                            >
+                              <option value="">自动选择倒计时最短的周期（默认）</option>
+                              {reading.windows.filter(w => w.window_seconds && w.resets_at).map(w => (
+                                <option key={w.id} value={w.id}>
+                                  {w.name} — {resetText(w.resets_at)}
+                                </option>
+                              ))}
+                            </select>
+                            <p className="text-[11px] text-zinc-400">
+                              外圈白色细线表示所选周期已流逝的时间比例，用来对比用量消耗与时间流逝的快慢；内圈额度与外圈周期可以各选各的。
+                            </p>
+                          </div>
+                        )}
+
                         {/* Test Connection & Live Quota Bars */}
                         <div className="flex justify-between items-center pt-2">
                           <button
@@ -713,6 +739,7 @@ export function SettingsWindow({
                           <div className="pt-2 border-t border-white/5 space-y-2.5">
                             {reading.windows.map(w => {
                               const isPrimary = c.primary_window === w.id || (!c.primary_window && w.used_percent === reading.primary_percent);
+                              const isTimed = pickElapsedWindow(reading.windows, c.elapsed_window ?? null)?.id === w.id;
                               return (
                                 <div key={w.id} className="space-y-1">
                                   <div className="flex justify-between items-center text-xs">
@@ -721,6 +748,11 @@ export function SettingsWindow({
                                       {isPrimary && (
                                         <span className="text-[10px] bg-emerald-950/80 text-emerald-400 px-1.5 py-[2px] rounded border border-emerald-800/40">
                                           主额度
+                                        </span>
+                                      )}
+                                      {isTimed && settings.show_elapsed && (
+                                        <span className="text-[10px] bg-zinc-800 text-zinc-300 px-1.5 py-[2px] rounded border border-zinc-600/60">
+                                          时间环
                                         </span>
                                       )}
                                     </span>
@@ -788,9 +820,12 @@ export function SettingsWindow({
                       }}
                     >
                       <option value="__active__">当前活动屏幕（跟随鼠标焦点）</option>
-                      {screens.map(n => (
-                        <option key={n} value={n}>{n}</option>
+                      {screens.map(m => (
+                        <option key={m.name} value={m.name}>{m.label}</option>
                       ))}
+                      {settings.monitor_name && !screens.some(m => m.name === settings.monitor_name) && (
+                        <option value={settings.monitor_name}>{settings.monitor_name}（当前未连接）</option>
+                      )}
                     </select>
                   </label>
 
@@ -962,7 +997,7 @@ export function SettingsWindow({
           )}
 
           {/* ================= SPEND TAB ================= */}
-          {tab === "spend" && <TokenSpend />}
+          <div className={tab === "spend" ? "" : "hidden"}><TokenSpend /></div>
 
           {/* ================= DIAGNOSTICS TAB ================= */}
           {tab === "diagnostics" && (

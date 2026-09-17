@@ -13,7 +13,10 @@ export interface ProviderUsage {
 export interface ProviderConfig {
   provider_id: string; label: string; enabled: boolean; order: number; use_local: boolean;
   credential_configured: boolean; primary_window: string | null;
+  /** Window the outer elapsed-time ring tracks; null = soonest reset. */
+  elapsed_window: string | null;
 }
+export interface MonitorOption { name: string; label: string }
 export interface AppSettings {
   schema_version: number; dock_side: "right" | "left" | "top" | "free";
   auto_collapse_seconds: number; theme: "obsidian" | "translucent";

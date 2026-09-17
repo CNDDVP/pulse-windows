@@ -1,17 +1,15 @@
 import {useRef} from "react";
 import {ProviderIcon} from "./icons/ProviderIcons";
-import {percentText,elapsed} from "../presentation";
+import {percentText,elapsed,pickElapsedWindow} from "../presentation";
 import type {AppSettings,ProviderUsage} from "../types";
 export function UsageRing({usage,settings,onHover}:{usage:ProviderUsage;settings:AppSettings;onHover:()=>void}){
   const ref=useRef<HTMLButtonElement>(null);
   const valid=["live","stale"].includes(usage.state)&&usage.primary_percent!==null;
   const used=usage.primary_percent??0,pct=valid?Math.min(100,settings.display_mode==="remaining"?Math.max(0,100-used):used):0;
   const color=!valid?"#71717a":usage.state==="stale"?"#a1a1aa":used>=90?"#ef4444":used>=75?"#f97316":used>=50?"#eab308":"#10b981";
-  const target=usage.primary_percent;
-  // Match with a tolerance and fall back to the highest window: the backend keeps the
-  // primary percent equal to a window's value today, but exact float equality is fragile.
-  const primary=target===null?undefined:usage.windows.find(w=>Math.abs(w.used_percent-target)<1e-9)??usage.windows.reduce((m,w)=>m===undefined||w.used_percent>m.used_percent?w:m,undefined as ProviderUsage["windows"][number]|undefined);
-  const clock=settings.show_elapsed&&primary?elapsed(primary):null;
+  // The outer time ring follows the account's own pick (or the soonest reset), independent of the inner quota ring.
+  const timed=valid?pickElapsedWindow(usage.windows,settings.providers[usage.account_id]?.elapsed_window??null):null;
+  const clock=settings.show_elapsed&&timed?elapsed(timed):null;
   const dark = settings.theme === "obsidian";
   return <button ref={ref} onMouseEnter={onHover} onFocus={onHover} title={`${usage.display_name} ${percentText(usage,settings.display_mode)}`} className="shrink-0 flex flex-col items-center p-1 text-xs rounded-lg focus:outline-2 focus:outline-emerald-500 hover:scale-105 transition-transform duration-150">
     <div className="relative w-11 h-11 flex items-center justify-center">
