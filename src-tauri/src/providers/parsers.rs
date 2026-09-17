@@ -12,10 +12,23 @@ pub fn date(v:&Value)->Option<String>{
     let sec=if a>1e17{n/1e9}else if a>1e14{n/1e6}else if a>1e11{n/1e3}else{n};
     DateTime::from_timestamp(sec as i64,0).map(|d|d.to_rfc3339())
 }
+/// The elapsed-time ring needs the period length; some routes name the window but do not
+/// report it (Antigravity buckets, OpenCode monthly). Infer it from the standard names so
+/// every account gets the ring; unnameable windows stay period-less and honest.
+fn infer_window_seconds(name:&str)->Option<i64>{
+    let lower=name.to_lowercase();
+    if name.contains("两周")||name.contains("双周")||lower.contains("fortnight"){Some(1_209_600)}
+    else if name.contains("每周")||name.contains("7天")||lower.contains("weekly"){Some(604_800)}
+    else if name.contains("5小时")||name.contains("五小时")||lower.contains("5 hour"){Some(18_000)}
+    else if name.contains("每日")||name.contains("每天")||lower.contains("daily"){Some(86_400)}
+    else if name.contains("每月")||name.contains("月度")||lower.contains("monthly"){Some(2_592_000)}
+    else{None}
+}
 pub fn window(id:&str,name:&str,pct:f64,reset:&Value,seconds:Option<i64>)->Option<UsageWindow>{
     if !pct.is_finite() || pct<0.0{return None}
+    let seconds=seconds.filter(|s|*s>0).or_else(||infer_window_seconds(name));
     Some(UsageWindow{id:id.into(),name:name.into(),used_fraction:pct/100.0,used_percent:pct,
-        resets_at:date(reset),window_seconds:seconds.filter(|s|*s>0),exhausted:pct>=100.0})
+        resets_at:date(reset),window_seconds:seconds,exhausted:pct>=100.0})
 }
 fn add(w:&mut Vec<UsageWindow>,v:Option<UsageWindow>){if let Some(v)=v{w.push(v)}}
 pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
@@ -252,7 +265,7 @@ fn count_window(id:&str,name:&str,v:&Value,seconds:Option<i64>)->Option<UsageWin
     #[test]fn empty_is_not_zero(){for id in ["claude","codex","kimi","cursor","copilot","deepseek","grok-bot","zai","minimax","volcengine","command-code","devin","ollama"]{let r=parse(id,&json!({}),0);assert_ne!(r.state,"live","{id}");assert_eq!(r.primary_percent,None);}}
     #[test]fn claude_current_and_legacy(){let r=parse("claude",&json!({"limits":[{"kind":"weekly_scoped","percent":23.5,"scope":{"model":{"display_name":"Opus"}},"severity":"warning"}]}),0);assert_eq!(r.primary_percent,Some(23.5));assert!(!r.windows[0].exhausted);assert_eq!(parse("claude",&json!({"five_hour":{"utilization":12.5},"seven_day":{"utilization":75}}),0).primary_percent,Some(75.0));}
     #[test]fn cursor_percent_not_fraction(){let r=parse("cursor",&json!({"individualUsage":{"plan":{"autoPercentUsed":0.0267,"apiPercentUsed":20}}}),0);assert_eq!(r.windows[0].used_percent,0.0267);assert_eq!(r.primary_percent,Some(20.0));}
-    #[test]fn kimi_string_counts_and_unknown_unit(){let r=parse("kimi",&json!({"usage":{"limit":"100","remaining":"30"},"limits":[{"window":{"duration":2,"timeUnit":"UNKNOWN"},"detail":{"limit":"10","used":"5"}}]}),0);assert_eq!(r.windows.len(),1);assert_eq!(r.primary_percent,Some(70.0));assert_eq!(r.windows[0].window_seconds,None);}
+    #[test]fn kimi_string_counts_and_unknown_unit(){let r=parse("kimi",&json!({"usage":{"limit":"100","remaining":"30"},"limits":[{"window":{"duration":2,"timeUnit":"UNKNOWN"},"detail":{"limit":"10","used":"5"}}]}),0);assert_eq!(r.windows.len(),1);assert_eq!(r.primary_percent,Some(70.0));assert_eq!(r.windows[0].window_seconds,Some(604800),"每周 fallback is a weekly window even when the limit list is unusable");}
     #[test]fn kimi_weekly_limit_not_duplicated(){let r=parse("kimi",&json!({"usage":{"limit":"100","remaining":"30"},"limits":[{"window":{"duration":7,"timeUnit":"TIME_UNIT_DAY"},"detail":{"limit":"10","used":"5"}}]}),0);assert_eq!(r.windows.iter().filter(|w|w.id=="weekly"||w.window_seconds==Some(604800)).count(),1);}
     #[test]fn codex_huge_reset_does_not_overflow(){let r=parse("codex",&json!({"rate_limit":{"primary_window":{"used_percent":1.0,"reset_after_seconds":1e300}}}),i64::MAX-5);assert_eq!(r.windows.len(),1);assert_eq!(r.windows[0].resets_at,None);}
     #[test]fn copilot_exclusion_and_overage(){let r=parse("copilot",&json!({"quota_snapshots":{"chat":{"percent_remaining":0,"has_quota":false},"completions":{"percent_remaining":0,"has_quota":true,"overage_permitted":true},"premium_interactions":{"unlimited":true,"percent_remaining":100}}}),0);assert_eq!(r.windows.len(),1);assert!(!r.windows[0].exhausted);}
@@ -280,6 +293,16 @@ fn count_window(id:&str,name:&str,v:&Value,seconds:Option<i64>)->Option<UsageWin
     #[test]fn volcengine_coding_and_afp(){let r=parse("volcengine",&json!({"coding":{"Result":{"QuotaUsage":[{"Level":"5h","Percent":12.5,"ResetTimestamp":1788780000}]}},"afp":{"Result":{"AFPWeekly":{"Quota":1000,"Used":300,"ResetTime":1789085506}}}}),0);assert_eq!(r.windows.len(),2);assert_eq!(r.windows[0].used_percent,12.5);assert_eq!(r.windows[1].used_percent,30.0);assert_eq!(r.primary_percent,Some(30.0));}
     #[test]fn command_code_credits_and_limits(){let r=parse("command-code",&json!({"credits":{"credits":{"monthlyCredits":10,"purchasedCredits":5,"planId":"pro"},"windowLimits":{"fiveHour":{"used":2,"cap":10,"resetAt":1788780000000i64}}}}),0);assert_eq!(r.windows.len(),1);assert_eq!(r.windows[0].used_percent,20.0);assert_eq!(r.balances[0].amount,15.0);assert_eq!(r.plan_name,Some("Pro".into()));}
     #[test]fn devin_pro_and_endpoint(){assert_eq!(parse("devin",&json!({"daily_percentage":5,"weekly_percentage":10}),0).windows.len(),2);assert_eq!(parse("devin",&json!({"dailyRemainingPercent":95,"weeklyRemainingPercent":90,"planName":"Pro"}),0).windows[0].used_percent,5.0);}
+    #[test]fn window_period_is_inferred_from_names(){
+        let w=window("a","Gemini 模型 · 5小时限额",10.0,&serde_json::json!("2030-01-01T00:00:00Z"),None).unwrap();
+        assert_eq!(w.window_seconds,Some(18000));
+        let w=window("a","Gemini 模型 · 每周限额",10.0,&serde_json::json!("2030-01-01T00:00:00Z"),None).unwrap();
+        assert_eq!(w.window_seconds,Some(604800));
+        let w=window("a","每月限额",10.0,&serde_json::json!("2030-01-01T00:00:00Z"),None).unwrap();
+        assert_eq!(w.window_seconds,Some(2592000));
+        let w=window("a","Cursor 专属模型",10.0,&serde_json::json!("2030-01-01T00:00:00Z"),None).unwrap();
+        assert_eq!(w.window_seconds,None,"unnameable windows stay period-less");
+    }
     #[test]fn ollama_session_weekly(){let r=parse("ollama",&json!({"session":{"percent":15,"reset":"2026-09-17T12:00:00Z"},"weekly":{"percent":40}}),0);assert_eq!(r.windows.len(),2);assert_eq!(r.primary_percent,Some(40.0));}
 }
 

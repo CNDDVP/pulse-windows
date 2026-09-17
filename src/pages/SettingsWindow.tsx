@@ -374,9 +374,11 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
                       </select>
                     </Field>
                   )}
-                  {timedWindows.length > 0 && (
-                    <Field label="外圈时间环跟随的周期" hint={settings.show_elapsed ? "外圈细线表示所选周期已流逝的比例。" : "外圈已在通用设置中关闭。"}>
-                      <select className={selectCls} value={c.elapsed_window || ""} onChange={e => patch(id, { elapsed_window: e.target.value || null })}>
+                  {(
+                    <Field label="外圈时间环跟随的周期" hint={timedWindows.length === 0
+                      ? "该账号的额度窗口未报告周期长度，外圈暂不可用。"
+                      : settings.show_elapsed ? "外圈细线表示所选周期已流逝的比例；默认跟随倒计时最短的周期。" : "外圈已在通用设置中关闭。"}>
+                      <select className={selectCls} disabled={timedWindows.length === 0} value={c.elapsed_window || ""} onChange={e => patch(id, { elapsed_window: e.target.value || null })}>
                         <option value="">自动选择倒计时最短的周期（默认）</option>
                         {timedWindows.map(w => <option key={w.id} value={w.id}>{w.name} — {resetText(w.resets_at)}</option>)}
                       </select>
