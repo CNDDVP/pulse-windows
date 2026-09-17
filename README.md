@@ -33,7 +33,7 @@
 ## 快速启动
 
 ### 方式一：双击直接启动
-双击项目根目录下的 **`launch.bat`**，即可直接启动编译好的发布版（仅 13.3 MB 单文件，内存 < 30MB）。
+双击项目根目录下的 **`launch.bat`**，即可直接启动编译好的发布版（约 15 MB 单文件，内存 < 30MB）。
 
 ### 方式二：命令行启动
 ```bash
@@ -43,6 +43,13 @@
 # 或启动热重载开发环境
 npm run tauri:dev
 ```
+
+### 重新构建发布版
+```bash
+npm run tauri:build -- --no-bundle   # 仅生成 exe（最快）
+npm run tauri:build                  # 生成 exe + NSIS 安装包
+```
+> **注意**：不要直接运行 `cargo build --release`。Tauri CLI 会在构建时注入 `custom-protocol` 特性以嵌入前端资源；裸 cargo 构建出的 exe 会去连开发服务器 `localhost:5173`，启动后显示“localhost 拒绝连接”。
 
 ---
 
@@ -58,6 +65,6 @@ npm run tauri:dev
 ## 技术架构
 
 - **后端**：Rust (Tauri 2.0 + Win32 API + Reqwest + Rusqlite)
-- **前端**：React 19 + Tailwind CSS + Framer Motion
+- **前端**：React 19 + Tailwind CSS 4 + Vite
 - **内存开销**：日常驻留仅约 20~30 MB
-- **授权**：MIT License
+- **授权**：Apache-2.0（与上游 Pulse 一致）

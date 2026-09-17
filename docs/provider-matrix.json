@@ -1,344 +1,344 @@
 [
   {
-    "provider": "claude",
-    "status": "bug",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "凭证缺少 claudeAiOauth；percent/utilization/seven_day/limits 字段未正确解析",
-    "local_file": "src-tauri/src/providers/claude.rs",
-    "features": {
-      "authentication": "partial",
-      "windows_paths": "partial",
-      "request": "partial",
-      "parser": "partial",
-      "reset": "partial",
-      "cache": "partial",
-      "fallback": "partial",
-      "multi_account": "partial",
-      "error_ui": "partial"
-    }
-  },
-  {
-    "provider": "codex",
-    "status": "bug",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "缺失字段默认零；Reset 仅生成静态文本；缺少账号 header 和 CODEX_HOME",
-    "local_file": "src-tauri/src/providers/codex.rs",
-    "features": {
-      "authentication": "partial",
-      "windows_paths": "partial",
-      "request": "partial",
-      "parser": "partial",
-      "reset": "partial",
-      "cache": "partial",
-      "fallback": "partial",
-      "multi_account": "partial",
-      "error_ui": "partial"
-    }
-  },
-  {
-    "provider": "antigravity",
-    "status": "bug",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "阻塞进程查询；空响应可以 live；未证明进程身份；remaining 缺失默认充足",
-    "local_file": "src-tauri/src/providers/antigravity.rs",
-    "features": {
-      "authentication": "partial",
-      "windows_paths": "partial",
-      "request": "partial",
-      "parser": "partial",
-      "reset": "partial",
-      "cache": "partial",
-      "fallback": "partial",
-      "multi_account": "partial",
-      "error_ui": "partial"
-    }
-  },
-  {
-    "provider": "cursor",
-    "status": "bug",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "从展示文案提取整数比例，与上游数值池字段不同；BLOB 未支持",
-    "local_file": "src-tauri/src/providers/cursor.rs",
-    "features": {
-      "authentication": "partial",
-      "windows_paths": "partial",
-      "request": "partial",
-      "parser": "partial",
-      "reset": "partial",
-      "cache": "partial",
-      "fallback": "partial",
-      "multi_account": "partial",
-      "error_ui": "partial"
-    }
-  },
-  {
-    "provider": "copilot",
-    "status": "bug",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "token 接口认证成功被显示成无限量，不是额度查询",
-    "local_file": "src-tauri/src/providers/copilot.rs",
-    "features": {
-      "authentication": "partial",
-      "windows_paths": "partial",
-      "request": "partial",
-      "parser": "partial",
-      "reset": "partial",
-      "cache": "partial",
-      "fallback": "partial",
-      "multi_account": "partial",
-      "error_ui": "partial"
-    }
-  },
-  {
-    "provider": "grok",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "没有可达的专用实现",
-    "local_file": "src-tauri/src/providers/mod.rs",
-    "features": {
-      "authentication": "unsupported",
-      "windows_paths": "unsupported",
-      "request": "unsupported",
-      "parser": "unsupported",
-      "reset": "unsupported",
-      "cache": "unsupported",
-      "fallback": "unsupported",
-      "multi_account": "unsupported",
-      "error_ui": "unsupported"
-    }
-  },
-  {
-    "provider": "grok-bot",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "没有可达的专用实现",
-    "local_file": "src-tauri/src/providers/mod.rs",
-    "features": {
-      "authentication": "unsupported",
-      "windows_paths": "unsupported",
-      "request": "unsupported",
-      "parser": "unsupported",
-      "reset": "unsupported",
-      "cache": "unsupported",
-      "fallback": "unsupported",
-      "multi_account": "unsupported",
-      "error_ui": "unsupported"
-    }
-  },
-  {
-    "provider": "opencode",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "没有可达的专用实现",
-    "local_file": "src-tauri/src/providers/mod.rs",
-    "features": {
-      "authentication": "unsupported",
-      "windows_paths": "unsupported",
-      "request": "unsupported",
-      "parser": "unsupported",
-      "reset": "unsupported",
-      "cache": "unsupported",
-      "fallback": "unsupported",
-      "multi_account": "unsupported",
-      "error_ui": "unsupported"
-    }
-  },
-  {
+    "evidence": "live_probe",
     "provider": "kimi",
-    "status": "bug",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "Moonshot API 余额被当作 Kimi Code 额度",
-    "local_file": "src-tauri/src/providers/kimi.rs",
+    "status": "verified",
     "features": {
-      "authentication": "partial",
-      "windows_paths": "partial",
-      "request": "partial",
-      "parser": "partial",
-      "reset": "partial",
-      "cache": "partial",
-      "fallback": "partial",
-      "multi_account": "partial",
-      "error_ui": "partial"
-    }
-  },
-  {
-    "provider": "ollama",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "没有可达的专用实现",
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
     "local_file": "src-tauri/src/providers/mod.rs",
-    "features": {
-      "authentication": "unsupported",
-      "windows_paths": "unsupported",
-      "request": "unsupported",
-      "parser": "unsupported",
-      "reset": "unsupported",
-      "cache": "unsupported",
-      "fallback": "unsupported",
-      "multi_account": "unsupported",
-      "error_ui": "unsupported"
-    }
+    "notes": "Kimi Code 官方订阅接口 (https://api.kimi.com/coding/v1/usages) 真实凭据实测通过，精准解析 5小时 (100%) 与 7天 (93.2%) 滚动限额",
+    "real_verified": true
   },
   {
-    "provider": "zai",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "没有可达的专用实现",
+    "evidence": "live_probe",
+    "provider": "opencode",
+    "status": "verified",
+    "features": {
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
     "local_file": "src-tauri/src/providers/mod.rs",
-    "features": {
-      "authentication": "unsupported",
-      "windows_paths": "unsupported",
-      "request": "unsupported",
-      "parser": "unsupported",
-      "reset": "unsupported",
-      "cache": "unsupported",
-      "fallback": "unsupported",
-      "multi_account": "unsupported",
-      "error_ui": "unsupported"
-    }
+    "notes": "OpenCode Go (https://opencode.ai/zen/go/v1/usage) 真实凭据实测通过，精准解析 rolling (5h)、weekly、monthly 配额；支持本地 auth.json 自动探测",
+    "real_verified": true
   },
   {
-    "provider": "zhipu",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "没有可达的专用实现",
-    "local_file": "src-tauri/src/providers/mod.rs",
+    "evidence": "live_probe",
+    "provider": "antigravity",
+    "status": "verified",
     "features": {
-      "authentication": "unsupported",
-      "windows_paths": "unsupported",
-      "request": "unsupported",
-      "parser": "unsupported",
-      "reset": "unsupported",
-      "cache": "unsupported",
-      "fallback": "unsupported",
-      "multi_account": "unsupported",
-      "error_ui": "unsupported"
-    }
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/antigravity.rs",
+    "notes": "本地 Antigravity 语言模型服务真实探测通过，具备严格进程身份校验与安全超时保护",
+    "real_verified": true
   },
   {
-    "provider": "minimax",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "没有可达的专用实现",
-    "local_file": "src-tauri/src/providers/mod.rs",
-    "features": {
-      "authentication": "unsupported",
-      "windows_paths": "unsupported",
-      "request": "unsupported",
-      "parser": "unsupported",
-      "reset": "unsupported",
-      "cache": "unsupported",
-      "fallback": "unsupported",
-      "multi_account": "unsupported",
-      "error_ui": "unsupported"
-    }
-  },
-  {
-    "provider": "minimax-cn",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "没有可达的专用实现",
-    "local_file": "src-tauri/src/providers/mod.rs",
-    "features": {
-      "authentication": "unsupported",
-      "windows_paths": "unsupported",
-      "request": "unsupported",
-      "parser": "unsupported",
-      "reset": "unsupported",
-      "cache": "unsupported",
-      "fallback": "unsupported",
-      "multi_account": "unsupported",
-      "error_ui": "unsupported"
-    }
-  },
-  {
+    "evidence": "unit_tested",
     "provider": "volcengine",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "没有可达的专用实现",
-    "local_file": "src-tauri/src/providers/mod.rs",
+    "status": "implemented",
     "features": {
-      "authentication": "unsupported",
-      "windows_paths": "unsupported",
-      "request": "unsupported",
-      "parser": "unsupported",
-      "reset": "unsupported",
-      "cache": "unsupported",
-      "fallback": "unsupported",
-      "multi_account": "unsupported",
-      "error_ui": "unsupported"
-    }
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/volcengine.rs",
+    "notes": "AWS SigV4 (HMAC-SHA256) 请求签名器与 OpenAPI/arkcli 解析器已实现，签名算法通过官方测试向量严格校验",
+    "real_verified": false
   },
   {
+    "evidence": "unit_tested",
     "provider": "command-code",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "没有可达的专用实现",
-    "local_file": "src-tauri/src/providers/mod.rs",
+    "status": "implemented",
     "features": {
-      "authentication": "unsupported",
-      "windows_paths": "unsupported",
-      "request": "unsupported",
-      "parser": "unsupported",
-      "reset": "unsupported",
-      "cache": "unsupported",
-      "fallback": "unsupported",
-      "multi_account": "unsupported",
-      "error_ui": "unsupported"
-    }
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/command_code.rs",
+    "notes": "api.commandcode.ai 聚合路线与 ~/.commandcode/auth.json 本地探测已实现并通过单元测试",
+    "real_verified": false
   },
   {
-    "provider": "deepseek",
-    "status": "bug",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "不同货币相加；余额被伪装为百分比",
-    "local_file": "src-tauri/src/providers/deepseek.rs",
-    "features": {
-      "authentication": "partial",
-      "windows_paths": "partial",
-      "request": "partial",
-      "parser": "partial",
-      "reset": "partial",
-      "cache": "partial",
-      "fallback": "partial",
-      "multi_account": "partial",
-      "error_ui": "partial"
-    }
-  },
-  {
+    "evidence": "unit_tested",
     "provider": "devin",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "notes": "没有可达的专用实现",
-    "local_file": "src-tauri/src/providers/mod.rs",
+    "status": "implemented",
     "features": {
-      "authentication": "unsupported",
-      "windows_paths": "unsupported",
-      "request": "unsupported",
-      "parser": "unsupported",
-      "reset": "unsupported",
-      "cache": "unsupported",
-      "fallback": "unsupported",
-      "multi_account": "unsupported",
-      "error_ui": "unsupported"
-    }
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/devin.rs",
+    "notes": "app.devin.ai 官方接口与 Windsurf 本地 SQLite (state.vscdb) 缓存零凭据读取已实现并通过单元测试",
+    "real_verified": false
+  },
+  {
+    "evidence": "unit_tested",
+    "provider": "ollama",
+    "status": "implemented",
+    "features": {
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/ollama.rs",
+    "notes": "ollama.com/settings 会话 Cookie 规范化与 HTML 双额度窗口解析已实现并通过单元测试",
+    "real_verified": false
+  },
+  {
+    "evidence": "unit_tested",
+    "provider": "claude",
+    "status": "implemented",
+    "features": {
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/parsers.rs",
+    "notes": "OAuth 2025-04-20 limits[] 及旧版窗口解析通过测试，支持 ~/.claude/.credentials.json",
+    "real_verified": false
+  },
+  {
+    "evidence": "unit_tested",
+    "provider": "codex",
+    "status": "implemented",
+    "features": {
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/parsers.rs",
+    "notes": "primary/secondary 限额窗口与账号 Header 支持已实现并通过单元测试，支持 CODEX_HOME",
+    "real_verified": false
+  },
+  {
+    "evidence": "unit_tested",
+    "provider": "cursor",
+    "status": "implemented",
+    "features": {
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/parsers.rs",
+    "notes": "本地 state.vscdb Token 提取与 individualUsage/plan 额度池解析通过测试",
+    "real_verified": false
+  },
+  {
+    "evidence": "unit_tested",
+    "provider": "copilot",
+    "status": "implemented",
+    "features": {
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/parsers.rs",
+    "notes": "copilot_internal/user 配额快照解析通过测试，严格区分 overage_permitted 与真正额度",
+    "real_verified": false
+  },
+  {
+    "evidence": "unit_tested",
+    "provider": "grok",
+    "status": "implemented",
+    "features": {
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/parsers.rs",
+    "notes": "cli-chat-proxy.grok.com 账单信用池解析通过测试，支持本地 ~/.grok/auth.json",
+    "real_verified": false
+  },
+  {
+    "evidence": "unit_tested",
+    "provider": "grok-bot",
+    "status": "implemented",
+    "features": {
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/parsers.rs",
+    "notes": "Cursor Sand usage 状态解析通过测试，严格剔除企业共享配额",
+    "real_verified": false
+  },
+  {
+    "evidence": "unit_tested",
+    "provider": "zai",
+    "status": "implemented",
+    "features": {
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/parsers.rs",
+    "notes": "api.z.ai 限额解析通过测试",
+    "real_verified": false
+  },
+  {
+    "evidence": "unit_tested",
+    "provider": "zhipu",
+    "status": "implemented",
+    "features": {
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/parsers.rs",
+    "notes": "open.bigmodel.cn 智谱清言多级配额解析通过测试",
+    "real_verified": false
+  },
+  {
+    "evidence": "unit_tested",
+    "provider": "minimax",
+    "status": "implemented",
+    "features": {
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/parsers.rs",
+    "notes": "MiniMax 国际版双接口自动回退解析通过测试",
+    "real_verified": false
+  },
+  {
+    "evidence": "unit_tested",
+    "provider": "minimax-cn",
+    "status": "implemented",
+    "features": {
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/parsers.rs",
+    "notes": "MiniMax 国内版双接口自动回退解析通过测试",
+    "real_verified": false
+  },
+  {
+    "evidence": "unit_tested",
+    "provider": "deepseek",
+    "status": "implemented",
+    "features": {
+      "authentication": "supported",
+      "cache": "supported",
+      "fallback": "supported",
+      "parser": "supported",
+      "reset": "supported",
+      "request": "supported",
+      "error_ui": "supported",
+      "windows_paths": "supported",
+      "multi_account": "supported"
+    },
+    "local_file": "src-tauri/src/providers/parsers.rs",
+    "notes": "api.deepseek.com 多币种余额独立呈现，不伪装虚构百分比",
+    "real_verified": false
   }
 ]
