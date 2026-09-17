@@ -1,0 +1,344 @@
+[
+  {
+    "provider": "claude",
+    "status": "bug",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "凭证缺少 claudeAiOauth；percent/utilization/seven_day/limits 字段未正确解析",
+    "local_file": "src-tauri/src/providers/claude.rs",
+    "features": {
+      "authentication": "partial",
+      "windows_paths": "partial",
+      "request": "partial",
+      "parser": "partial",
+      "reset": "partial",
+      "cache": "partial",
+      "fallback": "partial",
+      "multi_account": "partial",
+      "error_ui": "partial"
+    }
+  },
+  {
+    "provider": "codex",
+    "status": "bug",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "缺失字段默认零；Reset 仅生成静态文本；缺少账号 header 和 CODEX_HOME",
+    "local_file": "src-tauri/src/providers/codex.rs",
+    "features": {
+      "authentication": "partial",
+      "windows_paths": "partial",
+      "request": "partial",
+      "parser": "partial",
+      "reset": "partial",
+      "cache": "partial",
+      "fallback": "partial",
+      "multi_account": "partial",
+      "error_ui": "partial"
+    }
+  },
+  {
+    "provider": "antigravity",
+    "status": "bug",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "阻塞进程查询；空响应可以 live；未证明进程身份；remaining 缺失默认充足",
+    "local_file": "src-tauri/src/providers/antigravity.rs",
+    "features": {
+      "authentication": "partial",
+      "windows_paths": "partial",
+      "request": "partial",
+      "parser": "partial",
+      "reset": "partial",
+      "cache": "partial",
+      "fallback": "partial",
+      "multi_account": "partial",
+      "error_ui": "partial"
+    }
+  },
+  {
+    "provider": "cursor",
+    "status": "bug",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "从展示文案提取整数比例，与上游数值池字段不同；BLOB 未支持",
+    "local_file": "src-tauri/src/providers/cursor.rs",
+    "features": {
+      "authentication": "partial",
+      "windows_paths": "partial",
+      "request": "partial",
+      "parser": "partial",
+      "reset": "partial",
+      "cache": "partial",
+      "fallback": "partial",
+      "multi_account": "partial",
+      "error_ui": "partial"
+    }
+  },
+  {
+    "provider": "copilot",
+    "status": "bug",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "token 接口认证成功被显示成无限量，不是额度查询",
+    "local_file": "src-tauri/src/providers/copilot.rs",
+    "features": {
+      "authentication": "partial",
+      "windows_paths": "partial",
+      "request": "partial",
+      "parser": "partial",
+      "reset": "partial",
+      "cache": "partial",
+      "fallback": "partial",
+      "multi_account": "partial",
+      "error_ui": "partial"
+    }
+  },
+  {
+    "provider": "grok",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "没有可达的专用实现",
+    "local_file": "src-tauri/src/providers/mod.rs",
+    "features": {
+      "authentication": "unsupported",
+      "windows_paths": "unsupported",
+      "request": "unsupported",
+      "parser": "unsupported",
+      "reset": "unsupported",
+      "cache": "unsupported",
+      "fallback": "unsupported",
+      "multi_account": "unsupported",
+      "error_ui": "unsupported"
+    }
+  },
+  {
+    "provider": "grok-bot",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "没有可达的专用实现",
+    "local_file": "src-tauri/src/providers/mod.rs",
+    "features": {
+      "authentication": "unsupported",
+      "windows_paths": "unsupported",
+      "request": "unsupported",
+      "parser": "unsupported",
+      "reset": "unsupported",
+      "cache": "unsupported",
+      "fallback": "unsupported",
+      "multi_account": "unsupported",
+      "error_ui": "unsupported"
+    }
+  },
+  {
+    "provider": "opencode",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "没有可达的专用实现",
+    "local_file": "src-tauri/src/providers/mod.rs",
+    "features": {
+      "authentication": "unsupported",
+      "windows_paths": "unsupported",
+      "request": "unsupported",
+      "parser": "unsupported",
+      "reset": "unsupported",
+      "cache": "unsupported",
+      "fallback": "unsupported",
+      "multi_account": "unsupported",
+      "error_ui": "unsupported"
+    }
+  },
+  {
+    "provider": "kimi",
+    "status": "bug",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "Moonshot API 余额被当作 Kimi Code 额度",
+    "local_file": "src-tauri/src/providers/kimi.rs",
+    "features": {
+      "authentication": "partial",
+      "windows_paths": "partial",
+      "request": "partial",
+      "parser": "partial",
+      "reset": "partial",
+      "cache": "partial",
+      "fallback": "partial",
+      "multi_account": "partial",
+      "error_ui": "partial"
+    }
+  },
+  {
+    "provider": "ollama",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "没有可达的专用实现",
+    "local_file": "src-tauri/src/providers/mod.rs",
+    "features": {
+      "authentication": "unsupported",
+      "windows_paths": "unsupported",
+      "request": "unsupported",
+      "parser": "unsupported",
+      "reset": "unsupported",
+      "cache": "unsupported",
+      "fallback": "unsupported",
+      "multi_account": "unsupported",
+      "error_ui": "unsupported"
+    }
+  },
+  {
+    "provider": "zai",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "没有可达的专用实现",
+    "local_file": "src-tauri/src/providers/mod.rs",
+    "features": {
+      "authentication": "unsupported",
+      "windows_paths": "unsupported",
+      "request": "unsupported",
+      "parser": "unsupported",
+      "reset": "unsupported",
+      "cache": "unsupported",
+      "fallback": "unsupported",
+      "multi_account": "unsupported",
+      "error_ui": "unsupported"
+    }
+  },
+  {
+    "provider": "zhipu",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "没有可达的专用实现",
+    "local_file": "src-tauri/src/providers/mod.rs",
+    "features": {
+      "authentication": "unsupported",
+      "windows_paths": "unsupported",
+      "request": "unsupported",
+      "parser": "unsupported",
+      "reset": "unsupported",
+      "cache": "unsupported",
+      "fallback": "unsupported",
+      "multi_account": "unsupported",
+      "error_ui": "unsupported"
+    }
+  },
+  {
+    "provider": "minimax",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "没有可达的专用实现",
+    "local_file": "src-tauri/src/providers/mod.rs",
+    "features": {
+      "authentication": "unsupported",
+      "windows_paths": "unsupported",
+      "request": "unsupported",
+      "parser": "unsupported",
+      "reset": "unsupported",
+      "cache": "unsupported",
+      "fallback": "unsupported",
+      "multi_account": "unsupported",
+      "error_ui": "unsupported"
+    }
+  },
+  {
+    "provider": "minimax-cn",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "没有可达的专用实现",
+    "local_file": "src-tauri/src/providers/mod.rs",
+    "features": {
+      "authentication": "unsupported",
+      "windows_paths": "unsupported",
+      "request": "unsupported",
+      "parser": "unsupported",
+      "reset": "unsupported",
+      "cache": "unsupported",
+      "fallback": "unsupported",
+      "multi_account": "unsupported",
+      "error_ui": "unsupported"
+    }
+  },
+  {
+    "provider": "volcengine",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "没有可达的专用实现",
+    "local_file": "src-tauri/src/providers/mod.rs",
+    "features": {
+      "authentication": "unsupported",
+      "windows_paths": "unsupported",
+      "request": "unsupported",
+      "parser": "unsupported",
+      "reset": "unsupported",
+      "cache": "unsupported",
+      "fallback": "unsupported",
+      "multi_account": "unsupported",
+      "error_ui": "unsupported"
+    }
+  },
+  {
+    "provider": "command-code",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "没有可达的专用实现",
+    "local_file": "src-tauri/src/providers/mod.rs",
+    "features": {
+      "authentication": "unsupported",
+      "windows_paths": "unsupported",
+      "request": "unsupported",
+      "parser": "unsupported",
+      "reset": "unsupported",
+      "cache": "unsupported",
+      "fallback": "unsupported",
+      "multi_account": "unsupported",
+      "error_ui": "unsupported"
+    }
+  },
+  {
+    "provider": "deepseek",
+    "status": "bug",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "不同货币相加；余额被伪装为百分比",
+    "local_file": "src-tauri/src/providers/deepseek.rs",
+    "features": {
+      "authentication": "partial",
+      "windows_paths": "partial",
+      "request": "partial",
+      "parser": "partial",
+      "reset": "partial",
+      "cache": "partial",
+      "fallback": "partial",
+      "multi_account": "partial",
+      "error_ui": "partial"
+    }
+  },
+  {
+    "provider": "devin",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "notes": "没有可达的专用实现",
+    "local_file": "src-tauri/src/providers/mod.rs",
+    "features": {
+      "authentication": "unsupported",
+      "windows_paths": "unsupported",
+      "request": "unsupported",
+      "parser": "unsupported",
+      "reset": "unsupported",
+      "cache": "unsupported",
+      "fallback": "unsupported",
+      "multi_account": "unsupported",
+      "error_ui": "unsupported"
+    }
+  }
+]

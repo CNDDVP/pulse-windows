@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/qunqin24/Pulse",
+  "sha": "442a9c5068f76cf67ee6a982ea6e288570250755",
+  "version": "1.2.0",
+  "local_origin": "unknown",
+  "local_git_history": false,
+  "comparison": "semantic; not a proven commit ancestry",
+  "toolchain": {
+    "node": "24.18.0",
+    "npm": "11.12.1",
+    "rustc": "1.98.0",
+    "cargo": "1.98.0"
+  }
+}

@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+@layer base {
+  * {
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+  
+  body, html, #root {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden !important;
+    background: transparent !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  ::-webkit-scrollbar {
+    display: none !important;
+  }
+}
+
+/* High-contrast solid glass styling for transparent windows (avoids WebView2 compositing box bug) */
+.glass-obsidian {
+  background: rgba(18, 18, 22, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: -2px 0 10px rgba(0, 0, 0, 0.35);
+}
+
+.glass-translucent {
+  background: rgba(248, 249, 251, 0.96);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: -2px 0 10px rgba(0, 0, 0, 0.08);
+}
+
+.card-obsidian {
+  background: #131317;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.card-translucent {
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.09);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 0 1px rgba(0, 0, 0, 0.06);
+}
+
+/* Custom glowing edge sliver */
+.sliver-glow {
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.6);
+}
+
+.sliver-glow-warn {
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.7);
+}
+
+.sliver-glow-danger {
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.85);
+}

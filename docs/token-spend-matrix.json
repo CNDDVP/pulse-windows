@@ -1,0 +1,488 @@
+[
+  {
+    "source_id": "claude",
+    "upstream_case": "claudeCode",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "codex",
+    "upstream_case": "codex",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "opencode",
+    "upstream_case": "openCode",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "kilo",
+    "upstream_case": "kiloCLI",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "grok",
+    "upstream_case": "grok",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "kimi",
+    "upstream_case": "kimiCLI",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "devin-cli",
+    "upstream_case": "devinCLI",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "pi",
+    "upstream_case": "pi",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "omp",
+    "upstream_case": "omp",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "senpi",
+    "upstream_case": "senpi",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "kimchi",
+    "upstream_case": "kimchi",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "prime-agent",
+    "upstream_case": "primeAgent",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "gemini",
+    "upstream_case": "gemini",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "qwen",
+    "upstream_case": "qwen",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "amp",
+    "upstream_case": "amp",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "droid",
+    "upstream_case": "droid",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "openclaw",
+    "upstream_case": "openClaw",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "roocode",
+    "upstream_case": "rooCode",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "kilocode",
+    "upstream_case": "kiloCode",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "cline",
+    "upstream_case": "cline",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "codebuddy",
+    "upstream_case": "codeBuddy",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "workbuddy",
+    "upstream_case": "workBuddy",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "cherrystudio",
+    "upstream_case": "cherryStudio",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "commandcode",
+    "upstream_case": "commandCode",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "opencodereview",
+    "upstream_case": "openCodeReview",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "zcode",
+    "upstream_case": "zcode",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "hermes",
+    "upstream_case": "hermes",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "goose",
+    "upstream_case": "goose",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "zed",
+    "upstream_case": "zed",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "kiro",
+    "upstream_case": "kiro",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "crush",
+    "upstream_case": "crush",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "unsloth",
+    "upstream_case": "unsloth",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "antigravity-cli",
+    "upstream_case": "antigravityCLI",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "antigravity-ide",
+    "upstream_case": "antigravityIDE",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "micode",
+    "upstream_case": "micode",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "devin-desktop",
+    "upstream_case": "devinDesktop",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "mux",
+    "upstream_case": "mux",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "codebuff",
+    "upstream_case": "codebuff",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "freebuff",
+    "upstream_case": "freebuff",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "jcode",
+    "upstream_case": "jcode",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "augment",
+    "upstream_case": "augment",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "gjc",
+    "upstream_case": "gjc",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "junie",
+    "upstream_case": "junie",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "dsh",
+    "upstream_case": "dsh",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "fx",
+    "upstream_case": "fx",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "lmstudio",
+    "upstream_case": "lmStudio",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "reasonix",
+    "upstream_case": "reasonix",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "cursor",
+    "upstream_case": "cursor",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "antigravity",
+    "upstream_case": "antigravity",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "trae",
+    "upstream_case": "trae",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "warp",
+    "upstream_case": "warp",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "hindsight",
+    "upstream_case": "hindsight",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "mcode",
+    "upstream_case": "mcode",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  },
+  {
+    "source_id": "copilot",
+    "upstream_case": "copilot",
+    "status": "unsupported",
+    "evidence": "static",
+    "real_verified": false,
+    "reason": "本地无 Token Spend 后端/前端调用链",
+    "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
+  }
+]
