@@ -1,7 +1,7 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager,
 };
 
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -25,14 +25,22 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .on_menu_event(|app, event| {
             match event.id.as_ref() {
                 "toggle" => {
+                    let state = app.state::<crate::AppState>();
+                    let hidden = state.user_hidden.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
                     if let Some(w) = app.get_webview_window("main") {
-                        if let Ok(vis) = w.is_visible() {
-                            if vis {
-                                let _ = w.hide();
-                            } else {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
+                        if !hidden {
+                            let _ = w.hide();
+                        } else {
+                            let _ = w.show();
+                            let _ = w.unminimize();
+                            let _ = w.set_focus();
+                            let _ = app.emit("reveal-rail", ());
+                            let app_c = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let s = app_c.state::<crate::AppState>().settings.lock().await.clone();
+                                *app_c.state::<crate::AppState>().window_mode.lock().await = "rail".into();
+                                crate::window::position(&app_c, &s, "rail");
+                            });
                         }
                     }
                 }
@@ -52,17 +60,34 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                let app = tray.app_handle();
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
+            match event {
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } => {
+                    let app = tray.app_handle();
+                    app.state::<crate::AppState>().user_hidden.store(false, std::sync::atomic::Ordering::Relaxed);
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.unminimize();
+                        let _ = w.set_focus();
+                    }
+                    let _ = app.emit("reveal-rail", ());
+                    let app_c = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let s = app_c.state::<crate::AppState>().settings.lock().await.clone();
+                        *app_c.state::<crate::AppState>().window_mode.lock().await = "rail".into();
+                        crate::window::position(&app_c, &s, "rail");
+                    });
                 }
+                TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    crate::open_settings_window(tray.app_handle());
+                }
+                _ => {}
             }
         })
         .build(app)?;

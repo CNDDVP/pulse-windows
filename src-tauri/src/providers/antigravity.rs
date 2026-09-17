@@ -1,288 +1,52 @@
-use crate::types::{ProviderUsage, UsageWindow};
+use crate::types::ProviderUsage;
 use serde_json::Value;
-use std::os::windows::process::CommandExt;
-use std::process::Command;
-
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-pub async fn fetch_antigravity_usage() -> ProviderUsage {
-    // 1. Locate language_server.exe process
-    let ps_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'language_server.exe'\" | Select-Object ProcessId, CommandLine | ConvertTo-Json";
-    let output = match Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", ps_cmd])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-    {
-        Ok(out) => String::from_utf8_lossy(&out.stdout).to_string(),
-        Err(e) => {
-            return ProviderUsage {
-                provider_id: "antigravity".to_string(),
-                display_name: "Antigravity".to_string(),
-                icon: "antigravity".to_string(),
-                state: "unavailable".to_string(),
-                primary_percent: 0,
-                plan_name: None,
-                is_active: false,
-                windows: vec![],
-                error_message: Some(format!("未运行: {}", e)),
-            };
-        }
-    };
-
-    if output.trim().is_empty() {
-        return ProviderUsage {
-            provider_id: "antigravity".to_string(),
-            display_name: "Antigravity".to_string(),
-            icon: "antigravity".to_string(),
-            state: "unavailable".to_string(),
-            primary_percent: 0,
-            plan_name: None,
-            is_active: false,
-            windows: vec![],
-            error_message: Some("Antigravity 未在运行".to_string()),
-        };
-    }
-
-    let parsed_json: Value = match serde_json::from_str(&output) {
-        Ok(v) => v,
-        Err(_) => {
-            return ProviderUsage {
-                provider_id: "antigravity".to_string(),
-                display_name: "Antigravity".to_string(),
-                icon: "antigravity".to_string(),
-                state: "unavailable".to_string(),
-                primary_percent: 0,
-                plan_name: None,
-                is_active: false,
-                windows: vec![],
-                error_message: Some("无法解析进程信息".to_string()),
-            };
-        }
-    };
-
-    let items = if let Some(arr) = parsed_json.as_array() {
-        arr.clone()
-    } else {
-        vec![parsed_json]
-    };
-
-    let mut found_token = None;
-    let mut found_pid = None;
-
-    for item in items {
-        let cmdline = item.get("CommandLine").and_then(|c| c.as_str()).unwrap_or("");
-        let pid = item.get("ProcessId").and_then(|p| p.as_i64());
-        if cmdline.contains("--csrf_token") {
-            if let Some(token_part) = cmdline.split("--csrf_token").nth(1) {
-                let token = token_part.trim().split_whitespace().next().unwrap_or("");
-                if !token.is_empty() {
-                    found_token = Some(token.to_string());
-                    found_pid = pid;
-                    break;
+use super::parsers::{number,window};
+pub async fn fetch()->ProviderUsage{
+    #[cfg(not(windows))] {return ProviderUsage::problem("antigravity","unsupported","此路线需要 Windows");}
+    #[cfg(windows)] {
+        // A fixed command, no input from the renderer. stdout never leaves this module.
+        let script=r#"Get-CimInstance Win32_Process -Filter "Name LIKE 'language_server%'" | Where-Object { $_.ExecutablePath -match 'Antigravity' } | ForEach-Object { [pscustomobject]@{ command=$_.CommandLine; ports=@(Get-NetTCPConnection -OwningProcess $_.ProcessId -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort) } } | ConvertTo-Json -Depth 4 -Compress"#;
+        let mut cmd=tokio::process::Command::new("powershell.exe");
+        cmd.args(["-NoProfile","-NonInteractive","-Command",script]).creation_flags(0x08000000).kill_on_drop(true);
+        let output=match tokio::time::timeout(std::time::Duration::from_secs(8),cmd.output()).await{
+            Ok(Ok(o)) if o.status.success() && o.stdout.len()<1024*1024=>o.stdout,
+            _=>return ProviderUsage::problem("antigravity","local_service","无法在时限内识别 Antigravity 服务")};
+        let value:Value=serde_json::from_slice(&output).unwrap_or(Value::Null);
+        let items=value.as_array().cloned().unwrap_or_else(||vec![value]);
+        let http=match reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).danger_accept_invalid_certs(true).timeout(std::time::Duration::from_secs(3)).build(){Ok(c)=>c,Err(_)=>return ProviderUsage::problem("antigravity","internal","本地客户端初始化失败")};
+        for item in items {
+            let cmd=item["command"].as_str().unwrap_or("");
+            let Some(tail)=cmd.split("--csrf_token").nth(1)else{continue};
+            let token=tail.trim_start_matches([' ','=','"']).split_whitespace().next().unwrap_or("").trim_matches('"');
+            if token.is_empty(){continue}
+            for port in item["ports"].as_array().into_iter().flatten().take(8){let Some(port)=port.as_u64().filter(|p|*p>0 && *p<=65535)else{continue};
+                let url=format!("https://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary");
+                if let Ok(v)=super::response("antigravity",http.post(url).header("x-codeium-csrf-token",token).json(&serde_json::json!({}))).await{
+                    let mut windows=vec![];
+                    for (gi,g) in v.pointer("/response/groups").and_then(Value::as_array).into_iter().flatten().enumerate(){for (bi,b) in g["buckets"].as_array().into_iter().flatten().enumerate(){
+                        let Some(left)=number(&b["remainingFraction"]).filter(|n|(0.0..=1.0).contains(n))else{continue};
+                        let raw_g=g["displayName"].as_str().unwrap_or("模型");
+                        let g_name=match raw_g {
+                            "Gemini Models" => "Gemini 模型".to_string(),
+                            "Claude and GPT models" => "Claude 与 GPT 模型".to_string(),
+                            s if s.ends_with(" Models") => format!("{} 模型",&s[..s.len()-7]),
+                            s if s.ends_with(" models") => format!("{} 模型",&s[..s.len()-7]),
+                            s => s.to_string(),
+                        };
+                        let raw_b=b["displayName"].as_str().unwrap_or("额度");
+                        let b_name=match raw_b {
+                            "Weekly Limit Remaining" => "每周限额",
+                            "Five Hour Limit Remaining" => "5小时限额",
+                            s if s.contains("Weekly") => "每周限额",
+                            s if s.contains("Five Hour") || s.contains("5 Hour") => "5小时限额",
+                            s => s,
+                        };
+                        if let Some(w)=window(&format!("{gi}-{bi}"),&format!("{g_name} · {b_name}"),(1.0-left)*100.0,&b["resetTime"],None){windows.push(w)}
+                    }}
+                    let mut r=ProviderUsage::reading("antigravity",windows);r.source="Antigravity 本地服务".into();return r;
                 }
             }
         }
-    }
-
-    let (token, pid) = match (found_token, found_pid) {
-        (Some(t), Some(p)) => (t, p),
-        _ => {
-            return ProviderUsage {
-                provider_id: "antigravity".to_string(),
-                display_name: "Antigravity".to_string(),
-                icon: "antigravity".to_string(),
-                state: "unavailable".to_string(),
-                primary_percent: 0,
-                plan_name: None,
-                is_active: false,
-                windows: vec![],
-                error_message: Some("未找到 CSRF Token".to_string()),
-            };
-        }
-    };
-
-    // 2. Find listening ports
-    let net_cmd = format!(
-        "Get-NetTCPConnection -OwningProcess {} -State Listen | Select-Object -ExpandProperty LocalPort",
-        pid
-    );
-    let port_output = match Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &net_cmd])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-    {
-        Ok(out) => String::from_utf8_lossy(&out.stdout).to_string(),
-        Err(_) => String::new(),
-    };
-
-    let ports: Vec<u16> = port_output
-        .lines()
-        .filter_map(|l| l.trim().parse::<u16>().ok())
-        .collect();
-
-    let client = match reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return ProviderUsage {
-                provider_id: "antigravity".to_string(),
-                display_name: "Antigravity".to_string(),
-                icon: "antigravity".to_string(),
-                state: "error".to_string(),
-                primary_percent: 0,
-                plan_name: None,
-                is_active: false,
-                windows: vec![],
-                error_message: Some(e.to_string()),
-            };
-        }
-    };
-
-    // 3. Query ports
-    for port in ports {
-        let url = format!(
-            "https://127.0.0.1:{}/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary",
-            port
-        );
-        let resp = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("x-codeium-csrf-token", &token)
-            .body("{}")
-            .send()
-            .await;
-
-        if let Ok(res) = resp {
-            if res.status().is_success() {
-                if let Ok(data) = res.json::<Value>().await {
-                    let mut windows = vec![];
-                    let mut max_used_percent: u32 = 0;
-
-                    if let Some(groups) = data
-                        .get("response")
-                        .and_then(|r| r.get("groups"))
-                        .and_then(|g| g.as_array())
-                    {
-                        for group in groups {
-                            let g_name = group
-                                .get("displayName")
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("Model");
-                            if let Some(buckets) =
-                                group.get("buckets").and_then(|b| b.as_array())
-                            {
-                                for bucket in buckets {
-                                    let b_id = bucket
-                                        .get("bucketId")
-                                        .and_then(|i| i.as_str())
-                                        .unwrap_or("bucket");
-                                    let b_name = bucket
-                                        .get("displayName")
-                                        .and_then(|n| n.as_str())
-                                        .unwrap_or("Quota");
-                                    let rem_frac = bucket
-                                        .get("remainingFraction")
-                                        .and_then(|f| f.as_f64())
-                                        .unwrap_or(1.0);
-                                    let reset_time = bucket
-                                        .get("resetTime")
-                                        .and_then(|t| t.as_str())
-                                        .map(|s| s.to_string());
-
-                                    let used_frac = (1.0 - rem_frac).clamp(0.0, 1.0);
-                                    let used_pct = (used_frac * 100.0).round() as u32;
-
-                                    if used_pct > max_used_percent {
-                                        max_used_percent = used_pct;
-                                    }
-
-                                    windows.push(UsageWindow {
-                                        id: b_id.to_string(),
-                                        name: format!("{} · {}", g_name, b_name),
-                                        used_fraction: used_frac,
-                                        used_percent: used_pct,
-                                        resets_at: reset_time.clone(),
-                                        resets_in: reset_time.map(|t| format_reset_time(&t)),
-                                    });
-                                }
-                            }
-                        }
-                    }
-
-                    // Query plan
-                    let status_url = format!(
-                        "https://127.0.0.1:{}/exa.language_server_pb.LanguageServerService/GetUserStatus",
-                        port
-                    );
-                    let plan_name = if let Ok(s_res) = client
-                        .post(&status_url)
-                        .header("Content-Type", "application/json")
-                        .header("x-codeium-csrf-token", &token)
-                        .body("{}")
-                        .send()
-                        .await
-                    {
-                        if let Ok(s_data) = s_res.json::<Value>().await {
-                            s_data
-                                .get("userStatus")
-                                .and_then(|us| us.get("planStatus"))
-                                .and_then(|ps| ps.get("planInfo"))
-                                .and_then(|pi| pi.get("planName"))
-                                .and_then(|pn| pn.as_str())
-                                .map(|s| s.to_string())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
-                    return ProviderUsage {
-                        provider_id: "antigravity".to_string(),
-                        display_name: "Antigravity".to_string(),
-                        icon: "antigravity".to_string(),
-                        state: "live".to_string(),
-                        primary_percent: max_used_percent,
-                        plan_name,
-                        is_active: false,
-                        windows,
-                        error_message: None,
-                    };
-                }
-            }
-        }
-    }
-
-    ProviderUsage {
-        provider_id: "antigravity".to_string(),
-        display_name: "Antigravity".to_string(),
-        icon: "antigravity".to_string(),
-        state: "unavailable".to_string(),
-        primary_percent: 0,
-        plan_name: None,
-        is_active: false,
-        windows: vec![],
-        error_message: Some("端口连接失败".to_string()),
-    }
-}
-
-fn format_reset_time(iso_str: &str) -> String {
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(iso_str) {
-        let now = chrono::Utc::now();
-        let diff = dt.signed_duration_since(now);
-        if diff.num_hours() > 24 {
-            format!("{}天后", diff.num_days())
-        } else if diff.num_hours() > 0 {
-            format!("{}小时后", diff.num_hours())
-        } else if diff.num_minutes() > 0 {
-            format!("{}分钟后", diff.num_minutes())
-        } else {
-            "即将刷新".to_string()
-        }
-    } else {
-        iso_str.to_string()
+        ProviderUsage::problem("antigravity","local_service","未发现可读取额度的 Antigravity 本地服务")
     }
 }
