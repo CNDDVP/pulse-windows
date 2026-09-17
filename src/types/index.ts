@@ -9,13 +9,20 @@ export interface ProviderUsage {
   windows: UsageWindow[]; balances: {currency: string; amount: number}[];
   error_code: string | null; error_message: string | null; source: string;
   checked_at: string | null; last_success_at: string | null; retry_after_seconds: number | null;
+  duration_ms: number | null;
 }
 export interface ProviderConfig {
   provider_id: string; label: string; enabled: boolean; order: number; use_local: boolean;
   credential_configured: boolean; primary_window: string | null;
   /** Window the outer elapsed-time ring tracks; null = soonest reset. */
   elapsed_window: string | null;
+  /** #rrggbb override for the ring colour; null = pressure colour. */
+  ring_color: string | null;
+  /** Low-balance notice line, compared only against `low_balance_currency`. */
+  low_balance: number | null; low_balance_currency: string | null;
 }
+export interface NotificationSettings { threshold: number | null; on_spent: boolean; on_reset: boolean; on_failure: boolean }
+export interface HotkeySettings { open_settings: string | null; toggle_rail: string | null }
 export interface MonitorOption { name: string; label: string }
 export interface AppSettings {
   schema_version: number; dock_side: "right" | "left" | "top" | "free";
@@ -23,5 +30,7 @@ export interface AppSettings {
   refresh_interval_seconds: number; display_mode: "used" | "remaining";
   forecast: boolean; show_elapsed: boolean; follow_active_display: boolean; hide_fullscreen: boolean;
   monitor_name: string | null; free_x: number; free_y: number;
+  warning_threshold: number; show_rail: boolean; start_behavior: string;
+  notifications: NotificationSettings; hotkeys: HotkeySettings;
   providers: Record<string, ProviderConfig>;
 }

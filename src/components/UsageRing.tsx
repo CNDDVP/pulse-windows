@@ -6,7 +6,11 @@ export function UsageRing({usage,settings,onHover}:{usage:ProviderUsage;settings
   const ref=useRef<HTMLButtonElement>(null);
   const valid=["live","stale"].includes(usage.state)&&usage.primary_percent!==null;
   const used=usage.primary_percent??0,pct=valid?Math.min(100,settings.display_mode==="remaining"?Math.max(0,100-used):used):0;
-  const color=!valid?"#71717a":usage.state==="stale"?"#a1a1aa":used>=90?"#ef4444":used>=75?"#f97316":used>=50?"#eab308":"#10b981";
+  // The warning threshold only moves the amber→red step; a provider-reported exhaustion is always red,
+  // and a per-account custom colour applies to the calm range only.
+  const red=settings.warning_threshold,amber=red-15,custom=settings.providers[usage.account_id]?.ring_color??null;
+  const exhausted=usage.windows.some(w=>w.exhausted);
+  const color=!valid?"#71717a":usage.state==="stale"?"#a1a1aa":(exhausted||used>=red)?"#ef4444":used>=amber?"#f97316":custom??(used>=50?"#eab308":"#10b981");
   // The outer time ring follows the account's own pick (or the soonest reset), independent of the inner quota ring.
   const timed=valid?pickElapsedWindow(usage.windows,settings.providers[usage.account_id]?.elapsed_window??null):null;
   const clock=settings.show_elapsed&&timed?elapsed(timed):null;
