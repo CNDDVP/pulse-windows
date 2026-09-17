@@ -31,7 +31,11 @@ pub fn load_from(path:&Path,store:&dyn SecretStore)->Result<AppSettings,String>{
     }
     let mut settings:AppSettings=serde_json::from_value(cleaned).map_err(|_|"设置结构无效；原文件未修改")?;
     settings.validate()?;
-    let mut migrated=legacy;
+    // Older schemas deserialize through serde defaults; persist them at the current version so
+    // every field is spelled out on disk and a downgrade is visible instead of silent.
+    let upgraded=settings.schema_version<crate::types::SCHEMA_VERSION;
+    settings.schema_version=crate::types::SCHEMA_VERSION;
+    let mut migrated=legacy||upgraded;
     for (id,cfg) in settings.providers.iter_mut(){
         if let Some(key)=root["providers"][id]["api_key"].as_str().filter(|s|!s.trim().is_empty()) {
             store.put(id,key)?;
@@ -95,4 +99,17 @@ pub fn refresh_credential_flags(settings:&mut AppSettings)->Result<(),String>{
     }
     #[test] fn invalid_settings_are_not_written(){let d=tempfile::tempdir().unwrap();let mut s=AppSettings::default();s.refresh_interval_seconds=0;assert!(save_to(&d.path().join("x"),&s).is_err());}
     #[test] fn unicode_path_and_roundtrip(){let d=tempfile::tempdir().unwrap();let p=d.path().join("中文 空格/settings.json");save_to(&p,&AppSettings::default()).unwrap();assert!(load_from(&p,&Memory::default()).is_ok());}
+    #[test] fn v2_settings_upgrade_to_v3_keeping_everything(){
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("settings.json");
+        let v2=r#"{"schema_version":2,"dock_side":"left","auto_collapse_seconds":2,"theme":"translucent","refresh_interval_seconds":300,"display_mode":"remaining","forecast":true,"show_elapsed":true,"follow_active_display":false,"hide_fullscreen":true,"monitor_name":"\\\\.\\DISPLAY3","free_x":0.5,"free_y":0.5,"providers":{"codex":{"provider_id":"codex","label":"工作","enabled":true,"order":2,"use_local":true,"credential_configured":false,"primary_window":"account-primary_window"}}}"#;
+        fs::write(&p,v2).unwrap();
+        let s=load_from(&p,&Memory::default()).unwrap();
+        assert_eq!(s.schema_version,3);assert_eq!(s.dock_side,"left");assert_eq!(s.theme,"translucent");assert_eq!(s.refresh_interval_seconds,300);
+        assert_eq!(s.providers["codex"].order,2);assert_eq!(s.providers["codex"].label,"工作");assert_eq!(s.providers["codex"].primary_window.as_deref(),Some("account-primary_window"));
+        assert_eq!(s.warning_threshold,90);assert_eq!(s.notifications,crate::types::NotificationSettings::default());assert!(s.show_rail);assert_eq!(s.start_behavior,"rail");
+        let on_disk:serde_json::Value=serde_json::from_slice(&fs::read(&p).unwrap()).unwrap();
+        assert_eq!(on_disk["schema_version"],3,"file is rewritten at the current schema");
+        assert_eq!(on_disk["providers"]["codex"]["order"],2);
+        assert!(load_from(&p,&Memory::default()).is_ok(),"the rewritten file loads again");
+    }
 }

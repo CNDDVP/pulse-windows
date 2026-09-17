@@ -24,6 +24,8 @@ pub struct ProviderUsage {
     pub windows: Vec<UsageWindow>, pub balances: Vec<Balance>, pub error_code: Option<String>,
     pub error_message: Option<String>, pub source: String, pub checked_at: Option<String>,
     pub last_success_at: Option<String>, pub retry_after_seconds: Option<u64>,
+    /// Wall time of the fetch that produced this reading; feeds the per-account diagnostics.
+    pub duration_ms: Option<u64>,
 }
 impl ProviderUsage {
     pub fn problem(provider: &str, code: &str, message: &str) -> Self {
@@ -43,7 +45,22 @@ pub struct ProviderConfig {
     pub use_local: bool, pub credential_configured: bool, pub primary_window: Option<String>,
     /// Window the outer elapsed-time ring tracks; `None` picks the soonest reset.
     pub elapsed_window: Option<String>,
+    /// `#rrggbb` override for the ring; `None` keeps the pressure colour.
+    pub ring_color: Option<String>,
+    /// Per-account money line for the low-balance notice, in `low_balance_currency` only.
+    pub low_balance: Option<f64>, pub low_balance_currency: Option<String>,
 }
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotificationSettings {
+    /// Used-share step (75/80/90/95) that raises the "approaching" notice; `None` = off.
+    pub threshold: Option<u8>,
+    pub on_spent: bool, pub on_reset: bool, pub on_failure: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct HotkeySettings { pub open_settings: Option<String>, pub toggle_rail: Option<String> }
+pub const SCHEMA_VERSION: u32 = 3;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppSettings {
@@ -51,6 +68,13 @@ pub struct AppSettings {
     pub theme: String, pub refresh_interval_seconds: u64, pub display_mode: String,
     pub forecast: bool, pub show_elapsed: bool, pub follow_active_display: bool,
     pub hide_fullscreen: bool, pub monitor_name: Option<String>, pub free_x: f64, pub free_y: f64,
+    /// Used share at which rings turn red (60..=95); amber starts 15 points earlier.
+    pub warning_threshold: u8,
+    pub show_rail: bool,
+    /// What to show right after launch: "rail" | "settings" | "tray".
+    pub start_behavior: String,
+    pub notifications: NotificationSettings,
+    pub hotkeys: HotkeySettings,
     pub providers: BTreeMap<String, ProviderConfig>,
 }
 impl Default for AppSettings {
@@ -58,21 +82,29 @@ impl Default for AppSettings {
         let providers=PROVIDERS.iter().enumerate().map(|(i,(id,_))| (format!("{id}-default"),ProviderConfig {
             provider_id:(*id).into(), label:name(id), enabled:false, order:i as u32, use_local:true, ..ProviderConfig::default()
         })).collect();
-        Self { schema_version:2, dock_side:"right".into(), auto_collapse_seconds:0, theme:"obsidian".into(),
+        Self { schema_version:SCHEMA_VERSION, dock_side:"right".into(), auto_collapse_seconds:0, theme:"obsidian".into(),
             refresh_interval_seconds:120, display_mode:"used".into(), forecast:false, show_elapsed:false,
-            follow_active_display:false, hide_fullscreen:false, monitor_name:None, free_x:0.5, free_y:0.5, providers }
+            follow_active_display:false, hide_fullscreen:false, monitor_name:None, free_x:0.5, free_y:0.5,
+            warning_threshold:90, show_rail:true, start_behavior:"rail".into(),
+            notifications:NotificationSettings::default(), hotkeys:HotkeySettings::default(), providers }
     }
 }
 impl AppSettings {
     pub fn validate(&self) -> Result<(),String> {
-        if self.schema_version!=2 || !["left","right","top","free"].contains(&self.dock_side.as_str())
+        if !(2..=SCHEMA_VERSION).contains(&self.schema_version) || !["left","right","top","free"].contains(&self.dock_side.as_str())
             || !["obsidian","translucent"].contains(&self.theme.as_str())
             || !["used","remaining"].contains(&self.display_mode.as_str())
+            || !["rail","settings","tray"].contains(&self.start_behavior.as_str())
             || !(30..=3600).contains(&self.refresh_interval_seconds) || self.auto_collapse_seconds>300
+            || !(60..=95).contains(&self.warning_threshold)
+            || self.notifications.threshold.is_some_and(|t|![75,80,90,95].contains(&t))
+            || [&self.hotkeys.open_settings,&self.hotkeys.toggle_rail].iter().any(|h|h.as_deref().is_some_and(|s|s.is_empty()||s.len()>64))
             || !self.free_x.is_finite() || !self.free_y.is_finite() || !(0.0..=1.0).contains(&self.free_x) || !(0.0..=1.0).contains(&self.free_y)
             || self.providers.len()>64 { return Err("设置版本或参数无效".into()); }
         for (id,cfg) in &self.providers {
             if !valid_id(id) || !PROVIDERS.iter().any(|p|p.0==cfg.provider_id) || cfg.label.len()>160 { return Err("账号配置无效".into()); }
+            if cfg.ring_color.as_deref().is_some_and(|c|!(c.len()==7 && c.starts_with('#') && c[1..].bytes().all(|b|b.is_ascii_hexdigit()))) { return Err("圆环颜色无效".into()); }
+            if cfg.low_balance.is_some_and(|v|!v.is_finite()||v<0.0) || cfg.low_balance_currency.as_deref().is_some_and(|c|c.is_empty()||c.len()>8) { return Err("余额阈值无效".into()); }
         }
         Ok(())
     }

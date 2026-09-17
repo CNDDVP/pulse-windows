@@ -33,6 +33,9 @@ pub async fn update_settings(new_settings:AppSettings,state:State<'_,AppState>,a
     let old=state.settings.lock().await.clone();
     // An existing account cannot silently change the provider that receives its credential.
     for (id,cfg) in &new_settings.providers{if old.providers.get(id).is_some_and(|c|c.provider_id!=cfg.provider_id){return Err("不能更改已有账号的服务商，请新建账号".into())}}
+    if new_settings.hotkeys!=old.hotkeys{
+        if let Err(e)=crate::apply_hotkeys(&app,&new_settings.hotkeys){let _=crate::apply_hotkeys(&app,&old.hotkeys);return Err(e)}
+    }
     let had_error=state.config_error().is_some();
     let new_settings=tauri::async_runtime::spawn_blocking(move||{
         let mut s=new_settings;crate::config::refresh_credential_flags(&mut s)?;
@@ -118,5 +121,20 @@ pub async fn delete_credential(account_id:String,state:State<'_,AppState>,app:Ap
 pub async fn diagnostics(state:State<'_,AppState>)->Result<String,String>{
     // A whitelist, not regex scrubbing: no account id, label, token, raw body or path.
     let rows:Vec<_>=state.cached_usages.lock().await.iter().map(|r|serde_json::json!({"provider":r.provider_id,"state":r.state,"code":r.error_code,"source":r.source,"checked_at":r.checked_at,"last_success_at":r.last_success_at})).collect();
-    serde_json::to_string_pretty(&serde_json::json!({"version":"0.2.0","configuration_error":state.config_error(),"readings":rows})).map_err(|_|"诊断生成失败".into())
+    serde_json::to_string_pretty(&serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"configuration_error":state.config_error(),"readings":rows})).map_err(|_|"诊断生成失败".into())
 }
+
+#[tauri::command]
+pub fn startup_enabled()->bool{crate::platform::startup_enabled()}
+#[tauri::command]
+pub fn set_startup(enable:bool)->Result<bool,String>{crate::platform::set_startup(enable)?;Ok(crate::platform::startup_enabled())}
+#[derive(serde::Serialize)]
+pub struct NotificationStatus{pub system_toasts:Option<bool>,pub permission:String}
+#[tauri::command]
+pub fn notification_status(app:AppHandle)->NotificationStatus{
+    use tauri_plugin_notification::NotificationExt;
+    let permission=match app.notification().permission_state(){Ok(p)=>format!("{p:?}").to_lowercase(),Err(_)=>"unknown".into()};
+    NotificationStatus{system_toasts:crate::platform::toasts_enabled(),permission}
+}
+#[tauri::command]
+pub fn test_notification(app:AppHandle)->Result<(),String>{crate::notify(&app,"Pulse 测试通知","如果你看到这条消息，Windows 通知链路正常。")}

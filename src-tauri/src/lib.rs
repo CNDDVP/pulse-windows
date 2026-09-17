@@ -7,10 +7,12 @@ pub mod cache;
 pub mod ledger;
 pub mod window;
 pub mod tray;
+pub mod alerts;
+pub mod platform;
 use std::{collections::HashMap,time::{Duration,Instant},sync::atomic::{AtomicBool,Ordering}};
 use tauri::{AppHandle,Emitter,Manager};
 use tokio::sync::Mutex;
-use types::{AppSettings,ProviderUsage};
+use types::{AppSettings,HotkeySettings,ProviderUsage};
 
 pub struct AppState {
     pub settings:Mutex<AppSettings>,pub cached_usages:Mutex<Vec<ProviderUsage>>,
@@ -18,11 +20,38 @@ pub struct AppState {
     pub configuration_error:std::sync::Mutex<Option<String>>,pub http:reqwest::Client,
     pub window_mode:Mutex<String>,pub user_hidden:AtomicBool,
     pub ledger_gate:Mutex<()>,
+    pub alerts:Mutex<alerts::Memory>,
 }
 impl AppState {
     pub fn config_error(&self)->Option<String>{self.configuration_error.lock().ok().and_then(|g|g.clone())}
     /// A successful save from the UI has replaced the unreadable file.
     pub fn clear_config_error(&self){if let Ok(mut g)=self.configuration_error.lock(){*g=None}}
+}
+pub fn toggle_rail(app:&AppHandle){
+    let state=app.state::<AppState>();
+    let hidden=!state.user_hidden.load(Ordering::Relaxed);
+    state.user_hidden.store(hidden,Ordering::Relaxed);
+    if !hidden{let _=app.emit("reveal-rail",());}
+}
+/// (Re)binds the two global shortcuts; a conflict or bad spec fails the whole call so the
+/// caller can keep the previous bindings and tell the user.
+pub fn apply_hotkeys(app:&AppHandle,hk:&HotkeySettings)->Result<(),String>{
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt,Shortcut,ShortcutState};
+    let gs=app.global_shortcut();
+    let _=gs.unregister_all();
+    for (spec,action) in [(&hk.open_settings,"settings"),(&hk.toggle_rail,"rail")]{
+        let Some(spec)=spec.as_deref() else{continue};
+        let shortcut:Shortcut=spec.parse().map_err(|_|format!("快捷键格式无效：{spec}"))?;
+        let handle=app.clone();
+        gs.on_shortcut(shortcut,move|_,_,event|{
+            if event.state==ShortcutState::Pressed{ if action=="settings"{open_settings_window(&handle)}else{toggle_rail(&handle)} }
+        }).map_err(|e|format!("快捷键 {spec} 注册失败，可能已被其他程序占用（{e}）"))?;
+    }
+    Ok(())
+}
+pub fn notify(app:&AppHandle,title:&str,body:&str)->Result<(),String>{
+    use tauri_plugin_notification::NotificationExt;
+    app.notification().builder().title(title).body(body).show().map_err(|e|format!("通知发送失败：{e}"))
 }
 pub fn open_settings_window(app:&AppHandle){
     if let Some(w)=app.get_webview_window("settings"){
@@ -56,6 +85,14 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
     let mut due=settings.clone();
     {let schedule=state.schedule.lock().await;for (id,cfg) in due.providers.iter_mut(){if schedule.get(id).is_some_and(|(at,_)|*at>now){cfg.enabled=false}}}
     let incoming=providers::fetch_all_usages(&due,&state.http).await;
+    // Notices are judged on this cycle's raw fetches, before cache reconciliation can mask a failure.
+    let notices={
+        let mut mem=state.alerts.lock().await;
+        let (notices,next)=alerts::evaluate(&incoming,&settings,mem.clone(),cache::now());
+        if next!=*mem{*mem=next;let path=config::get_config_dir().join("alerts.json");let snapshot=mem.clone();let _=tauri::async_runtime::spawn_blocking(move||alerts::save(&path,&snapshot)).await;}
+        notices
+    };
+    for n in &notices{let _=notify(app,&n.title,&n.body);}
     let mut cached=state.cached_usages.lock().await;
     let before=serde_json::to_vec(&*cached).unwrap_or_default();
     let mut schedule=state.schedule.lock().await;
@@ -91,9 +128,12 @@ pub fn run(){
     }
     let (settings,error)=match config::load_settings(){Ok(s)=>(s,None),Err(e)=>(AppSettings::default(),Some(e))};
     let http=providers::client().expect("HTTP client initialization failed");
-    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(false),ledger_gate:Mutex::new(())};
+    let settings_start_hidden=settings.start_behavior=="tray";
+    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),ledger_gate:Mutex::new(()),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json")))};
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app,_,_|open_settings_window(app)))
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(state)
         .setup(|app|{
             let app=app.handle();tray::setup_tray(app)?;
@@ -110,7 +150,7 @@ pub fn run(){
                     let tick_handle=window_handle.clone();
                     let _=tauri::async_runtime::spawn_blocking(move||{
                         let Some(w)=tick_handle.get_webview_window("main")else{return};
-                        let hide=user_hidden || (settings.hide_fullscreen && window::fullscreen_other(&tick_handle));
+                        let hide=user_hidden || !settings.show_rail || (settings.hide_fullscreen && window::fullscreen_other(&tick_handle));
                         if hide {
                             if w.is_visible().unwrap_or(false){let _=w.hide();}
                         } else {
@@ -133,9 +173,11 @@ pub fn run(){
                 }
                 let settings=handle.state::<AppState>().settings.lock().await.clone();
                 window::position(&handle,&settings,"rail");
-                if std::env::args().any(|a| a == "--settings") || handle.state::<AppState>().config_error().is_some() {
+                if std::env::args().any(|a| a == "--settings") || settings.start_behavior=="settings" || handle.state::<AppState>().config_error().is_some() {
                     open_settings_window(&handle);
                 }
+                // A conflict at launch must not stop the app; the settings page reports it on the next save.
+                let _=apply_hotkeys(&handle,&settings.hotkeys);
                 loop{let _=refresh_usages_and_emit(&handle).await;tokio::time::sleep(Duration::from_secs(5)).await;}
             });
             Ok(())
@@ -148,6 +190,6 @@ pub fn run(){
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::set_credential,commands::delete_credential,commands::diagnostics,commands::test_account,commands::token_spend,commands::monitors])
+        .invoke_handler(tauri::generate_handler![commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::set_credential,commands::delete_credential,commands::diagnostics,commands::test_account,commands::token_spend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::test_notification])
         .run(tauri::generate_context!()).expect("Pulse runtime failed");
 }

@@ -22,7 +22,7 @@ pub fn client()->Result<reqwest::Client,String>{
         .timeout(Duration::from_secs(12))
         .connect_timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent("PulseWindows/0.2.0")
+        .user_agent(concat!("PulseWindows/",env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|_|"无法初始化网络客户端".into())
 }
@@ -44,7 +44,9 @@ pub async fn response(id:&str,request:reqwest::RequestBuilder)->Result<Value,Pro
 
 pub async fn fetch_one(account:&str,cfg:&ProviderConfig,http:&reqwest::Client)->ProviderUsage{
     let id=cfg.provider_id.as_str();
+    let started=std::time::Instant::now();
     let mut r=fetch_inner(account,cfg,http).await;
+    r.duration_ms=Some(started.elapsed().as_millis() as u64);
     r.account_id=account.into();r.provider_id=id.into();r.display_name=if cfg.label.is_empty(){crate::types::name(id)}else{cfg.label.clone()};
     if r.state=="live"{if let Some(pin)=&cfg.primary_window{if let Some(w)=r.windows.iter().find(|w|&w.id==pin){r.primary_percent=Some(w.used_percent)}}}
     r.checked_at=Some(chrono::Utc::now().to_rfc3339());
