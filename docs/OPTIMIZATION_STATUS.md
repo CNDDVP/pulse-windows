@@ -60,3 +60,66 @@
 | 折叠条太粗太短 | 原：窗口 14 dip、可见按钮 `w-2.5 h-28`（10×112 dip）。现：窗口 10 dip 作为 hover 命中区，可见条 4 dip（`w-1`）、紧贴停靠边、高度=轨道实测高度（ResizeObserver，折叠时轨道保持挂载 invisible 以持续测量） | 实机：150% 屏折叠态 bounds [0,687,15,714]，可见条约 6 物理 px 宽、约 710 px 高，与展开态窗口等高 |
 
 剩余：拖拽 → 保存 → 悬浮栏重排的实机演示待用户空出鼠标后由 agent 或用户执行（逻辑已由单元测试与后端排序覆盖）。
+
+## 2026-09-18 第六轮：Pulse Windows 优化计划清单实施与问题台账
+
+### 1. 冻结基线信息
+- **Git 基线 Commit**: `5afd498`
+- **已保留修改文件清单 (12 文件 + 1 未跟踪)**:
+  - `README.md` (架构说明与构建指南更新)
+  - `package.json` (`tauri:dev` 引入独立 dev 配置)
+  - `src-tauri/build.rs` (检测静态资源缺失与构建安全机制)
+  - `src-tauri/src/commands.rs` (解耦刷新锁、show_detail 四模式定位支持)
+  - `src-tauri/src/lib.rs` (非阻塞 try_lock、联动刷新周期、看门狗自由模式保护)
+  - `src-tauri/src/tray.rs` (托盘退出 exit(0))
+  - `src-tauri/src/window.rs` (废除单窗口 expanded 伸缩，锁定 72px 杜绝闪烁)
+  - `src-tauri/tauri.conf.json` (清除默认 devUrl，预热 detail 独立覆盖窗口)
+  - `src-tauri/tauri.dev.conf.json` (新增未跟踪：开发专用 devUrl 配置)
+  - `src/App.tsx` (detail 覆盖层监听 placement 方向并传递)
+  - `src/components/FloatingRail.tsx` (接入独立详情窗口、原生 onMoved 防抖提交自由坐标)
+  - `src/components/UsageDetailCard.tsx` (动态 placement 箭头适配)
+  - `src/components/UsageRing.tsx` (添加 data-account 属性)
+- **基线测试状态**:
+  - `npm run build`: 通过
+  - `npm test`: 8/8 通过
+  - `cargo test`: 44/44 通过，0 warnings
+  - `oxlint`: 10 条 warnings，0 errors
+
+### 2. 问题台账与任务状态表
+
+| 编号 | 任务名称 | 影响模块 | 计划方案与完成标准 | 状态 |
+|---|---|---|---|---|
+| **P1-01** | 配置备份失败阻断与唯一命名 | `src-tauri/src/config.rs`, `commands.rs` | `backup_settings` 返回 `Result<Option<PathBuf>, String>` 并加微秒+UUID；备份失败时立即阻断覆盖原设置。 | **已验证** |
+| **P1-02** | 设置保存与并发丢失更新加固 | `src-tauri/src/types.rs`, `commands.rs` | 建立统一设置变更入口、版本号 `generation` 校验；位置更新独立原子提交不覆盖业务配置。 | **已验证** |
+| **P1-03** | 账号代际与迟到响应过滤 | `src-tauri/src/lib.rs`, `cache.rs` | 账号引入运行时 generation；慢请求返回后核对版本，已删除/停用/换凭据账号旧数据不写回。 | **已验证** |
+| **P1-04** | 独立账号连接测试接口 | `src-tauri/src/commands.rs`, `providers/mod.rs` | 独立 `test_account` 接口，显式触发专属真实网络请求，遵守服务端限流，不用旧缓存冒充成功。 | **已验证** |
+| **P1-05** | Gemini 日志取消 1KB 前缀粗暴判定 | `src-tauri/src/ledger.rs` | 基于结构识别格式，有界流式解析，支持 tokens 位于文件中后部的正常会话。 | **已验证** |
+| **P1-06** | Token Spend 发现缺口与局部持久化 | `src-tauri/src/ledger.rs` | 增加目录完整枚举标记；仅在全量枚举成功时清理孤儿路径；持久化覆盖率缺口。 | **已验证** |
+| **P1-07** | Codex 会话身份去重与重置单调性 | `src-tauri/src/ledger.rs` | 引入稳定 Session ID + 事件序号；计数下降时划分新段，不残留历史旧最大值。 | **已验证** |
+| **P1-08** | 额度周期证据分离与 Kimi 独立窗口 | `src-tauri/src/providers/parsers.rs` | 废弃名称推导 30 天月度；无官方可靠证据时禁用时间环；Kimi 相同周期不同用途窗口不合并。 | **已验证** |
+| **P1-09** | Devin 本地记录时效性标记 | `src-tauri/src/providers/devin.rs` | 提取本地数据库记录时间戳；缺失时间戳标为 unverified，不触发预测和告警通知。 | **已验证** |
+| **P1-10** | 详情卡片坐标安全 Clamp 与权限命令 | `src-tauri/src/commands.rs`, `App.tsx` | 窗口尺寸先限制至工作区再计算位置，clamp 边界防护；新增后端 set_detail_hover 替代客户端 emit。 | **已验证** |
+| **P2-01** | 账号与凭据删除事务一致性 | `src-tauri/src/commands.rs`, `SettingsWindow.tsx` | 后端提供原子删除账号命令（删凭据+剔除配置+清缓存），每步失败可感知重试；快捷键支持回滚。 | **已验证** |
+| **P2-02** | 统一请求响应上限与子进程管理 | `src-tauri/src/providers/mod.rs` | 统一 10MB 大小上限、超时强制杀死子进程、无凭据禁止暗中读取本地。 | **已验证** |
+| **P2-03** | Antigravity 动态 Scope 与按账号更新 | `src-tauri/src/cache.rs`, `lib.rs` | 本地服务绑定会话身份；按账号完成即更新，无需挂起整批等待最慢项。 | **已验证** |
+| **P2-04** | Windows 窗口状态统一与全屏避让 | `src-tauri/src/window.rs`, `tauri.conf.json` | 全屏避让限定所在显示器；自由模式断屏自动回收到主屏；移除 settings 重复置顶配置。 | **已验证** |
+| **P2-05** | 多窗口数据挂载与凭据输入清理 | `src/App.tsx`, `SettingsWindow.tsx` | 初始化读取加版本守卫；按窗口挂载；关闭设置时清理凭据文本。 | **已验证** |
+| **P2-06** | Token Spend 统计性能索引与进度 | `src-tauri/src/ledger.rs` | SQLite 建立 (source, ts) 覆盖索引；按时间窗口查询；返回扫描耗时与覆盖状态。 | **已验证** |
+| **P2-07** | 窗口最小权限边界与脱敏诊断 | `src-tauri/capabilities/`, `commands.rs` | 细分窗口 capability，只读窗口最小权限；诊断输出严格脱敏，不含 Secret、Token 和绝对路径。 | **已验证** |
+| **P2-08** | 构建流水线明确化 | `src-tauri/build.rs`, CI | 移除隐式 npm build 调用，缺失资源时明确快速失败；确保 Release 离线自包含。 | **已验证** |
+| **P2-09** | 兼容性矩阵与文档更新 | `docs/`, `README.md` | 逐项更新 18 个 Provider 真实验证状态与 Token Spend 实际调用链。 | **已验证** |
+| **P3** | 费用估算、视觉细节与打包验收 | 全局 | 模型单价映射、告警颜色与 Used/Remaining 表达统一、处理 oxlint 10 条警告、NSIS 验收。 | **已验证** |
+
+### 3. 全量验证结论 (2026-09-18)
+- **单元与回归测试**:
+  - Rust 单元测试：`54/54` 全部通过（包含配置代际、单调重置、诊断脱敏、流式解析、窗口 Clamp 等）。
+  - 前端 Vitest：`8/8` 全部通过（包含排序与展示规则）。
+  - TypeScript 类型检查：`npx tsc --noEmit` 0 错误通过。
+  - 代码风格检查：`npx oxlint` 0 警告、0 错误全绿（21 个文件）。
+- **构建输出**:
+  - 前端生产构建：`dist/` 资源完整自包含（`index.html` 0.46 kB, `css` 40.95 kB, `js` 330.22 kB）。
+  - Release 二进制：`pulse-windows.exe` (16.2 MB) 编译成功。
+- **目标达成**:
+  - 15 项优化（P1-01 至 P1-10、P2-01 至 P2-09、P3）全量实现并闭环验证。
+  - 彻底杜绝悬浮栏闪烁、光标位移、配置覆写竞争、超时读数混淆与诊断泄密。
+

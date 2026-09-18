@@ -1,7 +1,7 @@
-# Pulse Windows 全量审计：修复前基线
+# Pulse Windows 全量审计：修复前基线
 
 固定上游：`442a9c5068f76cf67ee6a982ea6e288570250755`，1.2.0。移植来源 commit **未知**。2026-09-17。
-本地源码快照及 SHA256：`D:/ai-programs/pulse-audit-20260917/baseline` 与同目录 `baseline-manifest.json`。
+源码快照及 SHA256 清单参照审计归档 `audit/baseline` 与同目录 `baseline-manifest.json`。
 
 ## 架构与覆盖边界
 上游为 Swift/AppKit 非激活 NSPanel + SwiftUI 设置界面，UsageStore、Provider service、Credential、UsageCache、Ledger 分层；Windows 为 Tauri 2 + Rust/reqwest/rusqlite + React/Vite。保留现有架构，不重写桌面宿主。

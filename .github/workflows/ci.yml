@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-check:
+    name: Privacy & Secret Scan
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Scan for forbidden patterns
+        run: |
+          python -c "
+          import os, re, sys
+          forbidden = [
+              re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
+              re.compile(r'ghp_[A-Za-z0-9_]{36}'),
+              re.compile(r'github_pat_[A-Za-z0-9_]{82}')
+          ]
+          failed = False
+          for root, _, files in os.walk('.'):
+              if any(x in root for x in ('.git', 'node_modules', 'target', 'release-artifacts', '.audit')):
+                  continue
+              for file in files:
+                  if file.endswith('.yml') or file.endswith('.yaml'):
+                      continue
+                  p = os.path.join(root, file)
+                  try:
+                      with open(p, 'r', encoding='utf-8', errors='ignore') as f:
+                          for idx, line in enumerate(f, 1):
+                              for pat in forbidden:
+                                  if pat.search(line):
+                                      print(f'::error file={p},line={idx}::Forbidden secret detected: {pat.pattern}')
+                                      failed = True
+                  except Exception:
+                      pass
+          if failed:
+              sys.exit(1)
+          print('Privacy and secret scan passed.')
+          "
+
+  build-and-test:
+    name: Build & Test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable (2026-09)
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Oxlint check
+        run: npm run lint
+
+      - name: TypeScript check
+        run: npm run typecheck
+
+      - name: Frontend unit tests
+        run: npm test
+
+      - name: Rust unit & regression tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Frontend production build
+        run: npm run build

@@ -1,8 +1,125 @@
 use crate::{secrets::{SecretStore,WindowsSecrets},types::AppSettings};
 use std::{fs,io::Write,path::{Path,PathBuf}};
-pub fn get_config_dir()->PathBuf {
-    std::env::var_os("PULSE_DATA_DIR").map(PathBuf::from).filter(|p|p.is_absolute())
-        .unwrap_or_else(||dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("pulse-windows"))
+use std::sync::{Mutex, OnceLock};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigMode {
+    Installed,
+    Portable,
+    CustomEnv,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AppProfile {
+    pub profile_id: String,
+    pub created_at: String,
+    pub mode: ConfigMode,
+}
+
+static DATA_DIR_AND_MODE: OnceLock<Result<(PathBuf, ConfigMode), String>> = OnceLock::new();
+static CACHED_PROFILE: OnceLock<Mutex<AppProfile>> = OnceLock::new();
+
+pub fn resolve_data_dir() -> Result<(PathBuf, ConfigMode), String> {
+    if let Some(dir_str) = std::env::var_os("PULSE_DATA_DIR") {
+        let p = PathBuf::from(dir_str);
+        if !p.is_absolute() {
+            return Err("环境变量 PULSE_DATA_DIR 必须为有效绝对路径".into());
+        }
+        fs::create_dir_all(&p).map_err(|e| format!("无法创建 PULSE_DATA_DIR 目录：{e}"))?;
+        let test_file = p.join(format!(".pulse_write_test_{}", uuid::Uuid::new_v4()));
+        fs::write(&test_file, b"ok").map_err(|e| format!("PULSE_DATA_DIR 目录不可写：{e}"))?;
+        let _ = fs::remove_file(test_file);
+        return Ok((p, ConfigMode::CustomEnv));
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            if exe_dir.join("portable.flag").exists() {
+                let data_dir = exe_dir.join("data");
+                fs::create_dir_all(&data_dir).map_err(|e| format!("便携模式无法创建 data 目录：{e}"))?;
+                let test_file = data_dir.join(format!(".pulse_write_test_{}", uuid::Uuid::new_v4()));
+                fs::write(&test_file, b"ok").map_err(|e| format!("便携模式 data 目录只读或不可写，请检查权限：{e}"))?;
+                let _ = fs::remove_file(test_file);
+                return Ok((data_dir, ConfigMode::Portable));
+            }
+        }
+    }
+
+    let app_data = dirs::config_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("pulse-windows");
+    fs::create_dir_all(&app_data).map_err(|e| format!("无法创建用户数据目录：{e}"))?;
+    Ok((app_data, ConfigMode::Installed))
+}
+
+pub fn init_config_dir() -> Result<(PathBuf, ConfigMode), String> {
+    DATA_DIR_AND_MODE.get_or_init(resolve_data_dir).clone()
+}
+
+pub fn get_config_dir() -> PathBuf {
+    match DATA_DIR_AND_MODE.get_or_init(resolve_data_dir) {
+        Ok((p, _)) => p.clone(),
+        Err(_) => dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("pulse-windows"),
+    }
+}
+
+pub fn get_config_mode() -> ConfigMode {
+    match DATA_DIR_AND_MODE.get_or_init(resolve_data_dir) {
+        Ok((_, m)) => *m,
+        Err(_) => ConfigMode::Installed,
+    }
+}
+
+pub fn is_portable() -> bool {
+    get_config_mode() == ConfigMode::Portable
+}
+
+pub fn get_profile() -> AppProfile {
+    let cell = CACHED_PROFILE.get_or_init(|| {
+        let dir = get_config_dir();
+        let path = dir.join("profile.json");
+        let mode = get_config_mode();
+        if let Ok(bytes) = fs::read(&path) {
+            if let Ok(mut prof) = serde_json::from_slice::<AppProfile>(&bytes) {
+                prof.mode = mode;
+                return Mutex::new(prof);
+            }
+        }
+        let profile_id = format!("p_{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
+        let prof = AppProfile {
+            profile_id,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            mode,
+        };
+        if let Ok(bytes) = serde_json::to_vec_pretty(&prof) {
+            let _ = atomic_write(&path, &bytes);
+        }
+        Mutex::new(prof)
+    });
+    cell.lock().unwrap().clone()
+}
+
+pub fn get_profile_id() -> String {
+    get_profile().profile_id
+}
+
+pub fn create_isolated_profile() -> Result<String, String> {
+    let dir = get_config_dir();
+    let path = dir.join("profile.json");
+    let mode = get_config_mode();
+    let new_id = format!("p_{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
+    let prof = AppProfile {
+        profile_id: new_id.clone(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        mode,
+    };
+    let bytes = serde_json::to_vec_pretty(&prof).map_err(|e| format!("序列化 Profile 失败: {e}"))?;
+    atomic_write(&path, &bytes)?;
+    if let Some(cell) = CACHED_PROFILE.get() {
+        *cell.lock().unwrap() = prof;
+    }
+    Ok(new_id)
 }
 pub fn load_settings()->Result<AppSettings,String>{load_from(&get_config_dir().join("settings.json"),&WindowsSecrets)}
 pub fn load_from(path:&Path,store:&dyn SecretStore)->Result<AppSettings,String>{
@@ -50,9 +167,18 @@ pub fn load_from(path:&Path,store:&dyn SecretStore)->Result<AppSettings,String>{
 pub fn save_settings(settings:&AppSettings)->Result<(),String>{save_to(&get_config_dir().join("settings.json"),settings)}
 /// Called before the UI overwrites a settings file that failed to load, so a
 /// legacy file (possibly still holding api_key entries) is never silently lost.
-pub fn backup_settings(){
-    let path=get_config_dir().join("settings.json");
-    if path.exists(){let _=fs::copy(&path,path.with_extension(format!("json.{}.bak",chrono::Utc::now().format("%Y%m%d%H%M%S"))));}
+pub fn backup_settings()->Result<Option<PathBuf>,String>{
+    backup_file(&get_config_dir().join("settings.json"))
+}
+pub fn backup_file(path:&Path)->Result<Option<PathBuf>,String>{
+    if path.exists(){
+        let unique=format!("json.{}_{}.bak",chrono::Utc::now().format("%Y%m%d%H%M%S%6f"),uuid::Uuid::new_v4());
+        let backup_path=path.with_extension(unique);
+        fs::copy(path,&backup_path).map_err(|e|format!("配置备份失败，已阻止覆盖原文件：{e}"))?;
+        Ok(Some(backup_path))
+    }else{
+        Ok(None)
+    }
 }
 pub fn save_to(path:&Path,settings:&AppSettings)->Result<(),String>{
     settings.validate()?;
@@ -111,5 +237,40 @@ pub fn refresh_credential_flags(settings:&mut AppSettings)->Result<(),String>{
         assert_eq!(on_disk["schema_version"],3,"file is rewritten at the current schema");
         assert_eq!(on_disk["providers"]["codex"]["order"],2);
         assert!(load_from(&p,&Memory::default()).is_ok(),"the rewritten file loads again");
+    }
+    #[test] fn backup_file_creates_unique_copy() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("settings.json");
+        fs::write(&p, b"original content").unwrap();
+        let b1 = backup_file(&p).unwrap().expect("backup 1 exists");
+        let b2 = backup_file(&p).unwrap().expect("backup 2 exists");
+        assert_ne!(b1, b2, "backup files must have unique names");
+        assert_eq!(fs::read(&b1).unwrap(), b"original content");
+        assert_eq!(fs::read(&b2).unwrap(), b"original content");
+    }
+    #[test] fn backup_file_nonexistent_returns_none() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("nonexistent.json");
+        assert_eq!(backup_file(&p).unwrap(), None);
+    }
+    #[test] fn settings_generation_roundtrip() {
+        let mut s = AppSettings::default();
+        s.generation = 42;
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["generation"], 42);
+        let s2: AppSettings = serde_json::from_value(v).unwrap();
+        assert_eq!(s2.generation, 42);
+    }
+    #[test] fn profile_roundtrip_and_mode() {
+        let p = AppProfile {
+            profile_id: "p_1234567890abcdef".into(),
+            created_at: "2026-09-18T00:00:00Z".into(),
+            mode: ConfigMode::Portable,
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["mode"], "portable");
+        let p2: AppProfile = serde_json::from_value(v).unwrap();
+        assert_eq!(p2.profile_id, "p_1234567890abcdef");
+        assert_eq!(p2.mode, ConfigMode::Portable);
     }
 }

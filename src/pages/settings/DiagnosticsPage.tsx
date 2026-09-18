@@ -1,26 +1,10 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, ProviderUsage } from "../../types";
-import { Section, btnPrimary, btnGhost, timeText, ageText } from "./shared";
+import { Section } from "./shared";
+import { btnPrimary, btnGhost, STATE_LABEL, timeText } from "./constants";
 
-const STATE_LABEL: Record<string, string> = { live: "正常", stale: "使用缓存", unavailable: "不可用", error: "错误", loading: "读取中" };
 const dot = (s: string) => s === "live" ? "bg-emerald-400" : s === "stale" ? "bg-amber-400" : "bg-red-400";
-
-/** Per-account rows are derived from the sanitized readings the rail already gets; the
- *  full report stays an allowlist built in Rust (no labels, tokens or paths). */
-export function accountRows(u: ProviderUsage, cfg: AppSettings["providers"][string] | undefined): [string, string][] {
-  const cached = u.state === "stale";
-  return [
-    ["状态", STATE_LABEL[u.state] ?? u.state],
-    ["最近检查", timeText(u.checked_at)],
-    ["最近成功读取", u.last_success_at ? `${timeText(u.last_success_at)}（${ageText(u.last_success_at)}）` : "—"],
-    ["数据来源", u.source || "—"],
-    ["缓存", cached ? `使用缓存 · ${ageText(u.last_success_at)}` : "未使用"],
-    ["请求耗时", u.duration_ms != null ? `${u.duration_ms} ms` : "—"],
-    ["最后错误", u.error_message ? `${u.error_message}${u.error_code ? `（${u.error_code}）` : ""}` : "无"],
-    ["凭据", cfg?.credential_configured ? "已保存的凭据" : cfg?.use_local ? "本机工具登录" : "未配置"],
-  ];
-}
 
 export function DiagnosticsPage({ usages, settings, busy, setBusy, toast, open }: {
   usages: ProviderUsage[]; settings: AppSettings; busy: boolean; setBusy: (b: boolean) => void;

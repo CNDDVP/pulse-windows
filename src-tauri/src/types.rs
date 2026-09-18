@@ -64,7 +64,7 @@ pub const SCHEMA_VERSION: u32 = 3;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppSettings {
-    pub schema_version: u32, pub dock_side: String, pub auto_collapse_seconds: u64,
+    pub schema_version: u32, pub generation: u64, pub dock_side: String, pub auto_collapse_seconds: u64,
     pub theme: String, pub refresh_interval_seconds: u64, pub display_mode: String,
     pub forecast: bool, pub show_elapsed: bool, pub follow_active_display: bool,
     pub hide_fullscreen: bool, pub monitor_name: Option<String>, pub free_x: f64, pub free_y: f64,
@@ -82,7 +82,7 @@ impl Default for AppSettings {
         let providers=PROVIDERS.iter().enumerate().map(|(i,(id,_))| (format!("{id}-default"),ProviderConfig {
             provider_id:(*id).into(), label:name(id), enabled:false, order:i as u32, use_local:true, ..ProviderConfig::default()
         })).collect();
-        Self { schema_version:SCHEMA_VERSION, dock_side:"right".into(), auto_collapse_seconds:0, theme:"obsidian".into(),
+        Self { schema_version:SCHEMA_VERSION, generation:0, dock_side:"right".into(), auto_collapse_seconds:0, theme:"obsidian".into(),
             refresh_interval_seconds:120, display_mode:"used".into(), forecast:false, show_elapsed:false,
             follow_active_display:false, hide_fullscreen:false, monitor_name:None, free_x:0.5, free_y:0.5,
             warning_threshold:90, show_rail:true, start_behavior:"rail".into(),

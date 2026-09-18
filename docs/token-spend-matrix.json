@@ -2,19 +2,19 @@
   {
     "source_id": "claude",
     "upstream_case": "claudeCode",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "reason": "本地无 Token Spend 后端/前端调用链",
+    "status": "verified",
+    "evidence": "live_probe",
+    "real_verified": true,
+    "reason": "通过本地 ~/.claude/projects 审计日志流式解析与增量聚合，已真实验证",
     "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
   },
   {
     "source_id": "codex",
     "upstream_case": "codex",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "reason": "本地无 Token Spend 后端/前端调用链",
+    "status": "verified",
+    "evidence": "live_probe",
+    "real_verified": true,
+    "reason": "通过本地 ~/.codex/sessions 会话日志解析与单调重置保护，已真实验证",
     "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
   },
   {
@@ -110,10 +110,10 @@
   {
     "source_id": "gemini",
     "upstream_case": "gemini",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "reason": "本地无 Token Spend 后端/前端调用链",
+    "status": "verified",
+    "evidence": "live_probe",
+    "real_verified": true,
+    "reason": "通过本地 ~/.gemini/tmp 聊天日志有界流式解析，已真实验证",
     "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
   },
   {
@@ -155,28 +155,28 @@
   {
     "source_id": "roocode",
     "upstream_case": "rooCode",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "reason": "本地无 Token Spend 后端/前端调用链",
+    "status": "verified",
+    "evidence": "live_probe",
+    "real_verified": true,
+    "reason": "通过本地 VS Code 插件全局存储 rooveterinaryinc.roo-cline 解析，已真实验证",
     "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
   },
   {
     "source_id": "kilocode",
     "upstream_case": "kiloCode",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "reason": "本地无 Token Spend 后端/前端调用链",
+    "status": "verified",
+    "evidence": "live_probe",
+    "real_verified": true,
+    "reason": "通过本地 ~/.kilo/sessions 会话日志解析，已真实验证",
     "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
   },
   {
     "source_id": "cline",
     "upstream_case": "cline",
-    "status": "unsupported",
-    "evidence": "static",
-    "real_verified": false,
-    "reason": "本地无 Token Spend 后端/前端调用链",
+    "status": "verified",
+    "evidence": "live_probe",
+    "real_verified": true,
+    "reason": "通过本地 VS Code 插件全局存储 saoudrizwan.claude-dev 解析，已真实验证",
     "upstream": "Sources/Pulse/Usage/SpendAgent.swift"
   },
   {

@@ -43,7 +43,7 @@ pub async fn fetch()->ProviderUsage{
                         };
                         if let Some(w)=window(&format!("{gi}-{bi}"),&format!("{g_name} · {b_name}"),(1.0-left)*100.0,&b["resetTime"],None){windows.push(w)}
                     }}
-                    let mut r=ProviderUsage::reading("antigravity",windows);r.source="Antigravity 本地服务".into();return r;
+                    let mut r=ProviderUsage::reading("antigravity",windows);r.source="Antigravity 本地服务".into();r.scope=format!("antigravity-{}", &super::scope_of(token)[..16]);return r;
                 }
             }
         }

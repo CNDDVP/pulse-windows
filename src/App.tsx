@@ -6,7 +6,6 @@ import type {AppSettings,ProviderUsage} from "./types";
 import {FloatingRail} from "./components/FloatingRail";
 import {UsageDetailCard} from "./components/UsageDetailCard";
 import {SettingsWindow} from "./pages/SettingsWindow";
-import {emit} from "@tauri-apps/api/event";
 
 function windowLabel(): string {
   try { return getCurrentWebviewWindow().label; } catch { return "main"; }
@@ -18,25 +17,37 @@ function DetailOverlay() {
   const [usages,setUsages]=useState<ProviderUsage[]|null>(null);
   const [accountId,setAccountId]=useState<string|null>(null);
   const [settings,setSettings]=useState<AppSettings|null>(null);
+  const [placement,setPlacement]=useState<"left"|"right">("left");
   useEffect(()=>{
-    let alive=true;
-    const a=listen<string>("detail-account",e=>{if(alive)setAccountId(e.payload)});
-    const b=listen<ProviderUsage[]>("usages-updated",e=>{if(alive)setUsages(e.payload)});
-    void invoke<ProviderUsage[]>("get_usages").then(u=>{if(alive)setUsages(u)}).catch(()=>{});
-    void invoke<AppSettings>("get_settings").then(x=>{if(alive)setSettings(x)}).catch(()=>{});
-    // The create-time "detail-account" event can fire before this listener exists; ask directly.
-    void invoke<string|null>("detail_account").then(id=>{if(alive&&id)setAccountId(id)}).catch(()=>{});
-    return()=>{alive=false;void a.then(f=>f());void b.then(f=>f())};
+    let alive=true;const stops:(()=>void)[]=[];let settingsVersion=0,usageVersion=0;
+    void(async()=>{
+      const a=await listen<string>("detail-account",e=>{if(alive)setAccountId(e.payload)}).catch(()=>null);
+      if(a){if(!alive){void a();return}stops.push(a)}
+      const b=await listen<ProviderUsage[]>("usages-updated",e=>{usageVersion++;if(alive)setUsages(e.payload)}).catch(()=>null);
+      if(b){if(!alive){void b();return}stops.push(b)}
+      const c=await listen<AppSettings>("settings-updated",e=>{settingsVersion++;if(alive)setSettings(e.payload)}).catch(()=>null);
+      if(c){if(!alive){void c();return}stops.push(c)}
+      const d=await listen<"left"|"right">("detail-placement",e=>{if(alive)setPlacement(e.payload)}).catch(()=>null);
+      if(d){if(!alive){void d();return}stops.push(d)}
+
+      const sv=settingsVersion,uv=usageVersion;
+      void invoke<ProviderUsage[]>("get_usages").then(u=>{if(alive&&uv===usageVersion)setUsages(u)}).catch(()=>{});
+      void invoke<AppSettings>("get_settings").then(x=>{if(alive&&sv===settingsVersion)setSettings(x)}).catch(()=>{});
+      // The create-time "detail-account" event can fire before this listener exists; ask directly.
+      void invoke<string|null>("detail_account").then(id=>{if(alive&&id)setAccountId(id)}).catch(()=>{});
+    })();
+    return()=>{alive=false;stops.forEach(f=>f())};
   },[]);
   const usage=usages?.find(u=>u.account_id===accountId);
-  return <div className="w-full h-full p-2" onMouseEnter={()=>void emit("detail-pointer",true)} onMouseLeave={()=>void emit("detail-pointer",false)}
+  return <div className="w-full h-full p-2 flex items-center"
+    onMouseEnter={()=>void invoke("set_detail_hover",{hovered:true})}
+    onMouseLeave={()=>void invoke("set_detail_hover",{hovered:false})}
     onContextMenu={e=>e.preventDefault()}>
-    {usage&&settings?<UsageDetailCard usage={usage} settings={settings}/>:null}
+    {usage&&settings?<UsageDetailCard usage={usage} settings={settings} placement={placement}/>:null}
   </div>;
 }
 
-
-export default function App(){
+function MainApp({label}:{label:string}){
   const [settings,setSettings]=useState<AppSettings|null>(null);
   const [usages,setUsages]=useState<ProviderUsage[]>([]);
   const [error,setError]=useState("");
@@ -60,9 +71,13 @@ export default function App(){
       }catch{/* 读数加载失败不阻塞界面；下一次刷新事件会补上 */}
     })();return()=>{alive=false;stops.forEach(f=>f())};
   },[]);
-  const label=windowLabel();
-  if(label==="detail")return <DetailOverlay/>;
   if(error)return <div className="p-4 bg-zinc-900 text-amber-300 text-sm">{error}</div>;
   if(!settings)return <div className="p-3 bg-zinc-900 text-zinc-400 text-xs">正在加载…</div>;
   return label==="settings"?<SettingsWindow initialSettings={settings} usages={usages} onSaved={setSettings}/>:<FloatingRail usages={usages} settings={settings}/>;
+}
+
+export default function App(){
+  const label=windowLabel();
+  if(label==="detail")return <DetailOverlay/>;
+  return <MainApp label={label}/>;
 }

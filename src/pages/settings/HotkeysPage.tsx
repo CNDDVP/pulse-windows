@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AppSettings, HotkeySettings } from "../../types";
-import { Section, btnGhost } from "./shared";
+import { Section } from "./shared";
+import { btnGhost } from "./constants";
 
 const MODS = ["Control", "Alt", "Shift", "Meta"] as const;
 const KEY_LABEL: Record<string, string> = { Space: "Space", Enter: "Enter", Tab: "Tab", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" };

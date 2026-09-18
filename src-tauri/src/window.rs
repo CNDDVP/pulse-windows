@@ -76,7 +76,7 @@ pub fn geometry(area:Rect,scale:f64,side:&str,state:&str,count:usize,fx:f64,fy:f
     // Collapsed width is the hover hit area; the visible edge bar drawn inside it is 4 dip.
     // A horizontal rail row is ~86 dip tall (ring + label + padding + border); 72 would clip
     // the rounded bottom against the window edge. Only top dock uses breadth as height.
-    let breadth=if state=="collapsed"{10.0}else if state=="expanded"{380.0}else if horizontal{86.0}else{72.0};
+    let breadth=if state=="collapsed"{10.0}else if horizontal{86.0}else{72.0};
     let (lw,lh)=if horizontal{(length,breadth)}else{(breadth,length)};
     let w=((lw*scale).round() as u32).min(area.w);let h=((lh*scale).round() as u32).min(area.h);
     let x=match side{"left"=>area.x,"right"=>area.x+(area.w-w) as i32,_=>area.x+((area.w-w) as f64*fx.clamp(0.0,1.0)).round() as i32};
@@ -86,7 +86,7 @@ pub fn geometry(area:Rect,scale:f64,side:&str,state:&str,count:usize,fx:f64,fy:f
 pub fn position(app:&AppHandle,settings:&AppSettings,state:&str){
     let Some(window)=app.get_webview_window("main")else{return};
     let monitors=window.available_monitors().unwrap_or_default();
-    let monitor = if settings.follow_active_display && state != "expanded" {
+    let monitor = if settings.follow_active_display {
         get_cursor_screen_pos().and_then(|(cx, cy)| {
             monitors.iter().find(|m| {
                 let q = m.position();
@@ -110,7 +110,7 @@ pub fn position(app:&AppHandle,settings:&AppSettings,state:&str){
     {
         use windows::Win32::Foundation::{HWND, RECT};
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, SWP_NOZORDER,
+            GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
         };
         if let Ok(hwnd) = window.hwnd() {
             unsafe {
@@ -124,10 +124,6 @@ pub fn position(app:&AppHandle,settings:&AppSettings,state:&str){
                         return;
                     }
                 }
-                // The default content copy is in CLIENT coordinates: right-dock transitions
-                // move the origin while widening, so copied pixels land one frame to the left
-                // and read as a flicker/jump. NOCOPYBITS discards them; repositions are rare
-                // now (unchanged rects are skipped above), so the one repaint frame is fine.
                 let _ = SetWindowPos(
                     HWND(hwnd.0),
                     HWND(std::ptr::null_mut()),
@@ -135,7 +131,7 @@ pub fn position(app:&AppHandle,settings:&AppSettings,state:&str){
                     rect.y,
                     rect.w as i32,
                     rect.h as i32,
-                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOCOPYBITS,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING,
                 );
             }
             return;
@@ -148,7 +144,7 @@ pub fn position(app:&AppHandle,settings:&AppSettings,state:&str){
 }
 pub fn fullscreen_other(app:&AppHandle)->bool{
     #[cfg(windows)] unsafe{
-        use windows::Win32::{Foundation::RECT,Graphics::Gdi::*,UI::WindowsAndMessaging::*};
+        use windows::Win32::{Foundation::{HWND, RECT},Graphics::Gdi::*,UI::WindowsAndMessaging::*};
         let foreground=GetForegroundWindow();if foreground.0.is_null(){return false}
         if app.webview_windows().values().any(|w|w.hwnd().is_ok_and(|h|h.0==foreground.0)){return false}
         let mut class=[0u16;128];let n=GetClassNameW(foreground,&mut class);let name=String::from_utf16_lossy(&class[..n.max(0) as usize]);
@@ -157,6 +153,17 @@ pub fn fullscreen_other(app:&AppHandle)->bool{
         if (style & WS_MAXIMIZE.0) != 0 && (style & WS_CAPTION.0) != 0 {return false}
         let mut info=MONITORINFO{cbSize:std::mem::size_of::<MONITORINFO>() as u32,..Default::default()};
         let mon=MonitorFromWindow(foreground,MONITOR_DEFAULTTONEAREST);
+
+        // Only avoid if foreground fullscreen window is on the same monitor as Pulse's main window
+        if let Some(main_win) = app.get_webview_window("main") {
+            if let Ok(main_hwnd) = main_win.hwnd() {
+                let main_mon = MonitorFromWindow(HWND(main_hwnd.0), MONITOR_DEFAULTTONEAREST);
+                if mon != main_mon {
+                    return false;
+                }
+            }
+        }
+
         let mut rect=RECT::default();
         if !GetMonitorInfoW(mon,&mut info).as_bool() || GetWindowRect(foreground,&mut rect).is_err(){return false}
         return rect.left<=info.rcMonitor.left && rect.top<=info.rcMonitor.top && rect.right>=info.rcMonitor.right && rect.bottom>=info.rcMonitor.bottom;

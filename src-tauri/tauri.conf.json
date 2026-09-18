@@ -1,10 +1,10 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Pulse",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "identifier": "com.cnddvp.pulse",
   "build": {
-    "frontendDist": "../dist", "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist",
     "beforeDevCommand": "npm run dev", "beforeBuildCommand": "npm run build"
   },
   "app": {
@@ -38,8 +38,23 @@
         "fullscreen": false,
         "decorations": true,
         "transparent": false,
-        "alwaysOnTop": true,
         "center": true,
+        "visible": false
+      },
+      {
+        "label": "detail",
+        "title": "Pulse 详情",
+        "url": "index.html",
+        "width": 380,
+        "height": 340,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false,
         "visible": false
       }
     ],

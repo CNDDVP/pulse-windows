@@ -22,11 +22,18 @@ pub struct AppState {
     pub ledger_gate:Mutex<()>,
     pub alerts:Mutex<alerts::Memory>,
     pub detail_account:std::sync::Mutex<Option<String>>,
+    pub account_generations:Mutex<HashMap<String,u64>>,
 }
 impl AppState {
     pub fn config_error(&self)->Option<String>{self.configuration_error.lock().ok().and_then(|g|g.clone())}
     /// A successful save from the UI has replaced the unreadable file.
     pub fn clear_config_error(&self){if let Ok(mut g)=self.configuration_error.lock(){*g=None}}
+    pub async fn bump_account_gen(&self, account_id: &str) -> u64 {
+        let mut g = self.account_generations.lock().await;
+        let next = g.get(account_id).copied().unwrap_or(0).wrapping_add(1);
+        g.insert(account_id.to_string(), next);
+        next
+    }
 }
 pub fn toggle_rail(app:&AppHandle){
     let state=app.state::<AppState>();
@@ -78,13 +85,52 @@ pub fn open_settings_window(app:&AppHandle){
 }
 pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,String>{
     let state=app.state::<AppState>();
-    let _gate=state.refresh_gate.lock().await;
+    let Ok(_gate)=state.refresh_gate.try_lock() else {
+        return Ok(state.cached_usages.lock().await.clone());
+    };
     if let Some(e)=state.config_error(){return Err(e)}
     let settings=state.settings.lock().await.clone();
     let now=Instant::now();
     let mut due=settings.clone();
     {let schedule=state.schedule.lock().await;for (id,cfg) in due.providers.iter_mut(){if schedule.get(id).is_some_and(|(at,_)|*at>now){cfg.enabled=false}}}
-    let incoming=providers::fetch_all_usages(&due,&state.http).await;
+    let start_gens=state.account_generations.lock().await.clone();
+    let mut rx=providers::fetch_all_stream(&due,&state.http);
+    let mut incoming=vec![];
+
+    while let Some(fresh)=rx.recv().await {
+        incoming.push(fresh.clone());
+        let current_settings=state.settings.lock().await.clone();
+        let id=fresh.account_id.clone();
+        // Drop late response if account was deleted or modified during fetch
+        if !current_settings.providers.contains_key(&id) { continue; }
+        {
+            let end_gens=state.account_generations.lock().await;
+            if start_gens.get(&id) != end_gens.get(&id) { continue; }
+        }
+
+        let mut cached=state.cached_usages.lock().await;
+        let mut schedule=state.schedule.lock().await;
+
+        let previous=cached.iter().find(|u|u.account_id==id);
+        let failures=if fresh.state=="live"{0}else{schedule.get(&id).map(|v|v.1).unwrap_or(0).saturating_add(1)};
+        let delay=if failures==0{current_settings.refresh_interval_seconds}else{fresh.retry_after_seconds.unwrap_or((30u64.saturating_mul(1u64<<failures.min(6))).min(1800)).max(current_settings.refresh_interval_seconds)};
+        schedule.insert(id.clone(),(Instant::now()+Duration::from_secs(delay),failures));
+        let pin=current_settings.providers.get(&id).and_then(|c|c.primary_window.as_deref());
+        let result=cache::reconcile_with_pin(fresh,previous,pin,cache::now());
+        cached.retain(|u|u.account_id!=id);cached.push(result);
+        cached.retain(|u|current_settings.providers.get(&u.account_id).is_some_and(|c|c.enabled));
+        for u in cached.iter_mut(){
+            let pin=current_settings.providers.get(&u.account_id).and_then(|c|c.primary_window.as_deref());
+            *u=cache::expire_with_pin(u.clone(),pin,cache::now());
+        }
+        cached.sort_by_key(|u|current_settings.providers.get(&u.account_id).map(|c|c.order).unwrap_or(0));
+        let snapshot=cached.clone();
+        drop(schedule);
+        drop(cached);
+
+        let _=app.emit("usages-updated",&snapshot);
+    }
+
     // Notices are judged on this cycle's raw fetches, before cache reconciliation can mask a failure.
     let notices={
         let mut mem=state.alerts.lock().await;
@@ -93,34 +139,39 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
         notices
     };
     for n in &notices{let _=notify(app,&n.title,&n.body);}
-    let mut cached=state.cached_usages.lock().await;
-    let before=serde_json::to_vec(&*cached).unwrap_or_default();
-    let mut schedule=state.schedule.lock().await;
-    for fresh in incoming{
-        let id=fresh.account_id.clone();let previous=cached.iter().find(|u|u.account_id==id);
-        let failures=if fresh.state=="live"{0}else{schedule.get(&id).map(|v|v.1).unwrap_or(0).saturating_add(1)};
-        let delay=if failures==0{settings.refresh_interval_seconds}else{fresh.retry_after_seconds.unwrap_or((30u64.saturating_mul(1u64<<failures.min(6))).min(1800)).max(settings.refresh_interval_seconds)};
-        schedule.insert(id.clone(),(Instant::now()+Duration::from_secs(delay),failures));
-        let pin=settings.providers.get(&id).and_then(|c|c.primary_window.as_deref());
-        let result=cache::reconcile_with_pin(fresh,previous,pin,cache::now());
-        cached.retain(|u|u.account_id!=id);cached.push(result);
-    }
-    cached.retain(|u|settings.providers.get(&u.account_id).is_some_and(|c|c.enabled));
-    for u in cached.iter_mut(){
-        let pin=settings.providers.get(&u.account_id).and_then(|c|c.primary_window.as_deref());
-        *u=cache::expire_with_pin(u.clone(),pin,cache::now());
-    }
-    cached.sort_by_key(|u|settings.providers.get(&u.account_id).map(|c|c.order).unwrap_or(0));
-    let result=cached.clone();let changed=before!=serde_json::to_vec(&result).unwrap_or_default();drop(schedule);drop(cached);
-    if !changed{return Ok(result)}
-    app.emit("usages-updated",&result).map_err(|_|"无法通知窗口".to_string())?;
+
+    let final_cached=state.cached_usages.lock().await.clone();
     // This cache is sanitized and only used for --json, never for credentials or fallback across launches.
-    if let Ok(bytes)=serde_json::to_vec(&result){let path=config::get_config_dir().join("usage-cache.json");let _=tauri::async_runtime::spawn_blocking(move||config::atomic_write(&path,&bytes)).await;}
-    Ok(result)
+    if let Ok(bytes)=serde_json::to_vec(&final_cached){let path=config::get_config_dir().join("usage-cache.json");let _=tauri::async_runtime::spawn_blocking(move||config::atomic_write(&path,&bytes)).await;}
+    Ok(final_cached)
 }
 
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
 pub fn run(){
+    if !crate::platform::is_webview2_available() {
+        crate::platform::show_missing_webview2_dialog();
+        std::process::exit(1);
+    }
+    let (data_dir, mode) = match config::init_config_dir() {
+        Ok(res) => res,
+        Err(e) => {
+            eprintln!("Pulse 初始化失败: {e}");
+            #[cfg(windows)] {
+                use windows::{core::PCWSTR, Win32::UI::WindowsAndMessaging::*};
+                let title: Vec<u16> = "Pulse 初始化失败\0".encode_utf16().collect();
+                let msg: Vec<u16> = format!("{e}\0").encode_utf16().collect();
+                unsafe { let _ = MessageBoxW(None, PCWSTR(msg.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONERROR); }
+            }
+            std::process::exit(1);
+        }
+    };
+    // profile_id exists from first run, not first credential use.
+    let _=config::get_profile();
+    if mode == config::ConfigMode::Portable || std::env::var_os("PULSE_DATA_DIR").is_some() {
+        let wv2_dir = data_dir.join("webview2");
+        let _ = std::fs::create_dir_all(&wv2_dir);
+        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", wv2_dir);
+    }
     if std::env::args().any(|a|a=="--json"){
         let path=config::get_config_dir().join("usage-cache.json");
         let readings:Vec<ProviderUsage>=std::fs::read(path).ok().and_then(|b|serde_json::from_slice(&b).ok()).unwrap_or_default();
@@ -129,7 +180,7 @@ pub fn run(){
     let (settings,error)=match config::load_settings(){Ok(s)=>(s,None),Err(e)=>(AppSettings::default(),Some(e))};
     let http=providers::client().expect("HTTP client initialization failed");
     let settings_start_hidden=settings.start_behavior=="tray";
-    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),ledger_gate:Mutex::new(()),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None)};
+    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),ledger_gate:Mutex::new(()),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None),account_generations:Mutex::new(HashMap::new())};
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app,_,_|open_settings_window(app)))
         .plugin(tauri_plugin_notification::init())
@@ -158,7 +209,7 @@ pub fn run(){
                                 let _=w.show();
                                 let _=w.set_always_on_top(true);
                             }
-                            if mode != "expanded" {
+                            if mode != "expanded" && settings.dock_side != "free" {
                                 window::position(&tick_handle,&settings,&mode);
                             }
                         }
@@ -178,7 +229,15 @@ pub fn run(){
                 }
                 // A conflict at launch must not stop the app; the settings page reports it on the next save.
                 let _=apply_hotkeys(&handle,&settings.hotkeys);
-                loop{let _=refresh_usages_and_emit(&handle).await;tokio::time::sleep(Duration::from_secs(5)).await;}
+                loop {
+                    let _ = refresh_usages_and_emit(&handle).await;
+                    let interval = {
+                        let state = handle.state::<AppState>();
+                        let s = state.settings.lock().await;
+                        s.refresh_interval_seconds.clamp(30, 3600)
+                    };
+                    tokio::time::sleep(Duration::from_secs(interval)).await;
+                }
             });
             Ok(())
         })
@@ -190,6 +249,6 @@ pub fn run(){
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::set_credential,commands::delete_credential,commands::diagnostics,commands::test_account,commands::token_spend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::hide_detail,commands::detail_account])
+        .invoke_handler(tauri::generate_handler![commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::set_credential,commands::delete_credential,commands::delete_account,commands::diagnostics,commands::test_account,commands::token_spend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::hide_detail,commands::detail_account,commands::set_detail_hover,commands::is_portable,commands::get_profile_info,commands::clear_profile_credentials,commands::create_isolated_profile])
         .run(tauri::generate_context!()).expect("Pulse runtime failed");
 }

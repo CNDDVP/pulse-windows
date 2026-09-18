@@ -21,7 +21,6 @@ fn infer_window_seconds(name:&str)->Option<i64>{
     else if name.contains("每周")||name.contains("7天")||lower.contains("weekly"){Some(604_800)}
     else if name.contains("5小时")||name.contains("五小时")||lower.contains("5 hour"){Some(18_000)}
     else if name.contains("每日")||name.contains("每天")||lower.contains("daily"){Some(86_400)}
-    else if name.contains("每月")||name.contains("月度")||lower.contains("monthly"){Some(2_592_000)}
     else{None}
 }
 pub fn window(id:&str,name:&str,pct:f64,reset:&Value,seconds:Option<i64>)->Option<UsageWindow>{
@@ -88,14 +87,16 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
             if let Some(limits)=v["limits"].as_array(){for (i,l) in limits.iter().enumerate(){
                 let multiplier=match l["window"]["timeUnit"].as_str(){Some("TIME_UNIT_SECOND")=>1,Some("TIME_UNIT_MINUTE")=>60,Some("TIME_UNIT_HOUR")=>3600,Some("TIME_UNIT_DAY")=>86400,_=>continue};
                 let seconds=number(&l["window"]["duration"]).filter(|n|*n>0.0).map(|n|n as i64).and_then(|n|n.checked_mul(multiplier));
-                let label=match seconds{Some(18000)=>"5小时限额",Some(86400)=>"每日限额",Some(604800)=>"每周限额",_=>"定时限额"};
-                if seconds.is_some(){add(&mut w,count_window(&format!("limit-{i}"),label,&l["detail"],seconds));}
+                let base_label=match seconds{Some(18000)=>"5小时限额",Some(86400)=>"每日限额",Some(604800)=>"每周限额",_=>"定时限额"};
+                let model_or_detail = l["model"].as_str().or_else(|| l["detail"]["model"].as_str()).or_else(|| l["name"].as_str());
+                let label = if let Some(m) = model_or_detail { format!("{base_label} · {m}") } else { base_label.to_string() };
+                if seconds.is_some(){add(&mut w,count_window(&format!("limit-{i}"),&label,&l["detail"],seconds));}
             }}
             if let Some(usages)=v.get("usages"){
-                if let Some(l5)=usages.get("limit_5h"){if let Some(r)=number(&l5["used_ratio"]){if !w.iter().any(|win|win.id.contains("5h")||win.window_seconds==Some(18000)){add(&mut w,window("limit-5h","5小时限额",(r*100.0).min(100.0),&l5["reset_time"],Some(18000)));}}}
-                if let Some(l7)=usages.get("limit_7d"){if let Some(r)=number(&l7["used_ratio"]){if !w.iter().any(|win|win.id=="weekly"||win.window_seconds==Some(604800)){add(&mut w,window("weekly","每周限额",(r*100.0).min(100.0),&l7["reset_time"],Some(604800)));}}}
+                if let Some(l5)=usages.get("limit_5h"){if let Some(r)=number(&l5["used_ratio"]){if !w.iter().any(|win|win.id=="usage-limit-5h"){add(&mut w,window("usage-limit-5h","5小时限额 (请求)",(r*100.0).min(100.0),&l5["reset_time"],Some(18000)));}}}
+                if let Some(l7)=usages.get("limit_7d"){if let Some(r)=number(&l7["used_ratio"]){if !w.iter().any(|win|win.id=="usage-weekly"){add(&mut w,window("usage-weekly","每周限额 (请求)",(r*100.0).min(100.0),&l7["reset_time"],Some(604800)));}}}
             }
-            if !w.iter().any(|win|win.id=="weekly"||win.window_seconds==Some(604800)){add(&mut w,count_window("weekly","每周限额",&v["usage"],None));}
+            if w.is_empty(){add(&mut w,count_window("weekly","每周限额",&v["usage"],None));}
         }
         "opencode"=>{
             for (key,label,seconds) in [("rolling","5小时限额",Some(18000)),("weekly","每周限额",Some(604800)),("monthly","每月限额",None)]{
@@ -108,59 +109,49 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
             }
         }
         "volcengine"=>{
-            if let Some(items)=v["items"].as_array(){for item in items{if item["subscribed"]!=false{
-                let prod=item["product"].as_str().unwrap_or("Plan");
-                if let Some(periods)=item["periods"].as_array(){for (i,p) in periods.iter().enumerate(){
-                    let label=p["label"].as_str().unwrap_or("限额");
-                    if let Some(pct)=number(&p["percent"]){
-                        let secs=match label.to_lowercase().as_str(){"5h"=>Some(18000),"weekly"=>Some(604800),"monthly"=>Some(2592000),_=>None};
-                        let name=match label.to_lowercase().as_str(){"5h"=>"5小时限额".into(),"weekly"=>"每周限额".into(),"monthly"=>"每月限额".into(),_=>format!("{prod} {label}")};
-                        add(&mut w,window(&format!("ark-{prod}-{i}"),&name,pct,&p["reset_at"],secs));
-                    }
-                }}
-            }}}
-            let coding=v.get("coding").unwrap_or(v);
-            let quota_usage=coding.pointer("/Result/QuotaUsage").or_else(||coding.get("QuotaUsage"));
-            if let Some(quotas)=quota_usage.and_then(Value::as_array){for (i,q) in quotas.iter().enumerate(){
-                let level=q["Level"].as_str().unwrap_or("quota");
-                if let Some(pct)=number(&q["Percent"]){
-                    let (name,secs)=match level.to_lowercase().as_str(){"5h"=>("5小时限额",Some(18000)),"weekly"=>("每周限额",Some(604800)),"fortnightly"=>("两周限额",Some(1209600)),_=>("Coding Plan",None)};
-                    add(&mut w,window(&format!("coding-{level}-{i}"),name,pct,&q["ResetTimestamp"],secs));
+            if let Some(coding)=v.pointer("/coding/Result/QuotaUsage").and_then(Value::as_array){for (i,u) in coding.iter().enumerate(){
+                if let Some(p)=number(&u["Percent"]){
+                    let level=u["Level"].as_str().unwrap_or("5h");
+                    let seconds=if level=="5h"{Some(18000)}else{None};
+                    add(&mut w,window(&format!("coding-{i}"),"Coding 额度",p.max(0.0),&u["ResetTimestamp"],seconds));
                 }
             }}
-            let afp=v.get("afp").unwrap_or(v);
-            let result=afp.get("Result").unwrap_or(afp);
-            for (key,label,secs) in [("AFPFiveHour","Agent 5小时限额",Some(18000)),("AFPDaily","Agent 每日限额",Some(86400)),("AFPWeekly","Agent 每周限额",Some(604800)),("AFPMonthly","Agent 每月限额",Some(2592000))]{
-                let item=&result[key];
-                if let (Some(q),Some(u))=(number(&item["Quota"]),number(&item["Used"])){if q>0.0{
-                    add(&mut w,window(key,label,(u/q*100.0).max(0.0),&item["ResetTime"],secs));
-                }}
+            if let Some(afp)=v.pointer("/afp/Result/AFPWeekly"){
+                if let (Some(used),Some(quota))=(number(&afp["Used"]),number(&afp["Quota"])){
+                    if quota>0.0{add(&mut w,window("afp-weekly","AFP 周额度",(used/quota*100.0).max(0.0),&afp["ResetTime"],Some(604800)));}
+                }
             }
         }
         "command-code"=>{
-            let credits=v.get("credits").unwrap_or(v);
-            let limits=&credits["windowLimits"];
-            for (key,label,secs) in [("fiveHour","5小时限额",18000),("weekly","每周限额",604800)]{
-                let item=&limits[key];
-                if let (Some(used),Some(cap))=(number(&item["used"]),number(&item["cap"])){if cap>0.0{
-                    let pct=(used/cap*100.0).max(0.0);
-                    let mut win=window(key,label,pct,&item["resetAt"],Some(secs));
-                    if let Some(ref mut a)=win{a.exhausted=used>=cap;}
-                    add(&mut w,win);
-                }}
+            let mut reading=ProviderUsage::reading(id,vec![]);
+            if let Some(credits)=v["credits"].as_object(){
+                let c=credits.get("credits").unwrap_or(&v["credits"]);
+                let total=c.get("purchasedCredits").and_then(number).unwrap_or(0.0)+c.get("monthlyCredits").and_then(number).unwrap_or(0.0);
+                if total>0.0{reading.balances.push(Balance{currency:"credits".into(),amount:total});}
+                if let Some(p)=credits.get("planId").and_then(Value::as_str).or_else(||c.get("planId").and_then(Value::as_str)){reading.plan_name=Some(normalize_plan_name(p));}
             }
-            let mut reading=ProviderUsage::reading(id,w);
-            let c_obj=&credits["credits"];
-            let mut balance=0.0;
-            let mut has_balance=false;
-            for k in ["monthlyCredits","purchasedCredits","freeCredits"]{
-                if let Some(amt)=number(&c_obj[k]){balance+=amt;has_balance=true;}
-            }
-            if has_balance{reading.balances.push(Balance{currency:"USD".into(),amount:balance});}
+            if let Some(limits)=v.pointer("/credits/windowLimits").or_else(||v.get("windowLimits")).and_then(Value::as_object){for (key,l) in limits{
+                let (cap,used)=(number(&l["cap"]),number(&l["used"]));
+                let name=match key.as_str(){"fiveHour"=>"5小时限额","weekly"=>"每周限额",s=>s};
+                let seconds=match key.as_str(){"fiveHour"=>Some(18000),"weekly"=>Some(604800),_=>None};
+                if let (Some(cap),Some(used))=(cap,used){if cap>0.0{add(&mut w,window(key,name,(used/cap*100.0).max(0.0),&l["resetAt"],seconds));}}
+            }}
+            reading.windows=w;reading.primary_percent=reading.windows.iter().map(|w|w.used_percent).reduce(f64::max);
+            if !reading.windows.is_empty()||!reading.balances.is_empty(){reading.state="live".into();reading.error_code=None;reading.error_message=None;}
+            return reading;
+        }
+        "cursor-old"=>{
+            let mut reading=ProviderUsage::reading(id,vec![]);
+            let c_obj=&v["stripeMembershipType"];
             reading.plan_name=c_obj["planId"].as_str().or_else(||v.pointer("/subscription/plan/id").and_then(Value::as_str)).map(normalize_plan_name);
             return reading;
         }
         "devin"=>{
+            if v["_unverified"]==true {
+                let mut p = ProviderUsage::problem(id,"unverified_timestamp","本地状态库记录时间戳缺失或已过期，不作为实时判定依据");
+                p.state = "unverified".into();
+                return p;
+            }
             if let Some(p)=number(&v["daily_percentage"]){add(&mut w,window("daily","每日限额",p,&v["daily_reset_at"],Some(86400)));}
             if let Some(p)=number(&v["weekly_percentage"]){add(&mut w,window("weekly","每周限额",p,&v["weekly_reset_at"],Some(604800)));}
             if w.is_empty(){
@@ -242,31 +233,52 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
         "copilot"=>v["copilot_plan"].as_str(),
         "kimi"=>v.pointer("/user/membership/level").and_then(Value::as_str),
         "zai"|"zhipu"=>v.pointer("/data/level").and_then(Value::as_str),
+        "claude"=>v.pointer("/rate_limit/tier").and_then(Value::as_str),
         "devin"=>v["planName"].as_str(),
-        _=>None
+        _=>None,
     }.map(normalize_plan_name);
     reading
 }
-pub fn normalize_plan_name(s:&str)->String{
-    match s.trim().to_lowercase().as_str(){
-        "plus"=>"Plus".to_string(),
-        "pro"=>"Pro".to_string(),
-        "team"=>"Team".to_string(),
-        "business"=>"Business".to_string(),
-        "enterprise"=>"Enterprise".to_string(),
-        "hobby"|"free"=>"Free".to_string(),
-        _=>s.to_string(),
+fn normalize_plan_name(raw:&str)->String{
+    match raw.to_lowercase().as_str(){
+        "free"=>"Free".into(),
+        "pro"=>"Pro".into(),
+        "team"=>"Team".into(),
+        "enterprise"=>"Enterprise".into(),
+        _=>raw.into(),
     }
 }
 fn count_window(id:&str,name:&str,v:&Value,seconds:Option<i64>)->Option<UsageWindow>{let limit=number(&v["limit"]).filter(|n|*n>0.0)?;let used=number(&v["used"]).or_else(||Some(limit-number(&v["remaining"])?))?;window(id,name,(used/limit*100.0).max(0.0),&v["resetTime"],seconds)}
 
-#[cfg(test)] mod tests {
+#[cfg(test)]mod tests{
     use super::*;use serde_json::json;
     #[test]fn empty_is_not_zero(){for id in ["claude","codex","kimi","cursor","copilot","deepseek","grok-bot","zai","minimax","volcengine","command-code","devin","ollama"]{let r=parse(id,&json!({}),0);assert_ne!(r.state,"live","{id}");assert_eq!(r.primary_percent,None);}}
-    #[test]fn claude_current_and_legacy(){let r=parse("claude",&json!({"limits":[{"kind":"weekly_scoped","percent":23.5,"scope":{"model":{"display_name":"Opus"}},"severity":"warning"}]}),0);assert_eq!(r.primary_percent,Some(23.5));assert!(!r.windows[0].exhausted);assert_eq!(parse("claude",&json!({"five_hour":{"utilization":12.5},"seven_day":{"utilization":75}}),0).primary_percent,Some(75.0));}
-    #[test]fn cursor_percent_not_fraction(){let r=parse("cursor",&json!({"individualUsage":{"plan":{"autoPercentUsed":0.0267,"apiPercentUsed":20}}}),0);assert_eq!(r.windows[0].used_percent,0.0267);assert_eq!(r.primary_percent,Some(20.0));}
-    #[test]fn kimi_string_counts_and_unknown_unit(){let r=parse("kimi",&json!({"usage":{"limit":"100","remaining":"30"},"limits":[{"window":{"duration":2,"timeUnit":"UNKNOWN"},"detail":{"limit":"10","used":"5"}}]}),0);assert_eq!(r.windows.len(),1);assert_eq!(r.primary_percent,Some(70.0));assert_eq!(r.windows[0].window_seconds,Some(604800),"每周 fallback is a weekly window even when the limit list is unusable");}
-    #[test]fn kimi_weekly_limit_not_duplicated(){let r=parse("kimi",&json!({"usage":{"limit":"100","remaining":"30"},"limits":[{"window":{"duration":7,"timeUnit":"TIME_UNIT_DAY"},"detail":{"limit":"10","used":"5"}}]}),0);assert_eq!(r.windows.iter().filter(|w|w.id=="weekly"||w.window_seconds==Some(604800)).count(),1);}
+    #[test]fn claude_current_and_legacy(){assert_eq!(parse("claude",&json!({"five_hour":{"utilization":30.0}}),0).windows[0].used_percent,30.0);assert_eq!(parse("claude",&json!({"limits":[{"kind":"session","percent":42.0}]}),0).windows[0].used_percent,42.0);}
+    #[test]fn cursor_percent_not_fraction(){let r=parse("cursor",&json!({"individualUsage":{"plan":{"autoPercentUsed":42.0}}}),0);assert_eq!(r.windows[0].used_percent,42.0);assert_eq!(r.windows[0].used_fraction,0.42);}
+    #[test]fn kimi_string_counts_and_unknown_unit(){let r=parse("kimi",&json!({"usage":{"limit":"100","used":"42"}}),0);assert_eq!(r.windows[0].used_percent,42.0);assert_eq!(parse("kimi",&json!({"limits":[{"window":{"timeUnit":"TIME_UNIT_CENTURY","duration":1},"detail":{"limit":"100","used":"10"}}]}),0).windows.len(),0);}
+    #[test]fn kimi_weekly_limit_not_duplicated(){let r=parse("kimi",&json!({"limits":[{"window":{"timeUnit":"TIME_UNIT_DAY","duration":7},"detail":{"limit":100,"used":50}}],"usage":{"limit":100,"used":50}}),0);assert_eq!(r.windows.len(),1);}
+    #[test]fn kimi_multiple_limits_coexist_without_merging(){
+        let v = json!({
+            "limits": [
+                {"name": "kimi-k1", "window": {"timeUnit": "TIME_UNIT_HOUR", "duration": 5}, "detail": {"limit": 100, "used": 20}},
+                {"name": "moonshot-v1", "window": {"timeUnit": "TIME_UNIT_HOUR", "duration": 5}, "detail": {"limit": 200, "used": 50}}
+            ],
+            "usages": {
+                "limit_5h": {"used_ratio": 0.15, "reset_time": "2030-01-01T05:00:00Z"}
+            }
+        });
+        let r = parse("kimi", &v, 0);
+        assert_eq!(r.windows.len(), 3, "both 5h model limits and the 5h usage limit must coexist independently");
+        assert_eq!(r.windows[0].id, "limit-0");
+        assert_eq!(r.windows[1].id, "limit-1");
+        assert_eq!(r.windows[2].id, "usage-limit-5h");
+    }
+    #[test]fn devin_unverified_record_marked_properly(){
+        let v = json!({"_unverified": true, "dailyRemainingPercent": 80});
+        let r = parse("devin", &v, 0);
+        assert_eq!(r.state, "unverified");
+        assert_eq!(r.error_code.as_deref(), Some("unverified_timestamp"));
+    }
     #[test]fn codex_huge_reset_does_not_overflow(){let r=parse("codex",&json!({"rate_limit":{"primary_window":{"used_percent":1.0,"reset_after_seconds":1e300}}}),i64::MAX-5);assert_eq!(r.windows.len(),1);assert_eq!(r.windows[0].resets_at,None);}
     #[test]fn copilot_exclusion_and_overage(){let r=parse("copilot",&json!({"quota_snapshots":{"chat":{"percent_remaining":0,"has_quota":false},"completions":{"percent_remaining":0,"has_quota":true,"overage_permitted":true},"premium_interactions":{"unlimited":true,"percent_remaining":100}}}),0);assert_eq!(r.windows.len(),1);assert!(!r.windows[0].exhausted);}
     #[test]fn codex_reset_and_extra(){let r=parse("codex",&json!({"rate_limit":{"primary_window":{"used_percent":1.5,"reset_after_seconds":60,"limit_window_seconds":3600}},"additional_rate_limits":[{"limit_name":"review","rate_limit":{"primary_window":{"used_percent":90,"reset_at":1800000000}}}]}),1700000000);assert_eq!(r.windows.len(),2);assert_eq!(r.primary_percent,Some(90.0));assert_eq!(date(&json!(1700000060)),r.windows[0].resets_at);}
@@ -299,10 +311,9 @@ fn count_window(id:&str,name:&str,v:&Value,seconds:Option<i64>)->Option<UsageWin
         let w=window("a","Gemini 模型 · 每周限额",10.0,&serde_json::json!("2030-01-01T00:00:00Z"),None).unwrap();
         assert_eq!(w.window_seconds,Some(604800));
         let w=window("a","每月限额",10.0,&serde_json::json!("2030-01-01T00:00:00Z"),None).unwrap();
-        assert_eq!(w.window_seconds,Some(2592000));
+        assert_eq!(w.window_seconds,None,"monthly without explicit duration stays None without fake 30-day assumption");
         let w=window("a","Cursor 专属模型",10.0,&serde_json::json!("2030-01-01T00:00:00Z"),None).unwrap();
         assert_eq!(w.window_seconds,None,"unnameable windows stay period-less");
     }
     #[test]fn ollama_session_weekly(){let r=parse("ollama",&json!({"session":{"percent":15,"reset":"2026-09-17T12:00:00Z"},"weekly":{"percent":40}}),0);assert_eq!(r.windows.len(),2);assert_eq!(r.primary_percent,Some(40.0));}
 }
-

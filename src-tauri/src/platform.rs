@@ -17,6 +17,9 @@ mod imp {
         }
     }
     pub fn set_startup(enable: bool) -> Result<(), String> {
+        if crate::config::is_portable() {
+            return Err("便携模式下已禁用开机自启，避免移动文件夹后在系统注册表遗留失效路径".into());
+        }
         let sub = wide(RUN); let val = wide(VALUE);
         unsafe {
             if enable {
@@ -44,12 +47,50 @@ mod imp {
             }
         }
     }
+    pub fn is_webview2_available() -> bool {
+        let keys = [
+            (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-6E3A4A77C2DB}"),
+            (HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-6E3A4A77C2DB}"),
+            (HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-6E3A4A77C2DB}"),
+        ];
+        let val = wide("pv");
+        for (root, sub) in keys {
+            let sub_w = wide(sub);
+            let mut len = 0u32;
+            unsafe {
+                if RegGetValueW(root, PCWSTR(sub_w.as_ptr()), PCWSTR(val.as_ptr()), RRF_RT_REG_SZ, None, None, Some(&mut len)) == ERROR_SUCCESS && len > 2 {
+                    let mut buf = vec![0u16; (len as usize / 2).max(1)];
+                    if RegGetValueW(root, PCWSTR(sub_w.as_ptr()), PCWSTR(val.as_ptr()), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr() as *mut _), Some(&mut len)) == ERROR_SUCCESS {
+                        let ver = String::from_utf16_lossy(&buf).trim_end_matches('\0').trim().to_string();
+                        if !ver.is_empty() && ver != "0.0.0.0" {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(prog) = std::env::var("ProgramFiles(x86)").or_else(|_| std::env::var("ProgramFiles")) {
+            let edge_dir = std::path::Path::new(&prog).join(r"Microsoft\EdgeWebView\Application");
+            if edge_dir.exists() { return true; }
+        }
+        false
+    }
+    pub fn show_missing_webview2_dialog() {
+        use windows::Win32::UI::WindowsAndMessaging::*;
+        let title = wide("Pulse - 缺少 WebView2 运行时");
+        let msg = wide("Pulse 需要 Microsoft Edge WebView2 运行时才能正常显示界面。\n\n检测到本机尚未安装 WebView2，请访问微软官方页面下载安装：\nhttps://developer.microsoft.com/microsoft-edge/webview2/\n\n安装完成后重新启动 Pulse 即可。");
+        unsafe {
+            let _ = MessageBoxW(None, PCWSTR(msg.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONWARNING);
+        }
+    }
 }
 #[cfg(not(windows))]
 mod imp {
     pub fn startup_command() -> Option<String> { None }
     pub fn set_startup(_: bool) -> Result<(), String> { Err("仅支持 Windows".into()) }
     pub fn toasts_enabled() -> Option<bool> { None }
+    pub fn is_webview2_available() -> bool { true }
+    pub fn show_missing_webview2_dialog() {}
 }
 pub use imp::*;
 

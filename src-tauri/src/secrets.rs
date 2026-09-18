@@ -4,6 +4,11 @@ pub trait SecretStore { fn get(&self,id:&str)->Result<Option<String>,String>; fn
 pub struct WindowsSecrets;
 fn target(id:&str)->Result<Vec<u16>,String> {
     if !crate::types::valid_id(id) { return Err("账号标识无效".into()); }
+    let profile_id=crate::config::get_profile_id();
+    Ok(format!("PulseWindows/{}/{id}\0",&profile_id).encode_utf16().collect())
+}
+fn legacy_target(id:&str)->Result<Vec<u16>,String> {
+    if !crate::types::valid_id(id) { return Err("账号标识无效".into()); }
     let scope=format!("{:x}",Sha256::digest(crate::config::get_config_dir().to_string_lossy().as_bytes()));
     Ok(format!("PulseWindows/{}/{id}\0",&scope[..24]).encode_utf16().collect())
 }
@@ -14,13 +19,26 @@ impl SecretStore for WindowsSecrets {
         let target=target(id)?;
         unsafe {
             let mut ptr=std::ptr::null_mut();
-            if let Err(e)=CredReadW(PCWSTR(target.as_ptr()),CRED_TYPE_GENERIC,0,&mut ptr) {
-                if e.code().0 as u32==0x80070490 {return Ok(None)}
-                return Err("无法读取 Windows 凭据管理器".into());
+            if CredReadW(PCWSTR(target.as_ptr()),CRED_TYPE_GENERIC,0,&mut ptr).is_ok() {
+                let bytes=std::slice::from_raw_parts((*ptr).CredentialBlob,(*ptr).CredentialBlobSize as usize);
+                let result=String::from_utf8(bytes.to_vec()).map_err(|_|"凭据编码无效".into());
+                CredFree(ptr.cast());
+                return result.map(Some);
             }
-            let bytes=std::slice::from_raw_parts((*ptr).CredentialBlob,(*ptr).CredentialBlobSize as usize);
-            let result=String::from_utf8(bytes.to_vec()).map_err(|_|"凭据编码无效".into());
-            CredFree(ptr.cast()); result.map(Some)
+            // Check legacy target for automatic migration
+            let leg=legacy_target(id)?;
+            let mut leg_ptr=std::ptr::null_mut();
+            if CredReadW(PCWSTR(leg.as_ptr()),CRED_TYPE_GENERIC,0,&mut leg_ptr).is_ok() {
+                let bytes=std::slice::from_raw_parts((*leg_ptr).CredentialBlob,(*leg_ptr).CredentialBlobSize as usize);
+                let secret=String::from_utf8(bytes.to_vec()).map_err(|_|"凭据编码无效".to_string())?;
+                CredFree(leg_ptr.cast());
+                // Write to new target, verify, then remove legacy
+                if self.put(id, &secret).is_ok() {
+                    let _ = CredDeleteW(PCWSTR(leg.as_ptr()),CRED_TYPE_GENERIC,0);
+                }
+                return Ok(Some(secret));
+            }
+            Ok(None)
         }
     }
     fn put(&self,id:&str,value:&str)->Result<(),String> {
@@ -38,10 +56,21 @@ impl SecretStore for WindowsSecrets {
     fn delete(&self,id:&str)->Result<(),String> {
         use windows::{core::PCWSTR,Win32::Security::Credentials::*};
         let target=target(id)?;
-        unsafe { match CredDeleteW(PCWSTR(target.as_ptr()),CRED_TYPE_GENERIC,0) {
-            Ok(())=>Ok(()), Err(e) if e.code().0 as u32==0x80070490=>Ok(()), Err(_)=>Err("无法删除 Windows 凭据".into())
-        }}
+        let leg=legacy_target(id)?;
+        unsafe {
+            let _ = CredDeleteW(PCWSTR(leg.as_ptr()),CRED_TYPE_GENERIC,0);
+            match CredDeleteW(PCWSTR(target.as_ptr()),CRED_TYPE_GENERIC,0) {
+                Ok(())=>Ok(()), Err(e) if e.code().0 as u32==0x80070490=>Ok(()), Err(_)=>Err("无法删除 Windows 凭据".into())
+            }
+        }
     }
+}
+pub fn clear_profile_credentials()->Result<(),String> {
+    let settings=crate::config::load_settings()?;
+    for id in settings.providers.keys() {
+        let _ = WindowsSecrets.delete(id);
+    }
+    Ok(())
 }
 #[cfg(not(windows))]
 impl SecretStore for WindowsSecrets {

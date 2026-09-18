@@ -37,7 +37,7 @@ pub async fn response(id:&str,request:reqwest::RequestBuilder)->Result<Value,Pro
     }
     let mut body=Vec::new();
     while let Some(chunk)=response.chunk().await.map_err(|_|ProviderUsage::problem(id,"network","响应读取失败"))?{
-        if body.len()+chunk.len()>2*1024*1024{return Err(ProviderUsage::problem(id,"schema","响应超过大小限制"))}body.extend_from_slice(&chunk);
+        if body.len()+chunk.len()>10*1024*1024{return Err(ProviderUsage::problem(id,"schema","响应超过大小限制"))}body.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&body).map_err(|_|ProviderUsage::problem(id,"schema","服务响应不是有效 JSON"))
 }
@@ -77,7 +77,7 @@ const LOCAL_SCOPE:&str="local-rpc";
 async fn fetch_inner(account:&str,cfg:&ProviderConfig,http:&reqwest::Client)->ProviderUsage{
     let id=cfg.provider_id.as_str();
     if !IMPLEMENTED.contains(&id){return ProviderUsage::problem(id,"unsupported","此 Provider 尚未完成 Windows 数据路线，不能报告额度")}
-    if id=="antigravity"{let mut r=antigravity::fetch().await;r.scope=LOCAL_SCOPE.into();return r}
+    if id=="antigravity"{let mut r=antigravity::fetch().await;if r.scope.is_empty(){r.scope=LOCAL_SCOPE.into();}return r}
     let credential=match resolve_credential(account,cfg).await{Ok(c)=>c,Err(r)=>return r};
 
     if id=="devin" && credential.is_none() && cfg.use_local {
@@ -158,19 +158,37 @@ async fn fetch_inner(account:&str,cfg:&ProviderConfig,http:&reqwest::Client)->Pr
     r
 }
 
-pub async fn fetch_all_usages(settings:&AppSettings,http:&reqwest::Client)->Vec<ProviderUsage>{
-    let semaphore=Arc::new(Semaphore::new(4));let mut tasks=vec![];
-    let mut ordered:Vec<_>=settings.providers.iter().filter(|(_,c)|c.enabled).collect();ordered.sort_by_key(|(id,c)|(c.order,*id));
-    for (id,cfg) in ordered {let id=id.clone();let cfg=cfg.clone();let http=http.clone();let gate=semaphore.clone();
-        let saved=(id.clone(),cfg.clone());
-        tasks.push((saved,tokio::spawn(async move{let _permit=gate.acquire_owned().await.expect("semaphore lives for fetch");
-            match tokio::time::timeout(Duration::from_secs(25),fetch_one(&id,&cfg,&http)).await {Ok(r)=>r,Err(_)=>{
-                let mut r=ProviderUsage::problem(&cfg.provider_id,"timeout","查询超时");r.account_id=id.clone();r.display_name=cfg.label.clone();
-                // Carry the account scope so a transient timeout can fall back to the last good reading.
-                if cfg.provider_id=="antigravity"{r.scope=LOCAL_SCOPE.into();}
-                else if let Ok(Some(c))=resolve_credential(&id,&cfg).await{r.scope=scope_of(&c.token);}
-                r.checked_at=Some(chrono::Utc::now().to_rfc3339());r}}
-        })));
+pub fn fetch_all_stream(settings:&AppSettings,http:&reqwest::Client)->tokio::sync::mpsc::Receiver<ProviderUsage>{
+    let (tx,rx)=tokio::sync::mpsc::channel(16);
+    let semaphore=Arc::new(Semaphore::new(4));
+    let mut ordered:Vec<_>=settings.providers.iter().filter(|(_,c)|c.enabled).collect();
+    ordered.sort_by_key(|(id,c)|(c.order,*id));
+    for (id,cfg) in ordered {
+        let id=id.clone();let cfg=cfg.clone();let http=http.clone();let gate=semaphore.clone();let tx=tx.clone();
+        tokio::spawn(async move{
+            let _permit=gate.acquire_owned().await.expect("semaphore lives for fetch");
+            let r=match tokio::time::timeout(Duration::from_secs(25),fetch_one(&id,&cfg,&http)).await {
+                Ok(r)=>r,
+                Err(_)=>{
+                    let mut r=ProviderUsage::problem(&cfg.provider_id,"timeout","查询超时");
+                    r.account_id=id.clone();r.display_name=cfg.label.clone();
+                    if cfg.provider_id=="antigravity"{r.scope=LOCAL_SCOPE.into();}
+                    else if let Ok(Some(c))=resolve_credential(&id,&cfg).await{r.scope=scope_of(&c.token);}
+                    r.checked_at=Some(chrono::Utc::now().to_rfc3339());
+                    r
+                }
+            };
+            let _=tx.send(r).await;
+        });
     }
-    let mut out=vec![];for ((id,cfg),task) in tasks{out.push(match task.await{Ok(r)=>r,Err(_)=>{let mut r=ProviderUsage::problem(&cfg.provider_id,"internal","查询任务失败");r.account_id=id;r.display_name=cfg.label;r}});}out
+    rx
+}
+
+pub async fn fetch_all_usages(settings:&AppSettings,http:&reqwest::Client)->Vec<ProviderUsage>{
+    let mut rx=fetch_all_stream(settings,http);
+    let mut out=vec![];
+    while let Some(r)=rx.recv().await{
+        out.push(r);
+    }
+    out
 }

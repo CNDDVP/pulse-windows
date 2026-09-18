@@ -15,7 +15,7 @@
       "multi_account": "supported"
     },
     "local_file": "src-tauri/src/providers/mod.rs",
-    "notes": "Kimi Code 官方订阅接口 (https://api.kimi.com/coding/v1/usages) 真实凭据实测通过，精准解析 5小时 (100%) 与 7天 (93.2%) 滚动限额",
+    "notes": "Kimi Code 官方订阅接口 (https://api.kimi.com/coding/v1/usages) 真实凭据实测通过，支持 5小时与 7天滚动限额解析",
     "real_verified": true
   },
   {

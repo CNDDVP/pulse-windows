@@ -2,13 +2,9 @@
   "$schema":"../gen/schemas/desktop-schema.json",
   "identifier":"default",
   "description":"Local application event transport only; secrets remain in Rust",
-  "windows":["main","settings","detail"],
+  "windows":["main","detail"],
   "permissions":[
     "core:event:allow-listen",
-    "core:event:allow-unlisten",
-    "core:window:allow-hide",
-    "core:window:allow-close",
-    "core:webview:allow-webview-hide",
-    "core:webview:allow-webview-close"
+    "core:event:allow-unlisten"
   ]
 }

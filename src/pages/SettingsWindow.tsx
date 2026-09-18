@@ -6,12 +6,13 @@ import { ProviderIcon } from "../components/icons/ProviderIcons";
 import { TokenSpend } from "./TokenSpend";
 import { resetText, pickElapsedWindow } from "../presentation";
 import { orderedIds, moveItem, applyOrder } from "../ordering";
-import { PROVIDERS, ROUTES, providerName, getPlaceholder, Switch, Section, Row, Field, selectCls, inputCls, btnPrimary, btnGhost, ageText } from "./settings/shared";
+import { Switch, Section, Row, Field } from "./settings/shared";
+import { PROVIDERS, ROUTES, providerName, getPlaceholder, selectCls, inputCls, btnPrimary, btnGhost, ageText, accountRows } from "./settings/constants";
 import { GeneralPage } from "./settings/GeneralPage";
 import { NotificationsPage } from "./settings/NotificationsPage";
 import { HotkeysPage } from "./settings/HotkeysPage";
 import { AboutPage } from "./settings/AboutPage";
-import { DiagnosticsPage, accountRows } from "./settings/DiagnosticsPage";
+import { DiagnosticsPage } from "./settings/DiagnosticsPage";
 
 declare const __APP_VERSION__: string;
 
@@ -44,6 +45,12 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
   // pointer events also work for touch and pen.
   const [drag, setDrag] = useState<{ id: string; from: number; over: number } | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    if (drag) {
+      document.body.style.cursor = "grabbing";
+      return () => { document.body.style.cursor = ""; };
+    }
+  }, [drag]);
   // Last snapshot this window applied or saved itself: an incoming `settings-updated` equal to it
   // is our own echo; one that differs while the form has edits must not discard them silently.
   const appliedRef = useRef<AppSettings>(initialSettings);
@@ -115,11 +122,11 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
       if (i >= 0) return i; const first = rs[0]?.getBoundingClientRect(); return first && y < first.top ? 0 : rs.length - 1;
     };
     let over = from; const order = railOrder;
-    setDrag({ id, from, over }); document.body.style.cursor = "grabbing";
+    setDrag({ id, from, over });
     const move = (ev: PointerEvent) => { const i = indexAt(ev.clientY); if (i !== over) { over = i; setDrag({ id, from, over }); } };
     const up = () => {
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", up);
-      document.body.style.cursor = ""; setDrag(null);
+      setDrag(null);
       if (over !== from) commitOrder(moveItem(order, from, over));
     };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", up);
@@ -137,10 +144,20 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
   const remove = (id: string) => {
     const label = settings.providers[id]?.label || "该账号";
     if (!window.confirm(`删除「${label}」？其凭据会一并从 Windows 凭据管理器移除。`)) return;
-    const providers = { ...settings.providers }; delete providers[id];
-    const next = { ...settings, providers };
-    setSettings(next); setView({ kind: "accounts" });
-    void (async () => { try { if (appliedRef.current.providers[id]?.credential_configured) await invoke("delete_credential", { accountId: id }); } catch { /* the account is going away regardless */ } await persist(next, `已删除 ${label}`).catch(() => {}); })();
+    setBusy(true);
+    void (async () => {
+      try {
+        const updated = await invoke<AppSettings>("delete_account", { accountId: id });
+        appliedRef.current = updated;
+        setSettings(updated);
+        setView({ kind: "accounts" });
+        showToast("info", `已删除 ${label}`);
+      } catch (e) {
+        showToast("error", `删除失败: ${String(e)}`);
+      } finally {
+        setBusy(false);
+      }
+    })();
   };
   const handleSaveCredential = async (id: string) => {
     const secret = secrets[id]; if (!secret) return;
@@ -171,8 +188,16 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
   const closeWindow = async () => {
     if (anyDirty && !window.confirm("有未保存的账号更改，放弃并关闭？")) return;
     if (anyDirty) { setSettings(appliedRef.current); }
+    setSecrets({});
+    setShowSecrets({});
     try { await invoke("close_settings_window"); } catch { try { await getCurrentWebviewWindow().hide(); } catch { /* nothing left to do */ } }
   };
+  useEffect(() => {
+    return () => {
+      setSecrets({});
+      setShowSecrets({});
+    };
+  }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !(e.target instanceof HTMLInputElement)) void closeWindow(); };
     window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);

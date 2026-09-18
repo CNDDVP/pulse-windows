@@ -153,11 +153,15 @@ async fn fetch_openapi(ak: &str, sk: &str, http: &reqwest::Client) -> Result<Val
 }
 
 pub async fn fetch_arkcli() -> Result<Value, ProviderUsage> {
-    let output = tokio::process::Command::new("arkcli")
-        .args(["usage", "plan", "--format", "json"])
-        .output()
-        .await
-        .map_err(|_| ProviderUsage::problem("volcengine", "missing_credentials", "未找到 arkcli 命令行工具或已配置的 AccessKey:SecretAccessKey 凭据"))?;
+    let mut cmd = tokio::process::Command::new("arkcli");
+    cmd.args(["usage", "plan", "--format", "json"]);
+    cmd.kill_on_drop(true);
+
+    let output = match tokio::time::timeout(std::time::Duration::from_secs(6), cmd.output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(_)) => return Err(ProviderUsage::problem("volcengine", "missing_credentials", "未找到 arkcli 命令行工具或已配置的 AccessKey:SecretAccessKey 凭据")),
+        Err(_) => return Err(ProviderUsage::problem("volcengine", "timeout", "arkcli 执行超时")),
+    };
 
     if !output.status.success() {
         return Err(ProviderUsage::problem("volcengine", "auth", "arkcli 执行失败，请核对登录状态"));

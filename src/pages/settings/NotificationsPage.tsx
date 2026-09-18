@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings } from "../../types";
-import { Section, Row, Switch, selectCls, btnGhost } from "./shared";
+import { Section, Row, Switch } from "./shared";
+import { selectCls, btnGhost } from "./constants";
 
 interface Status { system_toasts: boolean | null; permission: string }
 

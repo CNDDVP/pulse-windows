@@ -1,8 +1,8 @@
 import {useState,useEffect,useRef} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {listen} from "@tauri-apps/api/event";
+import {getCurrentWindow} from "@tauri-apps/api/window";
 import {UsageRing} from "./UsageRing";
-import {UsageDetailCard} from "./UsageDetailCard";
 import {orderedIds} from "../ordering";
 import type {AppSettings,ProviderUsage} from "../types";
 export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:AppSettings}){
@@ -41,48 +41,106 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     const t=setTimeout(()=>setPinned(false),Math.max(settings.auto_collapse_seconds,5)*1000);
     return()=>clearTimeout(t);
   },[pinned,settings.auto_collapse_seconds]);
-  useEffect(()=>{if(free){setCollapsed(false);return}if(inside||pinned||settings.auto_collapse_seconds===0){setCollapsed(false);return}const t=setTimeout(()=>{setHovered(null);setCollapsed(true)},settings.auto_collapse_seconds*1000);return()=>clearTimeout(t)},[inside,pinned,free,settings.auto_collapse_seconds]);
-  useEffect(()=>{if(free){void invoke("set_window_state",{state:"rail"});return}void invoke("set_window_state",{state:collapsed?"collapsed":hovered?"expanded":"rail"});},[collapsed,hovered,free,settings.dock_side]);
-  // Free mode: the hover card is a separate overlay window so the rail bounds never move.
+  const insideRef=useRef(false);
+  useEffect(()=>{insideRef.current=inside;},[inside]);
+
   useEffect(()=>{
-    if(!free)return;
-    const stop=listen<boolean>("detail-pointer",e=>{detailPointer.current=e.payload});
+    // oxlint-disable-next-line
+    if(free){setCollapsed(false);return}
+    // oxlint-disable-next-line
+    if(inside||pinned||settings.auto_collapse_seconds===0){setCollapsed(false);return}
+    const t=setTimeout(()=>{
+      setHovered(null);
+      setCollapsed(true);
+      void invoke("hide_detail");
+    },settings.auto_collapse_seconds*1000);
+    return()=>clearTimeout(t);
+  },[inside,pinned,free,settings.auto_collapse_seconds]);
+
+  useEffect(()=>{
+    void invoke("set_window_state",{state:collapsed?"collapsed":"rail"});
+  },[collapsed,settings.dock_side]);
+
+  // The hover card is a separate overlay window in all modes so the rail bounds never move.
+  useEffect(()=>{
+    const stop=listen<boolean>("detail-pointer",e=>{
+      detailPointer.current=e.payload;
+      if(!e.payload&&!insideRef.current){
+        if(leave.current)clearTimeout(leave.current);
+        leave.current=setTimeout(()=>{
+          if(!insideRef.current&&!detailPointer.current){
+            setHovered(null);
+            void invoke("hide_detail");
+          }
+        },200);
+      }
+    });
     return()=>{void stop.then(f=>f())};
-  },[free]);
+  },[]);
+
   useEffect(()=>{
-    if(!free||!hovered)return;
+    if(!hovered)return;
     const el=document.querySelector(`[data-account="${hovered}"]`);
-    const ratio=el?(el.getBoundingClientRect().top+el.getBoundingClientRect().height/2)/(window.innerHeight||1):0.5;
-    void invoke("show_detail",{accountId:hovered,centerRatio:Math.min(1,Math.max(0,ratio))});
-  },[free,hovered]);
-  const closeFreeDetail=()=>{setHovered(null);void invoke("hide_detail");};
-  // Free-mode drag: 6dip threshold or 200ms hold on the rail background starts a native move.
+    const rect=el?.getBoundingClientRect();
+    const ratio=rect?(rect.top+rect.height/2)/(window.innerHeight||1):0.5;
+    const horizontalRatio=rect?(rect.left+rect.width/2)/(window.innerWidth||1):0.5;
+    void invoke("show_detail",{
+      accountId:hovered,
+      centerRatio:Math.min(1,Math.max(0,ratio)),
+      horizontalRatio:Math.min(1,Math.max(0,horizontalRatio))
+    });
+  },[hovered]);
+
+  const closeDetail=()=>{setHovered(null);void invoke("hide_detail");};
+  // Free-mode drag: listen to both window onMoved (debounced) and pointerup so native OS drag commits reliably.
   useEffect(()=>{
     if(!free){draggingFree.current=false;dragArmed.current=null;void invoke("hide_detail");return}
-    const up=()=>{if(draggingFree.current){draggingFree.current=false;void invoke("commit_free_position");}dragArmed.current=null;};
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const unlistenPromise = getCurrentWindow().onMoved(()=>{
+      if(debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(()=>{
+        draggingFree.current = false;
+        void invoke("commit_free_position");
+      }, 200);
+    });
+    const up=()=>{
+      if(draggingFree.current){
+        draggingFree.current=false;
+        if(debounceTimer) clearTimeout(debounceTimer);
+        void invoke("commit_free_position");
+      }
+      dragArmed.current=null;
+    };
     window.addEventListener("pointerup",up);
-    return()=>window.removeEventListener("pointerup",up);
+    return()=>{
+      if(debounceTimer) clearTimeout(debounceTimer);
+      window.removeEventListener("pointerup",up);
+      void unlistenPromise.then(f=>f());
+    };
   },[free]);
   useEffect(()=>()=>{if(leave.current)clearTimeout(leave.current)},[]);
-  const active=usages.find(u=>u.account_id===hovered),top=settings.dock_side==="top",left=settings.dock_side==="left";
+  const top=settings.dock_side==="top",left=settings.dock_side==="left";
   const dark=settings.theme==="obsidian";
   const enter = () => {
     if (leave.current) clearTimeout(leave.current);
+    insideRef.current=true;
     setInside(true);
     setCollapsed(false);
   };
   const exit = () => {
     if (leave.current) clearTimeout(leave.current);
+    insideRef.current=false;
     leave.current = setTimeout(() => {
       setInside(false);
-      setHovered(null);
-      if(free&&!detailPointer.current)closeFreeDetail();
+      if(!detailPointer.current){
+        closeDetail();
+      }
     }, 250);
   };
   const onRailPointerDown=(e:React.PointerEvent)=>{
     if(!free||draggingFree.current)return;
     if(e.button!==0)return;
-    dragArmed.current={x:e.clientX,y:e.clientY,t:Date.now()};
+    dragArmed.current={x:e.clientX,y:e.clientY,t:e.timeStamp||0};
     const hold=setTimeout(()=>startFreeDrag(e.clientX,e.clientY),200);
     const move=(ev:PointerEvent)=>{if(Math.hypot(ev.clientX-e.clientX,ev.clientY-e.clientY)>6)startFreeDrag(ev.clientX,ev.clientY);};
     const cancel=()=>{clearTimeout(hold);window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",cancel);};
@@ -144,11 +202,6 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
         className={`absolute cursor-pointer rounded-full ${top ? "top-0 left-1/2 -translate-x-1/2 h-1" : left ? "left-0 top-1/2 -translate-y-1/2 w-1" : "right-0 top-1/2 -translate-y-1/2 w-1"} ${glowClass}`}
         style={top ? { width: railBox?.w ?? "100%" } : { height: railBox?.h ?? "100%" }}
       />
-    )}
-    {!collapsed && active && (
-      <div className="p-2 min-h-0 max-h-full">
-        <UsageDetailCard usage={active} settings={settings} />
-      </div>
     )}
   </div>;
 }

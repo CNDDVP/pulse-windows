@@ -52,6 +52,11 @@ pub fn fetch_local() -> Result<Value, ProviderUsage> {
 }
 
 fn read_state_vscdb(path: &PathBuf) -> Result<Value, String> {
+    let is_stale = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map(|mtime| mtime.elapsed().map(|el| el.as_secs() > 7 * 86400).unwrap_or(false))
+        .unwrap_or(false);
+
     let conn = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| e.to_string())?;
     // While Windsurf is running its DB may be locked; wait briefly instead of
@@ -62,11 +67,34 @@ fn read_state_vscdb(path: &PathBuf) -> Result<Value, String> {
     let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
 
     for row in rows.flatten() {
-        if let Ok(v) = serde_json::from_str::<Value>(&row) {
+        if let Ok(mut v) = serde_json::from_str::<Value>(&row) {
             if v.get("dailyRemainingPercent").is_some() || v.get("weeklyRemainingPercent").is_some() || v.get("daily_percentage").is_some() {
+                if is_stale {
+                    v["_unverified"] = serde_json::json!(true);
+                }
                 return Ok(v);
             }
         }
     }
     Err("未在 state.vscdb 找到额度记录".into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_state_vscdb_fresh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("state.vscdb");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE ItemTable (key TEXT, value TEXT)", []).unwrap();
+        conn.execute("INSERT INTO ItemTable VALUES ('windsurf.quota', '{\"dailyRemainingPercent\": 80}')", []).unwrap();
+        drop(conn);
+
+        let val = read_state_vscdb(&db_path).unwrap();
+        assert_eq!(val["dailyRemainingPercent"], 80);
+        assert_ne!(val["_unverified"], true);
+    }
+}
+

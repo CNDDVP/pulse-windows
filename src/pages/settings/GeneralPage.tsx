@@ -1,16 +1,18 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, MonitorOption, ProviderUsage } from "../../types";
-import { Section, Row, Field, Switch, selectCls, btnGhost, timeText } from "./shared";
+import { Section, Row, Field, Switch } from "./shared";
+import { selectCls, btnGhost, timeText } from "./constants";
 
 export function GeneralPage({ settings, update, screens, usages, busy, onRefreshAll, toast }: {
   settings: AppSettings; update: (patch: Partial<AppSettings>) => void; screens: MonitorOption[];
   usages: ProviderUsage[]; busy: boolean; onRefreshAll: () => Promise<void>;
   toast: (type: "success" | "info" | "error", text: string) => void;
 }) {
-  // Login startup is real system state (HKCU Run key), read on mount, never a JSON flag.
   const [startup, setStartup] = useState<boolean | null>(null);
+  const [isPortable, setIsPortable] = useState(false);
   useEffect(() => { void invoke<boolean>("startup_enabled").then(setStartup).catch(() => setStartup(null)); }, []);
+  useEffect(() => { void invoke<boolean>("is_portable").then(setIsPortable).catch(() => {}); }, []);
   const lastSuccess = usages.map(u => u.last_success_at).filter((s): s is string => !!s).sort().at(-1) ?? null;
 
   return (
@@ -101,8 +103,17 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
       </Section>
 
       <Section title="启动" icon="🚀">
-        <Row title="登录 Windows 时启动 Pulse" subtitle={startup === null ? "无法读取系统启动项状态" : "写入当前用户的注册表 Run 项，状态直接读自系统。"} disabled={startup === null}>
-          <Switch checked={!!startup} disabled={startup === null} label="登录 Windows 时启动 Pulse" onChange={v => void invoke<boolean>("set_startup", { enable: v }).then(s => { setStartup(s); toast("success", s ? "已加入开机启动" : "已移除开机启动"); }).catch(e => toast("error", String(e)))} />
+        <Row
+          title="登录 Windows 时启动 Pulse"
+          subtitle={isPortable ? "便携模式已禁用开机自启（避免移动文件夹后在系统产生死链）。如需自启请使用安装版。" : startup === null ? "无法读取系统启动项状态" : "写入当前用户的注册表 Run 项，状态直接读自系统。"}
+          disabled={isPortable || startup === null}
+        >
+          <Switch
+            checked={isPortable ? false : !!startup}
+            disabled={isPortable || startup === null}
+            label="登录 Windows 时启动 Pulse"
+            onChange={v => void invoke<boolean>("set_startup", { enable: v }).then(s => { setStartup(s); toast("success", s ? "已加入开机启动" : "已移除开机启动"); }).catch(e => toast("error", String(e)))}
+          />
         </Row>
         <Field label="启动后">
           <select className={selectCls} value={settings.start_behavior} onChange={e => update({ start_behavior: e.target.value })}>

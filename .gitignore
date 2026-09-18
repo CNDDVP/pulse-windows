@@ -1,16 +1,49 @@
 # Logs
 logs
 *.log
-npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies & Build outputs
 node_modules
 dist
 dist-ssr
+dist-portable
 *.local
+src-tauri/target/
+src-tauri/gen/
+staging/
+release-artifacts/
+*.pdb
+
+# Runtime data, profiles & user configurations
+settings.json*
+usage-cache.json*
+alerts.json*
+profile.json*
+portable.flag
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+ledger.db*
+.audit/
+
+# Backups & temporary files
+*.bak
+*.backup
+*.tmp
+*~
+
+# Credentials & environment variables
+*.pfx
+*.p12
+*.key
+*.pem
+.env
+.env.*
 
 # Editor directories and files
 .vscode/*
@@ -22,9 +55,3 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
-src-tauri/target/
-src-tauri/gen/
-.audit/
-*.pdb
-

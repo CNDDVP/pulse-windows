@@ -25,7 +25,7 @@ export interface NotificationSettings { threshold: number | null; on_spent: bool
 export interface HotkeySettings { open_settings: string | null; toggle_rail: string | null }
 export interface MonitorOption { name: string; label: string }
 export interface AppSettings {
-  schema_version: number; dock_side: "right" | "left" | "top" | "free";
+  schema_version: number; generation?: number; dock_side: "right" | "left" | "top" | "free";
   auto_collapse_seconds: number; theme: "obsidian" | "translucent";
   refresh_interval_seconds: number; display_mode: "used" | "remaining";
   forecast: boolean; show_elapsed: boolean; follow_active_display: boolean; hide_fullscreen: boolean;
