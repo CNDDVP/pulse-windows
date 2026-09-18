@@ -8,15 +8,15 @@
 
 | 功能 | 上游 | 本地 | 状态 |
 |---|---|---|---|
-| 每账号动画机器人（8 个性/18 形状/状态反应/视线） | BotMark/* | 无 | ⬜ 批次 C |
+| 每账号动画机器人（8 个性/18 形状/状态反应/视线） | BotMark/* | 复用上游 bot-data.json 的 SVG 渲染 | ✅ 批次 C |
 | 点击圆环刷新单账号（合并/限流/键盘可达） | Docs/ui/input.md | 无 | ✅ 批次 A |
 | 彩色刷新短弧（≥650ms，与请求生命周期绑定） | Docs/ui/input.md | 无 | ✅ 批次 A |
 | CLI 工作状态采集（Claude/Codex，事件级） | UsageStore/ActivityStore | is_active 字段存在但后端从不赋值 | ✅ 批次 A（首版：Claude/Codex） |
-| 沿边缘拖动（左右上下）+ 拖离自由悬浮 + 拖回吸附 | PanelPointerWatcher | free 模式才能拖动 | ⬜ 批次 B |
-| 第二额度内环（可选） | Docs/ui/rings-and-surface.md | 无 | ⬜ 批次 D |
-| Antigravity 按模型组拆分展示（RailSlot） | Docs/ui/rings-and-surface.md | 按账号显示 | ⬜ 批次 D |
-| 小米 Coding Plan（第 19 个 Provider） | Docs/providers/xiaomi-coding-plan.md | 无 | ⬜ 批次 D |
-| 悬浮栏右键菜单（设置/刷新/显隐/退出） | — | 右键直接开设置 | ⬜ 批次 B |
+| 沿边缘拖动（左右上下）+ 拖离自由悬浮 + 拖回吸附 | PanelPointerWatcher | 统一自定义拖拽 + 32/48 滞回 | ✅ 批次 B |
+| 第二额度内环（可选） | Docs/ui/rings-and-surface.md | 同组最满自动/固定选择 | ✅ 批次 D |
+| Antigravity 按模型组拆分展示（RailSlot） | Docs/ui/rings-and-surface.md | 每组一槽，同账号同刷新 | ✅ 批次 D |
+| 小米 Coding Plan（第 19 个 Provider） | Docs/providers/xiaomi-coding-plan.md | Cookie 三路由+envelope 校验 | ✅ 批次 D |
+| 悬浮栏右键菜单（设置/刷新/显隐/退出） | — | 原生右键菜单 | ✅ 批次 B |
 | Codex helper CPU 空转修复 | 68fa829 | 不适用（macOS helper 管道路线不同） | 🪟 记录为 Windows 子进程 EOF/取消 测试项 |
 | 更新检查间隔 2 小时 | 68fa829 | 自动更新未启用（按发布计划保持关闭） | 🪟 暂缓 |
 | 悬浮详情卡 / 外圈时间环 / 通知 / 快捷键 / Token Spend | 有 | 有（Windows 形态） | ✅ 已对齐语义 |
