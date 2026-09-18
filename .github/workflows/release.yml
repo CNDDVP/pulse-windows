@@ -30,6 +30,9 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      - name: Build frontend assets
+        run: npm run build
+
       - name: Run verification checks
         run: |
           npm run lint
@@ -61,4 +64,6 @@ jobs:
           files: |
             release-artifacts/Pulse-*-windows-x64-setup.exe
             release-artifacts/Pulse-*-windows-x64-portable.zip
+            release-artifacts/DEPENDENCIES.txt
+            release-artifacts/BUILD_INFO.txt
             release-artifacts/SHA256SUMS.txt

@@ -84,8 +84,8 @@ jobs:
       - name: Frontend unit tests
         run: npm test
 
-      - name: Rust unit & regression tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
-
       - name: Frontend production build
         run: npm run build
+
+      - name: Rust unit & regression tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
