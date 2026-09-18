@@ -58,7 +58,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   const closeFreeDetail=()=>{setHovered(null);void invoke("hide_detail");};
   // Free-mode drag: 6dip threshold or 200ms hold on the rail background starts a native move.
   useEffect(()=>{
-    if(!free)return;
+    if(!free){draggingFree.current=false;dragArmed.current=null;void invoke("hide_detail");return}
     const up=()=>{if(draggingFree.current){draggingFree.current=false;void invoke("commit_free_position");}dragArmed.current=null;};
     window.addEventListener("pointerup",up);
     return()=>window.removeEventListener("pointerup",up);

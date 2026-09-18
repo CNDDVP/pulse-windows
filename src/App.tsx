@@ -24,6 +24,8 @@ function DetailOverlay() {
     const b=listen<ProviderUsage[]>("usages-updated",e=>{if(alive)setUsages(e.payload)});
     void invoke<ProviderUsage[]>("get_usages").then(u=>{if(alive)setUsages(u)}).catch(()=>{});
     void invoke<AppSettings>("get_settings").then(x=>{if(alive)setSettings(x)}).catch(()=>{});
+    // The create-time "detail-account" event can fire before this listener exists; ask directly.
+    void invoke<string|null>("detail_account").then(id=>{if(alive&&id)setAccountId(id)}).catch(()=>{});
     return()=>{alive=false;void a.then(f=>f());void b.then(f=>f())};
   },[]);
   const usage=usages?.find(u=>u.account_id===accountId);

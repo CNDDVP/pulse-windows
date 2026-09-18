@@ -158,7 +158,9 @@ pub async fn commit_free_position(state:State<'_,AppState>,app:AppHandle)->Resul
     let x=(pos.x as f64).clamp(left,(left+aw-wpx).max(left));
     let y=(pos.y as f64).clamp(top,(top+ah-hpx).max(top));
     let mut settings=state.settings.lock().await.clone();
-    settings.dock_side="free".into();
+    // A late commit after the user already switched back to a dock must not snap them
+    // back into free mode: only update the remembered position while free is active.
+    if settings.dock_side!="free"{crate::window::position(&app,&settings,"rail");return Ok(())}
     settings.monitor_name=monitor.name().cloned();
     settings.free_x=if aw>wpx{(x-left)/(aw-wpx)}else{0.5};
     settings.free_y=if ah>hpx{(y-top)/(ah-hpx)}else{0.5};
@@ -196,13 +198,19 @@ pub fn show_detail(app:AppHandle,account_id:String,center_ratio:f64)->Result<(),
     };
     let _=window.set_size(tauri::PhysicalSize::new(dw as u32,dh as u32));
     let _=window.set_position(tauri::PhysicalPosition::new(x as i32,y as i32));
-    let _=app.emit("detail-account",&account_id);
+    *app.state::<AppState>().detail_account.lock().map_err(|_|"状态锁损坏")?=Some(account_id.clone());
     let _=window.show();
     let _=window.set_always_on_top(true);
+    let _=app.emit("detail-account",&account_id);
     Ok(())
 }
 #[tauri::command]
-pub fn hide_detail(app:AppHandle)->Result<(),String>{
+pub fn detail_account(state:State<'_,AppState>)->Option<String>{
+    state.detail_account.lock().ok().and_then(|g|g.clone())
+}
+#[tauri::command]
+pub fn hide_detail(app:AppHandle,state:State<'_,AppState>)->Result<(),String>{
+    if let Ok(mut g)=state.detail_account.lock(){*g=None;}
     if let Some(w)=app.get_webview_window("detail"){let _=w.hide();}
     Ok(())
 }
