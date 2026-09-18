@@ -113,7 +113,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   // follows the pointer, edges re-snap with Rust-side hysteresis); release saves.
   useEffect(()=>{
     let arm:{x:number;y:number}|null=null;
-    let dragging=false;let lastX=0,lastY=0,pending=false;
+    let dragging=false;let pending=false;
     const down=(e:PointerEvent)=>{
       if(e.button===2){
         // WebView2 swallows right-button events at the controller level: neither
@@ -128,18 +128,18 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       if(!dragging&&Math.hypot(e.clientX-arm.x,e.clientY-arm.y)>6){
         dragging=true;draggingRef.current=true;setDraggingUI(true);
         setHovered(null);void invoke("hide_detail");
-        void invoke("drag_begin",{cx:arm.x,cy:arm.y});
+        void invoke("drag_begin").catch(err=>{document.title="BEGERR "+String(err).slice(0,70)});
+        document.title="DRAG-ON";
       }
       if(dragging){
-        lastX=e.clientX;lastY=e.clientY;
         if(!pending){
           pending=true;
-          requestAnimationFrame(()=>{pending=false;void invoke("drag_move",{cx:lastX,cy:lastY});});
+          requestAnimationFrame(()=>{pending=false;void invoke("drag_move").catch(err=>{document.title="MOVERR "+String(err).slice(0,70)});});
         }
       }
     };
     const up=()=>{
-      if(dragging){dragging=false;draggingRef.current=false;setDraggingUI(false);void invoke("drag_end",{cx:lastX,cy:lastY});}
+      if(dragging){dragging=false;draggingRef.current=false;setDraggingUI(false);void invoke("drag_end");}
       arm=null;
     };
     const cancel=()=>{

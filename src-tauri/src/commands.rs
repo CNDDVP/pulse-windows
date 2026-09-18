@@ -413,40 +413,41 @@ mod tests {
 }
 
 #[tauri::command]
-pub fn drag_begin(app:AppHandle,cx:f64,cy:f64)->Result<(),String>{
+pub fn drag_begin(app:AppHandle)->Result<(),String>{
     let state=app.state::<AppState>();
     state.dragging.store(true,Ordering::Relaxed);
     if let Some(w)=app.get_webview_window("detail"){let _=w.hide();}
     if let Ok(mut g)=state.detail_account.lock(){*g=None;}
     let win=app.get_webview_window("main").ok_or("窗口不存在")?;
-    let scale=win.scale_factor().unwrap_or(1.0);
+    // Real system cursor: immune to the window moving under us and to per-monitor DPI math.
+    let Some((px,py))=crate::window::get_cursor_screen_pos()else{return Ok(())};
     let pos=win.outer_position().map_err(|e|e.to_string())?;
-    let px=pos.x+(cx*scale) as i32;let py=pos.y+(cy*scale) as i32;
     *state.drag_grab.lock().unwrap()=(px-pos.x,py-pos.y);
+    // Monitor enumeration is an expensive Win32 call: cache the list once per drag so
+    // drag_move stays cheap enough to track the cursor tightly.
+    let monitors=win.available_monitors().map_err(|e|e.to_string())?;
+    *state.drag_monitors.lock().unwrap()=monitors;
     Ok(())
 }
-/// Custom drag: the rail follows the pointer; edges snap with 32/48 DIP hysteresis.
+/// Custom drag: the rail follows the real cursor; edges snap with 32/48 DIP hysteresis.
 #[tauri::command]
-pub fn drag_move(app:AppHandle,cx:f64,cy:f64)->Result<(),String>{
+pub fn drag_move(app:AppHandle)->Result<(),String>{
     let state=app.state::<AppState>();
     if !state.dragging.load(Ordering::Relaxed){return Ok(())}
+    let Some((px,py))=crate::window::get_cursor_screen_pos()else{return Ok(())};
     let win=app.get_webview_window("main").ok_or("窗口不存在")?;
-    let wscale=win.scale_factor().unwrap_or(1.0);
-    let pos=win.outer_position().map_err(|e|e.to_string())?;
-    let px=pos.x+(cx*wscale) as i32;let py=pos.y+(cy*wscale) as i32;
-    let monitors=win.available_monitors().map_err(|e|e.to_string())?;
+    let monitors=state.drag_monitors.lock().unwrap().clone();
     let m_owned:tauri::Monitor=monitors.iter().find(|m|{let a=m.work_area();px>=a.position.x&&px<a.position.x+a.size.width as i32&&py>=a.position.y&&py<a.position.y+a.size.height as i32}).cloned()
         .or_else(||win.current_monitor().ok().flatten())
         .or_else(||win.primary_monitor().ok().flatten()).ok_or("无法确定显示器")?;
     let m=&m_owned;
-    let (side,fx,fy)=classify_drag(&state,&m,px,py);
+    let (side,fx,fy)=classify_drag(&state,m,px,py);
     if side=="free"{
         let (gx,gy)=*state.drag_grab.lock().unwrap();
         // A docked preview may have resized the window: restore rail size for this monitor.
         let Some(settings)=state.settings.try_lock().ok().map(|s|s.clone())else{return Ok(())};
         let rect=crate::window::dock_rect(&settings,&m,"rail",(0.5,0.5));
-        let _=win.set_size(tauri::PhysicalSize::new(rect.w,rect.h));
-        let _=win.set_position(tauri::PhysicalPosition::new(px-gx,py-gy));
+        crate::window::place_at(&win,px-gx,py-gy,rect.w,rect.h);
     }else{
         let Some(settings)=state.settings.try_lock().ok().map(|s|s.clone())else{return Ok(())};
         let rect=crate::window::dock_rect(&settings,&m,&side,(fx,fy));
@@ -472,14 +473,12 @@ fn classify_drag(state:&tauri::State<AppState>,m:&tauri::Monitor,px:i32,py:i32)-
     (side,fx,fy)
 }
 #[tauri::command]
-pub async fn drag_end(app:AppHandle,cx:f64,cy:f64)->Result<(),String>{
+pub async fn drag_end(app:AppHandle)->Result<(),String>{
     let state=app.state::<AppState>();
     if !state.dragging.swap(false,Ordering::Relaxed){return Ok(())}
+    let Some((px,py))=crate::window::get_cursor_screen_pos()else{return Ok(())};
     let win=app.get_webview_window("main").ok_or("窗口不存在")?;
-    let wscale=win.scale_factor().unwrap_or(1.0);
-    let pos=win.outer_position().map_err(|e|e.to_string())?;
-    let px=pos.x+(cx*wscale) as i32;let py=pos.y+(cy*wscale) as i32;
-    let monitors=win.available_monitors().map_err(|e|e.to_string())?;
+    let monitors=state.drag_monitors.lock().unwrap().clone();
     let m_owned:tauri::Monitor=monitors.iter().find(|m|{let a=m.work_area();px>=a.position.x&&px<a.position.x+a.size.width as i32&&py>=a.position.y&&py<a.position.y+a.size.height as i32}).cloned()
         .or_else(||win.current_monitor().ok().flatten())
         .or_else(||win.primary_monitor().ok().flatten()).ok_or("无法确定显示器")?;
