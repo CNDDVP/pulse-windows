@@ -45,51 +45,66 @@ impl AppState {
         self.activity.lock().ok().and_then(|m|m.get(account_id).map(|(a,_)|*a)).unwrap_or(false)
     }
 
-    /// Refresh one account on demand, merging repeated clicks and sharing the global
-    /// concurrency slots with scheduled refreshes. Returns the request id to track.
+    /// Refresh one account on demand: merged clicks reuse the in-flight request, the
+    /// server's backoff window is respected, and timeouts write a failure reading.
     pub async fn refresh_account_now(app:&AppHandle,account_id:&str)->Result<u64,String>{
         let state=app.state::<AppState>();
         if let Some(e)=state.config_error(){return Err(e)}
         let settings=state.settings.lock().await.clone();
         let Some(cfg)=settings.providers.get(account_id)else{return Err("账号不存在".into())};
         if !cfg.enabled{return Err("账号未启用；先保存账号设置".into())}
+        // Honour the provider's backoff window from the last failed attempt.
+        {
+            let schedule=state.schedule.lock().await;
+            if let Some((at,failures))=schedule.get(account_id){
+                if *failures>0 && *at>Instant::now(){
+                    let left=at.duration_since(Instant::now()).as_secs().max(1);
+                    return Err(format!("服务商限流/退避中，约 {} 秒后可重试",left));
+                }
+            }
+        }
+        let created;
         let request_id={
             let mut inflight=state.inflight.lock().await;
-            if let Some(&existing)=inflight.get(account_id){existing}
-            else{
-                let id=state.next_request_id();
-                inflight.insert(account_id.to_string(),id);
-                id
-            }
+            if let Some(&existing)=inflight.get(account_id){created=false;existing}
+            else{created=true;let id=state.next_request_id();inflight.insert(account_id.to_string(),id);id}
         };
-        let _=app.emit("refresh-state",serde_json::json!({"account_id":account_id,"request_id":request_id,"phase":"started"}));
-        let generation=state.account_generations.lock().await.get(account_id).copied().unwrap_or(0);
-        let http=state.http.clone();let cfg_clone=cfg.clone();
-        let aid=account_id.to_string();let app2=app.clone();
-        let slots=state.refresh_slots.clone();
-        tauri::async_runtime::spawn(async move{
-            let permit=slots.acquire_owned().await;
-            let reading=match permit{
-                Ok(p)=>{let _p=p;tokio::time::timeout(Duration::from_secs(25),providers::fetch_one(&aid,&cfg_clone,&http)).await.ok()}
-                Err(_)=>None,
-            };
-            let st=app2.state::<AppState>();
-            let still_valid={
-                let s=st.settings.lock().await;
-                s.providers.get(&aid).is_some_and(|c|c.enabled)
-                && st.account_generations.lock().await.get(&aid).copied().unwrap_or(0)==generation
-            };
-            st.inflight.lock().await.remove(&aid);
-            let (ok,kind)=match (&reading,still_valid){
-                (_,false)=>(false,"stale".to_string()),
-                (None,true)=>(false,"timeout".to_string()),
-                (Some(r),true)=>(r.state=="live",if r.state=="live"{"live".to_string()}else{r.error_code.clone().unwrap_or_else(||r.state.clone())}),
-            };
-            if still_valid{
-                if let Some(r)=reading{let _=apply_single_reading(&app2,&aid,r).await;}
-            }
-            let _=app2.emit("refresh-state",serde_json::json!({"account_id":aid,"request_id":request_id,"phase":"finished","ok":ok,"kind":kind}));
-        });
+        if created{
+            let _=app.emit("refresh-state",serde_json::json!({"account_id":account_id,"request_id":request_id,"phase":"started"}));
+            let generation=state.account_generations.lock().await.get(account_id).copied().unwrap_or(0);
+            let http=state.http.clone();let cfg_clone=cfg.clone();
+            let aid=account_id.to_string();let app2=app.clone();
+            let slots=state.refresh_slots.clone();
+            tauri::async_runtime::spawn(async move{
+                let permit=slots.acquire_owned().await;
+                let reading=match permit{
+                    Ok(p)=>{let _p=p;tokio::time::timeout(Duration::from_secs(25),providers::fetch_one(&aid,&cfg_clone,&http)).await.ok()}
+                    Err(_)=>None,
+                };
+                let st=app2.state::<AppState>();
+                let still_valid={
+                    let s=st.settings.lock().await;
+                    s.providers.get(&aid).is_some_and(|c|c.enabled)
+                    && st.account_generations.lock().await.get(&aid).copied().unwrap_or(0)==generation
+                };
+                st.inflight.lock().await.remove(&aid);
+                let (ok,kind)=match (&reading,still_valid){
+                    (_,false)=>(false,"stale".to_string()),
+                    (None,true)=>(false,"timeout".to_string()),
+                    (Some(r),true)=>(r.state=="live",if r.state=="live"{"live".to_string()}else{r.error_code.clone().unwrap_or_else(||r.state.clone())}),
+                };
+                if still_valid{
+                    // A timeout must be visible as a failure, not a silently stale reading.
+                    let r=reading.unwrap_or_else(||{
+                        let mut r=ProviderUsage::problem(&cfg_clone.provider_id,"timeout","查询超时；稍后自动重试");
+                        r.account_id=aid.clone();r.display_name=cfg_clone.label.clone();
+                        r
+                    });
+                    let _=apply_single_reading(&app2,&aid,r).await;
+                }
+                let _=app2.emit("refresh-state",serde_json::json!({"account_id":aid,"request_id":request_id,"phase":"finished","ok":ok,"kind":kind}));
+            });
+        }
         Ok(request_id)
     }
     pub async fn bump_account_gen(&self, account_id: &str) -> u64 {
@@ -160,6 +175,7 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
     let start_gens=state.account_generations.lock().await.clone();
     let mut rx=providers::fetch_all_stream(&due,&state.http,state.refresh_slots.clone());
     let mut incoming=vec![];
+    let mut passed:Vec<ProviderUsage>=vec![];
 
     while let Some(fresh)=rx.recv().await {
         incoming.push(fresh.clone());
@@ -171,6 +187,7 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
             let end_gens=state.account_generations.lock().await;
             if start_gens.get(&id) != end_gens.get(&id) { continue; }
         }
+        passed.push(fresh.clone());
 
         let mut cached=state.cached_usages.lock().await;
         let mut schedule=state.schedule.lock().await;
@@ -186,6 +203,7 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
         for u in cached.iter_mut(){
             let pin=current_settings.providers.get(&u.account_id).and_then(|c|c.primary_window.as_deref());
             *u=cache::expire_with_pin(u.clone(),pin,cache::now());
+            u.is_active=state.activity_flag(&u.account_id);
         }
         cached.sort_by_key(|u|current_settings.providers.get(&u.account_id).map(|c|c.order).unwrap_or(0));
         let snapshot=cached.clone();
@@ -198,7 +216,7 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
     // Notices are judged on this cycle's raw fetches, before cache reconciliation can mask a failure.
     let notices={
         let mut mem=state.alerts.lock().await;
-        let (notices,next)=alerts::evaluate(&incoming,&settings,mem.clone(),cache::now());
+        let (notices,next)=alerts::evaluate(&passed,&settings,mem.clone(),cache::now());
         if next!=*mem{*mem=next;let path=config::get_config_dir().join("alerts.json");let snapshot=mem.clone();let _=tauri::async_runtime::spawn_blocking(move||alerts::save(&path,&snapshot)).await;}
         notices
     };

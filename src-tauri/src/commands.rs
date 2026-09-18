@@ -485,22 +485,33 @@ pub async fn drag_end(app:AppHandle)->Result<(),String>{
     let (side,fx,fy)=classify_drag(&state,&m_owned,px,py);
     let m=&m_owned;
     let area=m.work_area();
+    let size=win.outer_size().map_err(|e|e.to_string())?;
+    let mut changed=false;
+    // Patch ONLY the position fields into the CURRENT settings: a save from the settings
+    // window that lands mid-drag must not be clobbered by the drag (and vice versa).
     let mut settings=state.settings.lock().await.clone();
-    settings.dock_side=side.clone();
+    if settings.dock_side!=side{settings.dock_side=side.clone();changed=true;}
     settings.monitor_name=m.name().cloned();
     if side=="free"{
         let pos=win.outer_position().map_err(|e|e.to_string())?;
-        let x=(pos.x as f64-area.position.x as f64).clamp(0.0,(area.size.width as f64).max(1.0));
-        let y=(pos.y as f64-area.position.y as f64).clamp(0.0,(area.size.height as f64).max(1.0));
-        settings.free_x=(x/area.size.width as f64).clamp(0.0,1.0);
-        settings.free_y=(y/area.size.height as f64).clamp(0.0,1.0);
+        // Save and restore share one denominator: the MOVABLE range (work area minus window).
+        let aw=(area.size.width as f64-size.width as f64).max(1.0);
+        let ah=(area.size.height as f64-size.height as f64).max(1.0);
+        let x=(pos.x as f64-area.position.x as f64).clamp(0.0,aw);
+        let y=(pos.y as f64-area.position.y as f64).clamp(0.0,ah);
+        let nfx=(x/aw).clamp(0.0,1.0);let nfy=(y/ah).clamp(0.0,1.0);
+        if (settings.free_x-nfx).abs()>1e-4{settings.free_x=nfx;changed=true;}
+        if (settings.free_y-nfy).abs()>1e-4{settings.free_y=nfy;changed=true;}
     }else{
-        settings.free_x=fx;settings.free_y=fy;
+        if (settings.free_x-fx).abs()>1e-4{settings.free_x=fx;changed=true;}
+        if (settings.free_y-fy).abs()>1e-4{settings.free_y=fy;changed=true;}
         crate::window::position(&app,&settings,"rail");
     }
-    crate::config::save_settings(&settings)?;
-    *state.settings.lock().await=settings.clone();
-    let _=app.emit("settings-updated",&settings);
+    if changed{
+        crate::config::save_settings(&settings)?;
+        *state.settings.lock().await=settings.clone();
+        let _=app.emit("settings-updated",&settings);
+    }
     Ok(())
 }
 #[tauri::command]
