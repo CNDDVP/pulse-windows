@@ -29,7 +29,18 @@ pub fn client()->Result<reqwest::Client,String>{
 }
 
 pub async fn response(id:&str,request:reqwest::RequestBuilder)->Result<Value,ProviderUsage>{
-    let mut response=request.send().await.map_err(|e|ProviderUsage::problem(id,if e.is_timeout(){"timeout"}else{"network"},"网络请求失败；请检查代理或连接"))?;
+    let host=request.try_clone()
+        .and_then(|r|r.build().ok())
+        .and_then(|r|r.url().host_str().map(str::to_string))
+        .unwrap_or_else(||"目标服务".to_string());
+    let mut response=request.send().await.map_err(|e|{
+        let host=host.as_str();
+        let detail=if e.is_timeout(){"连接超时".to_string()}
+            else if e.is_connect(){format!("无法建立到 {host} 的连接").to_string()}
+            else if e.is_decode(){"响应解码失败".to_string()}
+            else{format!("{host}：{e}")};
+        ProviderUsage::problem(id,if e.is_timeout(){"timeout"}else{"network"},&format!("网络请求失败：{detail}；请检查代理或连接"))
+    })?;
     if !response.status().is_success(){
         let (code,msg)=match response.status().as_u16(){401|403=>("auth","凭据失效或权限不足，请重新登录"),429=>("rate_limited","请求频率受限，稍后重试"),404=>("not_found","服务接口不存在"),300..=399=>("redirect","服务重定向已阻止，请核对登录状态"),_=>("server","服务暂时无法提供数据")};
         let mut r=ProviderUsage::problem(id,code,msg);

@@ -33,7 +33,13 @@ pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppStat
     new_settings.validate()?;
     let old=state.settings.lock().await.clone();
     if new_settings.generation!=0 && new_settings.generation!=old.generation{
-        return Err("设置已被其他操作修改，请重新加载后再试".into());
+        // 代际不一致几乎总是拖拽/托盘写入的位置字段：把后端的位置口径合并进本次提交，
+        // 其余（账号、凭据、颜色、内环）仍以用户表单为准——不再硬拒绝把用户卡死。
+        new_settings.dock_side=old.dock_side.clone();
+        new_settings.monitor_name=old.monitor_name.clone();
+        new_settings.free_x=old.free_x;
+        new_settings.free_y=old.free_y;
+        new_settings.generation=old.generation;
     }
     // An existing account cannot silently change the provider that receives its credential.
     for (id,cfg) in &new_settings.providers{if old.providers.get(id).is_some_and(|c|c.provider_id!=cfg.provider_id){return Err("不能更改已有账号的服务商，请新建账号".into())}}
