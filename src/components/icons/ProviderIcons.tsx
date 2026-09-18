@@ -1,88 +1,97 @@
 import React from "react";
+import { siClaude, siCursor, siDeepseek, siGithubcopilot, siKimi, siMinimax, siZdotai, siOllama, siOpencode } from "simple-icons";
 
-interface IconProps {
-  className?: string;
-  size?: number;
+interface IconProps { className?: string; size?: number }
+
+/** Every brand mark renders from a 24×24 path filled with currentColor so it follows the
+ *  theme and the ring state. Simple-icons paths are height-normalized, which keeps all
+ *  providers visually the same size. */
+function BrandIcon({ icon, className = "w-4 h-4", size = 18 }: IconProps & { icon: { path: string } }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d={icon.path} />
+    </svg>
+  );
 }
 
-export const ClaudeIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
-    {/* Claude Asterisk / Starburst */}
-    <path d="M12 2v20M2 12h20M4.93 4.93l14.14 14.14M4.93 19.07L19.07 4.93" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-  </svg>
-);
+export const ClaudeIcon: React.FC<IconProps> = p => <BrandIcon {...p} icon={siClaude} />;
+export const CursorIcon: React.FC<IconProps> = p => <BrandIcon {...p} icon={siCursor} />;
+export const DeepSeekIcon: React.FC<IconProps> = p => <BrandIcon {...p} icon={siDeepseek} />;
+export const CopilotIcon: React.FC<IconProps> = p => <BrandIcon {...p} icon={siGithubcopilot} />;
+export const KimiIcon: React.FC<IconProps> = p => <BrandIcon {...p} icon={siKimi} />;
+export const MiniMaxIcon: React.FC<IconProps> = p => <BrandIcon {...p} icon={siMinimax} />;
+export const ZaiIcon: React.FC<IconProps> = p => <BrandIcon {...p} icon={siZdotai} />;
+export const OllamaIcon: React.FC<IconProps> = p => <BrandIcon {...p} icon={siOllama} />;
+export const OpenCodeIcon: React.FC<IconProps> = p => <BrandIcon {...p} icon={siOpencode} />;
 
+/** OpenAI "Blossom", the classic height-normalized path of the official mark — the same
+ *  shape as OAI_OpenAI-Blossom_Black.svg but scaled to fill the 24×24 box like the rest. */
 export const OpenAIIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
-  <svg width={size} height={size} viewBox="0 0 716 716" fill="currentColor" className={className}>
-    {/* OpenAI "Blossom" mark, path from the official brand kit (OAI_OpenAI-Blossom_Black.svg) */}
-    <path d="M508.749 317.399C516.777 287.314 508.991 253.884 485.389 230.282C461.788 206.681 428.36 198.895 398.273 206.923C376.231 184.928 343.39 174.956 311.148 183.596C278.906 192.234 255.45 217.292 247.36 247.361C217.291 255.451 192.233 278.91 183.595 311.149C174.957 343.391 184.927 376.232 206.924 398.274C198.896 428.359 206.683 461.789 230.284 485.391C253.885 508.992 287.313 516.779 317.401 508.75C339.442 530.745 372.286 540.717 404.525 532.079C436.767 523.441 460.223 498.384 468.313 468.315C498.383 460.224 523.44 436.766 532.078 404.526C540.716 372.285 530.747 339.443 508.749 317.402V317.399ZM470.899 244.776C486.892 260.77 493.488 282.601 490.687 303.412L415.577 260.046C412.411 258.218 408.509 258.218 405.345 260.046L317.401 310.82V277.526C317.401 275.191 318.652 273.005 320.676 271.837L387.644 233.174C414.178 218.353 448.346 222.223 470.901 244.776H470.899ZM357.837 311.144L398.275 334.491V381.185L357.837 404.532L317.398 381.185V334.491L357.837 311.144ZM264.776 269.693C265.207 239.305 285.644 211.649 316.453 203.393C338.3 197.54 360.505 202.744 377.127 215.573L302.014 258.937C298.848 260.764 296.898 264.144 296.898 267.798V369.346L268.065 352.699C266.043 351.531 264.776 349.353 264.776 347.017V269.691V269.693ZM203.391 316.454C209.244 294.608 224.854 277.978 244.276 269.999V356.73C244.276 360.384 246.226 363.763 249.392 365.591L337.337 416.365L308.503 433.013C306.481 434.181 303.961 434.188 301.939 433.02L234.971 394.357C208.868 378.789 195.138 347.261 203.391 316.454ZM244.775 470.9C228.781 454.906 222.186 433.075 224.986 412.264L300.096 455.63C303.263 457.457 307.164 457.457 310.328 455.63L398.273 404.856V438.149C398.273 440.485 397.022 442.671 394.997 443.839L328.029 482.502C301.495 497.322 267.327 493.452 244.772 470.9H244.775ZM450.897 445.982C450.466 476.371 430.029 504.027 399.22 512.283C377.373 518.136 355.168 512.932 338.547 500.102L413.659 456.738C416.826 454.911 418.775 451.532 418.775 447.877V346.329L447.609 362.977C449.631 364.145 450.897 366.323 450.897 368.659V445.985V445.982ZM512.282 399.221C506.429 421.068 490.819 437.697 471.397 445.676V358.946C471.397 355.292 469.448 351.912 466.281 350.085L378.336 299.311L407.17 282.663C409.192 281.495 411.712 281.487 413.734 282.655L480.702 321.318C506.805 336.887 520.536 368.415 512.282 399.221Z" />
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
+    <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z" />
   </svg>
 );
 
+/** Google Antigravity mark (peak with flared legs), geometry from the official wordmark SVG. */
 export const AntigravityIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
   <svg width={size} height={size} viewBox="6 8 100 100" fill="currentColor" className={className}>
-    {/* Google Antigravity mark (peak with flared legs), geometry from the official wordmark SVG */}
     <path d="M89.6992 93.695C94.3659 97.195 101.366 94.8617 94.9492 88.445C75.6992 69.7783 79.7825 18.445 55.8659 18.445C31.9492 18.445 36.0325 69.7783 16.7825 88.445C9.78251 95.445 17.3658 97.195 22.0325 93.695C40.1159 81.445 38.9492 59.8617 55.8659 59.8617C72.7825 59.8617 71.6159 81.445 89.6992 93.695Z" />
   </svg>
 );
 
-export const CursorIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
-    {/* Cursor Beveled Box */}
-    <rect x="4" y="4" width="16" height="16" rx="3" />
-    <rect x="8" y="8" width="8" height="8" rx="1.5" />
-  </svg>
-);
-
-export const KimiIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
-    {/* Kimi K. style */}
-    <text x="12" y="17" fontSize="15" fontWeight="bold" textAnchor="middle" fill="currentColor" fontFamily="sans-serif">
-      K.
-    </text>
-  </svg>
-);
-
-export const CopilotIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
-    <path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.1-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V21c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0 0 12 2z" />
-  </svg>
-);
-
-export const DeepSeekIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
-    <path d="M4 12a8 8 0 0 1 16 0c0 4.42-3.58 8-8 8H4v-8z" />
-    <circle cx="9" cy="11" r="1.5" fill="currentColor" />
-  </svg>
-);
-
+/** Zhipu wordmark: the heavy slab Z the user picked. */
 export const ZhipuIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
-    {/* Zhipu / z.ai wordmark: a heavy slab Z with slanted bar ends */}
     <path d="M5.5 4H20v3.3L11.1 16.7H19v3.3H4v-3.3L12.9 7.3H5.5z" />
+  </svg>
+);
+
+/** Grok (xAI): the slanted cross mark. */
+export const GrokIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" className={className}>
+    <path d="M6.5 5 17.5 19M17.5 5 6.5 19" transform="skewX(-10)" />
+  </svg>
+);
+
+/** Volcengine (火山引擎): flame mark. */
+export const VolcengineIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
+    <path d="M12 2.5c3 3.6 6.5 6.2 6.5 10.3a6.5 6.5 0 0 1-13 0C5.5 8.7 9 6.1 12 2.5zm0 16.4a4.1 4.1 0 0 0 4.1-4.1c0-1.6-1-2.9-2.4-4.3-.5.9-1.2 1.5-2 1.5-1.3 0-2-1.1-2.3-2.4-1 1.3-1.5 3-1.5 5.2A4.1 4.1 0 0 0 12 18.9z" />
+  </svg>
+);
+
+/** Devin (Cognition): slab D. */
+export const DevinIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
+    <path d="M5 4h7a8 8 0 0 1 0 16H5V4zm3.2 3v10H12a5 5 0 0 0 0-10H8.2z" />
+  </svg>
+);
+
+/** Command Code: terminal prompt. */
+export const CommandCodeIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M5 6l6 6-6 6M13 18h6" />
   </svg>
 );
 
 export const ProviderIcon: React.FC<{ id: string; className?: string; size?: number }> = ({ id, className, size }) => {
   switch (id.toLowerCase()) {
-    case "claude":
-      return <ClaudeIcon className={className} size={size} />;
-    case "codex":
-    case "openai":
-      return <OpenAIIcon className={className} size={size} />;
-    case "antigravity":
-      return <AntigravityIcon className={className} size={size} />;
-    case "cursor":
-      return <CursorIcon className={className} size={size} />;
-    case "kimi":
-      return <KimiIcon className={className} size={size} />;
-    case "copilot":
-      return <CopilotIcon className={className} size={size} />;
-    case "deepseek":
-      return <DeepSeekIcon className={className} size={size} />;
-    case "zai":
-    case "zhipu":
-      return <ZhipuIcon className={className} size={size} />;
+    case "claude": return <ClaudeIcon className={className} size={size} />;
+    case "codex": case "openai": return <OpenAIIcon className={className} size={size} />;
+    case "antigravity": return <AntigravityIcon className={className} size={size} />;
+    case "cursor": return <CursorIcon className={className} size={size} />;
+    case "kimi": return <KimiIcon className={className} size={size} />;
+    case "copilot": return <CopilotIcon className={className} size={size} />;
+    case "deepseek": return <DeepSeekIcon className={className} size={size} />;
+    case "zai": return <ZaiIcon className={className} size={size} />;
+    case "zhipu": return <ZhipuIcon className={className} size={size} />;
+    case "grok": case "grok-bot": return <GrokIcon className={className} size={size} />;
+    case "ollama": return <OllamaIcon className={className} size={size} />;
+    case "minimax": case "minimax-cn": return <MiniMaxIcon className={className} size={size} />;
+    case "volcengine": return <VolcengineIcon className={className} size={size} />;
+    case "command-code": return <CommandCodeIcon className={className} size={size} />;
+    case "devin": return <DevinIcon className={className} size={size} />;
+    case "opencode": return <OpenCodeIcon className={className} size={size} />;
     default:
       return (
         <svg width={size || 18} height={size || 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
