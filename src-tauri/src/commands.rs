@@ -439,6 +439,23 @@ pub fn drag_move(app:AppHandle,cx:f64,cy:f64)->Result<(),String>{
         .or_else(||win.current_monitor().ok().flatten())
         .or_else(||win.primary_monitor().ok().flatten()).ok_or("无法确定显示器")?;
     let m=&m_owned;
+    let (side,fx,fy)=classify_drag(&state,&m,px,py);
+    if side=="free"{
+        let (gx,gy)=*state.drag_grab.lock().unwrap();
+        // A docked preview may have resized the window: restore rail size for this monitor.
+        let Some(settings)=state.settings.try_lock().ok().map(|s|s.clone())else{return Ok(())};
+        let rect=crate::window::dock_rect(&settings,&m,"rail",(0.5,0.5));
+        let _=win.set_size(tauri::PhysicalSize::new(rect.w,rect.h));
+        let _=win.set_position(tauri::PhysicalPosition::new(px-gx,py-gy));
+    }else{
+        let Some(settings)=state.settings.try_lock().ok().map(|s|s.clone())else{return Ok(())};
+        let rect=crate::window::dock_rect(&settings,&m,&side,(fx,fy));
+        crate::window::place(&win,&rect);
+    }
+    Ok(())
+}
+/// Pointer position -> (dock side or free, ratio along the edge), with 32/48 DIP hysteresis.
+fn classify_drag(state:&tauri::State<AppState>,m:&tauri::Monitor,px:i32,py:i32)->(String,f64,f64){
     let area=m.work_area();let ms=m.scale_factor();
     let dl=(px-area.position.x) as f64/ms;let dr=(area.position.x+area.size.width as i32-px) as f64/ms;
     let dt=(py-area.position.y) as f64/ms;
@@ -447,29 +464,27 @@ pub fn drag_move(app:AppHandle,cx:f64,cy:f64)->Result<(),String>{
         "left" if dl<=48.0=>"left","right" if dr<=48.0=>"right","top" if dt<=48.0=>"top",
         _=>if dl<=32.0{"left"}else if dr<=32.0{"right"}else if dt<=32.0{"top"}else{"free"},
     }).to_string();
+    let (mut fx,mut fy)=(0.5f64,0.5f64);
+    if side=="top"{fx=((px-area.position.x) as f64/area.size.width as f64).clamp(0.0,1.0);}
+    else if side!="free"{fy=((py-area.position.y) as f64/area.size.height as f64).clamp(0.0,1.0);}
     *state.drag_side.lock().unwrap()=side.clone();
-    if side=="free"{
-        let (gx,gy)=*state.drag_grab.lock().unwrap();
-        let _=win.set_position(tauri::PhysicalPosition::new(px-gx,py-gy));
-    }else{
-        let (mut fx,mut fy)=(0.5f64,0.5f64);
-        if side=="top"{fx=((px-area.position.x) as f64/area.size.width as f64).clamp(0.0,1.0);}
-        else{fy=((py-area.position.y) as f64/area.size.height as f64).clamp(0.0,1.0);}
-        *state.drag_ratio.lock().unwrap()=(fx,fy);
-        let Some(settings)=state.settings.try_lock().ok().map(|s|s.clone())else{return Ok(())};
-        let rect=crate::window::dock_rect(&settings,&m,&side,(fx,fy));
-        crate::window::place(&win,&rect);
-    }
-    Ok(())
+    *state.drag_ratio.lock().unwrap()=(fx,fy);
+    (side,fx,fy)
 }
 #[tauri::command]
-pub async fn drag_end(app:AppHandle)->Result<(),String>{
+pub async fn drag_end(app:AppHandle,cx:f64,cy:f64)->Result<(),String>{
     let state=app.state::<AppState>();
     if !state.dragging.swap(false,Ordering::Relaxed){return Ok(())}
-    let side=state.drag_side.lock().unwrap().clone();
-    let (fx,fy)=*state.drag_ratio.lock().unwrap();
     let win=app.get_webview_window("main").ok_or("窗口不存在")?;
-    let m=win.current_monitor().ok().flatten().or_else(||win.primary_monitor().ok().flatten()).ok_or("无法确定显示器")?;
+    let wscale=win.scale_factor().unwrap_or(1.0);
+    let pos=win.outer_position().map_err(|e|e.to_string())?;
+    let px=pos.x+(cx*wscale) as i32;let py=pos.y+(cy*wscale) as i32;
+    let monitors=win.available_monitors().map_err(|e|e.to_string())?;
+    let m_owned:tauri::Monitor=monitors.iter().find(|m|{let a=m.work_area();px>=a.position.x&&px<a.position.x+a.size.width as i32&&py>=a.position.y&&py<a.position.y+a.size.height as i32}).cloned()
+        .or_else(||win.current_monitor().ok().flatten())
+        .or_else(||win.primary_monitor().ok().flatten()).ok_or("无法确定显示器")?;
+    let (side,fx,fy)=classify_drag(&state,&m_owned,px,py);
+    let m=&m_owned;
     let area=m.work_area();
     let mut settings=state.settings.lock().await.clone();
     settings.dock_side=side.clone();

@@ -114,7 +114,15 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   useEffect(()=>{
     let arm:{x:number;y:number}|null=null;
     let dragging=false;let lastX=0,lastY=0,pending=false;
-    const down=(e:PointerEvent)=>{if(e.button!==0)return;arm={x:e.clientX,y:e.clientY};};
+    const down=(e:PointerEvent)=>{
+      if(e.button===2){
+        // WebView2 swallows right-button events at the controller level: neither
+        // `contextmenu` nor pointerdown(button=2) reaches the page. The tray menu
+        // covers these actions; try the native menu anyway for a future fix.
+        arm=null;void invoke("rail_menu").catch(()=>{});return;
+      }
+      if(e.button!==0)return;arm={x:e.clientX,y:e.clientY};
+    };
     const move=(e:PointerEvent)=>{
       if(!arm)return;
       if(!dragging&&Math.hypot(e.clientX-arm.x,e.clientY-arm.y)>6){
@@ -131,7 +139,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       }
     };
     const up=()=>{
-      if(dragging){dragging=false;draggingRef.current=false;setDraggingUI(false);void invoke("drag_end");}
+      if(dragging){dragging=false;draggingRef.current=false;setDraggingUI(false);void invoke("drag_end",{cx:lastX,cy:lastY});}
       arm=null;
     };
     const cancel=()=>{
@@ -202,7 +210,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     className={`relative w-full h-full flex ${top?"flex-col items-center":left?"flex-row items-center":"flex-row-reverse items-center"} select-none overflow-hidden`}
     onMouseEnter={enter}
     onMouseLeave={exit}
-    onContextMenu={e=>{e.preventDefault();void invoke("rail_menu")}}
+    onContextMenu={e=>{e.preventDefault();void invoke("rail_menu").catch(()=>{})}}
   >
     {/* The rail stays mounted (invisible) while collapsed so its live measurements keep driving the edge bar. */}
     <div
@@ -237,7 +245,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
         aria-label="展开 Pulse"
         onMouseEnter={enter}
         onDoubleClick={() => { setCollapsed(false); }}
-        onContextMenu={e=>{e.preventDefault();void invoke("rail_menu")}}
+        onContextMenu={e=>{e.preventDefault();void invoke("rail_menu").catch(()=>{})}}
         className={`absolute cursor-pointer rounded-full ${top ? "top-0 left-1/2 -translate-x-1/2 h-1" : left ? "left-0 top-1/2 -translate-y-1/2 w-1" : "right-0 top-1/2 -translate-y-1/2 w-1"} ${glowClass}`}
         style={top ? { width: railBox?.w ?? "100%" } : { height: railBox?.h ?? "100%" }}
       />
