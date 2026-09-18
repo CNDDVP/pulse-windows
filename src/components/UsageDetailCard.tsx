@@ -1,6 +1,6 @@
 import {useEffect,useState} from "react";
 import type {AppSettings,ProviderUsage} from "../types";
-import {resetText,forecast} from "../presentation";
+import {resetText,forecast,forecastKind} from "../presentation";
 export function UsageDetailCard({usage,settings,placement}:{usage:ProviderUsage;settings:AppSettings;placement?: "left" | "right"}){
   const [now,setNow]=useState(()=>Date.now());useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),10000);return()=>clearInterval(t)},[]);
   const dark = settings.theme === "obsidian";
@@ -40,7 +40,11 @@ export function UsageDetailCard({usage,settings,placement}:{usage:ProviderUsage;
             />
           </div>
           <p className="text-zinc-500">{resetText(w.resets_at,now)}</p>
-          {settings.forecast&&usage.state==="live"&&<p className="text-amber-500">{forecast(w,now)}</p>}
+          {settings.forecast&&usage.state==="live"&&(()=>{
+            const kind=forecastKind(w,now);
+            const color=kind==="exhausted"?"text-red-500":kind==="ok"?"text-emerald-500":kind==="soon"?"text-orange-500":"text-yellow-500";
+            return <p className={color}>{forecast(w,now)}</p>;
+          })()}
         </div>
       );
     })}

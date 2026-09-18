@@ -23,13 +23,27 @@ export function pickElapsedWindow(windows:UsageWindow[],pinned:string|null,now=D
   if(!usable.length)return null;
   return usable.reduce((best,w)=>Date.parse(w.resets_at!)<Date.parse(best.resets_at!)?w:best);
 }
-export function forecast(w:UsageWindow,now=Date.now()):string|null{
+export type ForecastKind="exhausted"|"ok"|"soon"|"risk";
+/** Severity class of the pace forecast, shared by the copy and its colour. */
+export function forecastKind(w:UsageWindow,now=Date.now()):ForecastKind|null{
   // One source of truth: prefer the fraction, fall back to percent/100, so a
   // window carrying only one of the two fields never reports a bogus rate.
   const used=Number.isFinite(w.used_fraction)&&w.used_fraction>=0?w.used_fraction:(Number.isFinite(w.used_percent)&&w.used_percent>=0?w.used_percent/100:NaN);
   const e=elapsed(w,now);if(e===null||e<0.02||!Number.isFinite(used)||used<=0||!w.window_seconds)return null;
   const rate=used/e;const remainingSeconds=(1-used)/rate*w.window_seconds;
-  if(used>=1)return "已达到包含额度";
-  if(rate<=1)return "按当前平均速度，预计可用至窗口结束";
-  return remainingSeconds<7200?`按窗口平均速度估算，约 ${Math.max(1,Math.ceil(remainingSeconds/60))} 分钟后用满`:"按窗口平均速度估算，可能在重置前用满";
+  if(used>=1)return "exhausted";
+  if(rate<=1)return "ok";
+  return remainingSeconds<7200?"soon":"risk";
+}
+export function forecast(w:UsageWindow,now=Date.now()):string|null{
+  switch(forecastKind(w,now)){
+    case "exhausted":return "已达到包含额度";
+    case "ok":return "按当前平均速度，预计可用至窗口结束";
+    case "soon":{const e=elapsed(w,now)!;const sec=w.window_seconds??0;
+      const used=Number.isFinite(w.used_fraction)&&w.used_fraction>=0?w.used_fraction:w.used_percent/100;
+      const remaining=(1-used)/(used/e)*sec;
+      return `按窗口平均速度估算，约 ${Math.max(1,Math.ceil(remaining/60))} 分钟后用满`;}
+    case "risk":return "按窗口平均速度估算，可能在重置前用满";
+    default:return null;
+  }
 }

@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {percentText,resetText,forecast,pickElapsedWindow} from './presentation';
+import {percentText,resetText,forecast,forecastKind,pickElapsedWindow} from './presentation';
 import type {ProviderUsage,UsageWindow} from './types';
 describe('truthful presentation',()=>{
   it('never draws error/loading as zero',()=>{for(const state of ['error','loading','unavailable'] as const){expect(percentText({state,primary_percent:0,balances:[]} as unknown as ProviderUsage)).toBe('—')}});
@@ -15,5 +15,13 @@ describe('truthful presentation',()=>{
     expect(pickElapsedWindow([week,five],'weekly',now)?.id).toBe('weekly');
     expect(pickElapsedWindow([week,five,untimed],'x',now)).toBeNull();
     expect(pickElapsedWindow([untimed],null,now)).toBeNull();
+  });
+  it('forecast kinds map to the four severities',()=>{
+    const t=Date.parse('2026-09-18T12:00:00Z');
+    const mk=(fraction:number,resetsInS:number,windowS=3600)=>({id:'w',name:'w',used_fraction:fraction,used_percent:fraction*100,resets_at:new Date(t+resetsInS*1000).toISOString(),window_seconds:windowS,exhausted:fraction>=1});
+    expect(forecastKind(mk(1,600),t)).toBe('exhausted');
+    expect(forecastKind(mk(0.1,600),t)).toBe('ok');
+    expect(forecastKind(mk(0.95,360),t)).toBe('soon');
+    expect(forecastKind(mk(0.9,17280,86400),t)).toBe('risk');
   });
 });
