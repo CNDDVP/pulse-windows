@@ -2,7 +2,7 @@ import {useRef} from "react";
 import {ProviderIcon} from "./icons/ProviderIcons";
 import {BotMark} from "./BotMark";
 import {percentText,elapsed,pickElapsedWindow} from "../presentation";
-import type {AppSettings,ProviderUsage,UsageWindow} from "../types";
+import type {AppSettings,ProviderUsage} from "../types";
 export function UsageRing({usage,settings,onHover,refreshing,onClick,lookX=0,dataKey}:
   {usage:ProviderUsage;settings:AppSettings;onHover:()=>void;refreshing?:boolean;onClick?:()=>void;lookX?:number;dataKey?:string}){
   const ref=useRef<HTMLButtonElement>(null);
@@ -25,16 +25,10 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,lookX=0,dat
     refreshing?"fetching":usage.is_active?"working":
     (exhausted||used>=100)?"spent":
     !["live","stale"].includes(usage.state)?"asleep":"idle";
-  // Second ring: pinned window, else the fullest limit in the primary window's model group
-  // (falling back to the fullest elsewhere); nothing when the account reports one limit.
+  // Second ring: only when the account explicitly picks a window; 关闭 means closed —
+  // no auto-picked residue.
   const secCfg=cfg?.secondary_window??null;
-  const primaryWin=valid?usage.windows.find(w=>w.id===cfg?.primary_window)??usage.windows.reduce((a,b)=>b.used_percent>a.used_percent?b:a,usage.windows[0]):undefined;
-  const groupOf=(w:UsageWindow)=>w.name.split(" · ")[0];
-  const sec=valid?(secCfg?usage.windows.find(w=>w.id===secCfg):(primaryWin?(()=>{
-    const same=usage.windows.filter(w=>w!==primaryWin&&groupOf(w)===groupOf(primaryWin));
-    const pool=same.length?same:usage.windows.filter(w=>w!==primaryWin);
-    return pool.length?pool.reduce((a,b)=>b.used_percent>a.used_percent?b:a):null;
-  })():null)):null;
+  const sec=valid&&secCfg?usage.windows.find(w=>w.id===secCfg)??null:null;
   const secLive=sec&&["live","stale"].includes(usage.state);
   const secColor=sec?(sec.exhausted||sec.used_percent>=red?"#ef4444":sec.used_percent>=amber?"#f97316":"#10b981"):"#71717a";
   return <button ref={ref} data-account={dataKey??usage.account_id} onClick={onClick} onMouseEnter={onHover} onFocus={onHover} title={`${usage.display_name} ${percentText(usage,settings.display_mode)}`} className="shrink-0 flex flex-col items-center p-1 text-xs rounded-lg focus:outline-2 focus:outline-emerald-500 hover:scale-105 transition-transform duration-150">
