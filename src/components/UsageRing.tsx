@@ -22,14 +22,15 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,lookX=0,dat
   // activity arc is not drawn then (the bot itself shows the working state).
   const useBot=cfg?.mark_mode==="bot";
   const mood:Parameters<typeof BotMark>[0]["mood"]=
-    refreshing?"fetching":usage.is_active?"working":
+    usage.is_active?"working":refreshing?"fetching":
     (exhausted||used>=100)?"spent":
     !["live","stale"].includes(usage.state)?"asleep":"idle";
   // Second ring: only when the account explicitly picks a window; 关闭 means closed —
   // no auto-picked residue.
   const secCfg=cfg?.secondary_window??null;
   const sec=valid&&secCfg?usage.windows.find(w=>w.id===secCfg)??null:null;
-  const secLive=sec&&["live","stale"].includes(usage.state);
+  const secLive=sec&&["live","stale"].includes(usage.state)&&sec.id!==cfg?.primary_window;
+  const secPct=sec?(settings.display_mode==="remaining"?Math.max(0,100-sec.used_percent):sec.used_percent):0;
   const secColor=sec?(sec.exhausted||sec.used_percent>=red?"#ef4444":sec.used_percent>=amber?"#f97316":"#10b981"):"#71717a";
   return <button ref={ref} data-account={dataKey??usage.account_id} onClick={onClick} onMouseEnter={onHover} onFocus={onHover} title={`${usage.display_name} ${percentText(usage,settings.display_mode)}`} className="shrink-0 flex flex-col items-center p-1 text-xs rounded-lg focus:outline-2 focus:outline-emerald-500 hover:scale-105 transition-transform duration-150">
     <div className="relative w-11 h-11 flex items-center justify-center">
@@ -38,7 +39,7 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,lookX=0,dat
         <circle cx="22" cy="22" r="18" fill="none" stroke={color} strokeWidth="2.8" strokeLinecap="round" opacity={refreshing?0.35:1} strokeDasharray={`${pct/100*113.097} 113.097`} className="transition-all duration-500 ease-out"/>
         {refreshing&&<g className="animate-spin" style={{animationDuration:"1s",transformOrigin:"22px 22px"}}><circle cx="22" cy="22" r="18" fill="none" stroke={color} strokeWidth="2.8" strokeLinecap="round" strokeDasharray="22 91"/></g>}
         {secLive&&sec&&<circle cx="22" cy="22" r="11" fill="none" stroke={dark?"rgba(255,255,255,0.1)":"rgba(0,0,0,0.07)"} strokeWidth="2.2"/>}
-        {secLive&&sec&&<circle cx="22" cy="22" r="11" fill="none" stroke={secColor} strokeWidth="2.2" strokeLinecap="round" strokeDasharray={`${Math.min(100,sec.used_percent)/100*69.12} 69.12`} className="transition-all duration-500 ease-out"/>}
+        {secLive&&sec&&<circle cx="22" cy="22" r="11" fill="none" stroke={secColor} strokeWidth="2.2" strokeLinecap="round" strokeDasharray={`${Math.min(100,Math.max(0,secPct))/100*69.12} 69.12`} className="transition-all duration-500 ease-out"/>}
         {clock!==null&&<circle cx="22" cy="22" r="21" fill="none" stroke="#ffffff" strokeWidth="1.5" strokeLinecap="round" opacity="0.95" strokeDasharray={`${(clock>0?Math.max(clock,0.025):0)*131.95} 131.95`}/>}
       </svg>
       <span className={`absolute inset-1.5 rounded-full flex items-center justify-center ${dark ? "bg-zinc-800/40 text-zinc-200" : "bg-black/5 text-zinc-700"}`}>

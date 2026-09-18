@@ -10,7 +10,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   const detailPointer=useRef(false);const leave=useRef<ReturnType<typeof setTimeout>|null>(null);
   const railRef=useRef<HTMLDivElement>(null);
   // Ring click → per-account refresh; the arc keeps spinning >=650ms even for fast replies.
-  const [refreshing,setRefreshing]=useState<Record<string,boolean>>({});
+  const [refreshing,setRefreshing]=useState<Record<string,number>>({});
   const refreshShownUntil=useRef<Record<string,number>>({});
   const suppressClickUntil=useRef(0);
   // Unified drag state machine: idle → armed(pointer down) → dragging(>6 dip) in every mode.
@@ -67,10 +67,15 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       const {account_id,phase}=e.payload;
       if(phase==="started"){
         refreshShownUntil.current[account_id]=Date.now()+650;
-        setRefreshing(r=>({...r,[account_id]:true}));
+        setRefreshing(r=>({...r,[account_id]:e.payload.request_id}));
       }else{
-        const wait=Math.max(0,(refreshShownUntil.current[account_id]??0)-Date.now());
-        window.setTimeout(()=>setRefreshing(r=>{const {[account_id]:_,...rest}=r;return rest;}),wait);
+        // 过期请求的结束事件不关闭新一轮动画
+        setRefreshing(r=>{
+          if(r[account_id]!==undefined&&r[account_id]!==e.payload.request_id)return r;
+          const wait=Math.max(0,(refreshShownUntil.current[account_id]??0)-Date.now());
+          if(wait>0){window.setTimeout(()=>setRefreshing(cur=>{const {[account_id]:_,...rest}=cur;return rest;}),wait);return r;}
+          const {[account_id]:_,...rest}=r;return rest;
+        });
       }
     });
     return()=>{void stop.then(f=>f())};

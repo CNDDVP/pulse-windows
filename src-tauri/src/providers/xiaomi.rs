@@ -36,7 +36,7 @@ async fn call(http:&reqwest::Client,cookie:&str,path:&str)->Result<Value,Provide
     if status==429{return Err(problem("rate_limited","请求频率受限，稍后重试"))}
     if !resp.status().is_success(){return Err(problem("server","小米控制台暂时不可用"))}
     let v:Value=resp.json().await.map_err(|_|problem("schema","小米控制台响应不是有效 JSON"))?;
-    let code=v["code"].as_i64().unwrap_or(0);
+    let Some(code)=v["code"].as_i64()else{return Err(problem("schema","小米控制台响应缺少或格式错误的 code 字段"))};
     if code==401||code==403{return Err(problem("auth","会话被控制台拒绝（HTTP 200 内 code）"))}
     if code!=0{return Err(problem("server",&format!("控制台返回业务错误 code {code}")))}
     Ok(v["data"].clone())
