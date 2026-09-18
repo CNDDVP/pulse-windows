@@ -69,7 +69,6 @@ pub fn open_settings_window(app:&AppHandle){
         .min_inner_size(700.0, 480.0)
         .resizable(true)
         .decorations(true)
-        .always_on_top(true)
         .center()
         // Windows: the native drop handler swallows HTML5 drag events the reorder list relies on.
         .disable_drag_drop_handler()
@@ -190,6 +189,6 @@ pub fn run(){
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::set_credential,commands::delete_credential,commands::diagnostics,commands::test_account,commands::token_spend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::test_notification])
+        .invoke_handler(tauri::generate_handler![commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::set_credential,commands::delete_credential,commands::diagnostics,commands::test_account,commands::token_spend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::hide_detail])
         .run(tauri::generate_context!()).expect("Pulse runtime failed");
 }

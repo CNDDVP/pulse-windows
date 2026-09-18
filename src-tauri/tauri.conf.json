@@ -28,6 +28,7 @@
         "label": "settings",
         "title": "Pulse 设置",
         "dragDropEnabled": false,
+        "alwaysOnTop": false,
         "url": "index.html",
         "width": 900,
         "height": 700,

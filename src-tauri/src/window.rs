@@ -70,9 +70,13 @@ pub fn friendly_monitor_names() -> std::collections::HashMap<String, String> {
 
 pub fn geometry(area:Rect,scale:f64,side:&str,state:&str,count:usize,fx:f64,fy:f64)->Rect{
     let horizontal=side=="top";
+    // Free floating has no dock edge to collapse against: it is always a full rail.
+    let state=if side=="free"{"rail"}else{state};
     let length=((count.max(4) as f64*76.0)+20.0).clamp(320.0,900.0);
     // Collapsed width is the hover hit area; the visible edge bar drawn inside it is 4 dip.
-    let breadth=if state=="collapsed"{10.0}else if state=="expanded"{380.0}else{72.0};
+    // A horizontal rail row is ~86 dip tall (ring + label + padding + border); 72 would clip
+    // the rounded bottom against the window edge. Only top dock uses breadth as height.
+    let breadth=if state=="collapsed"{10.0}else if state=="expanded"{380.0}else if horizontal{86.0}else{72.0};
     let (lw,lh)=if horizontal{(length,breadth)}else{(breadth,length)};
     let w=((lw*scale).round() as u32).min(area.w);let h=((lh*scale).round() as u32).min(area.h);
     let x=match side{"left"=>area.x,"right"=>area.x+(area.w-w) as i32,_=>area.x+((area.w-w) as f64*fx.clamp(0.0,1.0)).round() as i32};
@@ -106,7 +110,7 @@ pub fn position(app:&AppHandle,settings:&AppSettings,state:&str){
     {
         use windows::Win32::Foundation::{HWND, RECT};
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
+            GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, SWP_NOZORDER,
         };
         if let Ok(hwnd) = window.hwnd() {
             unsafe {
@@ -120,9 +124,10 @@ pub fn position(app:&AppHandle,settings:&AppSettings,state:&str){
                         return;
                     }
                 }
-                // SWP_NOCOPYBITS/SWP_DEFERERASE must stay off: they force a full client-area
-                // erase before the WebView repaints, which shows as the whole transparent
-                // window blinking out of existence on every state change.
+                // The default content copy is in CLIENT coordinates: right-dock transitions
+                // move the origin while widening, so copied pixels land one frame to the left
+                // and read as a flicker/jump. NOCOPYBITS discards them; repositions are rare
+                // now (unchanged rects are skipped above), so the one repaint frame is fine.
                 let _ = SetWindowPos(
                     HWND(hwnd.0),
                     HWND(std::ptr::null_mut()),
@@ -130,7 +135,7 @@ pub fn position(app:&AppHandle,settings:&AppSettings,state:&str){
                     rect.y,
                     rect.w as i32,
                     rect.h as i32,
-                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOCOPYBITS,
                 );
             }
             return;

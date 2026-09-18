@@ -2,7 +2,7 @@
   "$schema":"../gen/schemas/desktop-schema.json",
   "identifier":"default",
   "description":"Local application event transport only; secrets remain in Rust",
-  "windows":["main","settings"],
+  "windows":["main","settings","detail"],
   "permissions":[
     "core:event:allow-listen",
     "core:event:allow-unlisten",

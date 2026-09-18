@@ -138,3 +138,71 @@ pub fn notification_status(app:AppHandle)->NotificationStatus{
 }
 #[tauri::command]
 pub fn test_notification(app:AppHandle)->Result<(),String>{crate::notify(&app,"Pulse 测试通知","如果你看到这条消息，Windows 通知链路正常。")}
+
+#[tauri::command]
+pub fn begin_free_drag(app:AppHandle)->Result<(),String>{
+    app.get_webview_window("main").ok_or("窗口不存在")?.start_dragging().map_err(|e|format!("无法开始拖动：{e}"))
+}
+
+/// After a native drag: clamp the rail into the monitor it landed on and persist the
+/// position as normalized coordinates plus that monitor's name, so a restart restores it.
+#[tauri::command]
+pub async fn commit_free_position(state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
+    let w=app.get_webview_window("main").ok_or("窗口不存在")?;
+    let (pos,size)=match (w.outer_position(),w.outer_size()){(Ok(p),(Ok(s)))=>(p,s),_=>return Err("无法读取窗口位置".into())};
+    let monitor=w.current_monitor().ok().flatten().or_else(||w.primary_monitor().ok().flatten()).ok_or("无法确定显示器")?;
+    let area=monitor.work_area();
+    let (left,top)=(area.position.x as f64,area.position.y as f64);
+    let (aw,ah)=(area.size.width as f64,area.size.height as f64);
+    let (wpx,hpx)=(size.width as f64,size.height as f64);
+    let x=(pos.x as f64).clamp(left,(left+aw-wpx).max(left));
+    let y=(pos.y as f64).clamp(top,(top+ah-hpx).max(top));
+    let mut settings=state.settings.lock().await.clone();
+    settings.dock_side="free".into();
+    settings.monitor_name=monitor.name().cloned();
+    settings.free_x=if aw>wpx{(x-left)/(aw-wpx)}else{0.5};
+    settings.free_y=if ah>hpx{(y-top)/(ah-hpx)}else{0.5};
+    crate::config::save_settings(&settings)?;
+    *state.settings.lock().await=settings.clone();
+    let _=app.emit("settings-updated",&settings);
+    crate::window::position(&app,&settings,"rail");Ok(())
+}
+
+/// The free-mode detail card is its own topmost overlay so showing it can never move the rail.
+#[tauri::command]
+pub fn show_detail(app:AppHandle,account_id:String,center_ratio:f64)->Result<(),String>{
+    use tauri::Manager;
+    let rail=app.get_webview_window("main").ok_or("窗口不存在")?;
+    let (pos,size)=match (rail.outer_position(),rail.outer_size()){(Ok(p),(Ok(s)))=>(p,s),_=>return Err("无法读取悬浮栏位置".into())};
+    let monitor=rail.current_monitor().ok().flatten().or_else(||rail.primary_monitor().ok().flatten()).ok_or("无法确定显示器")?;
+    let area=monitor.work_area();let scale=monitor.scale_factor();
+    let (dw,dh)=(380.0*scale,340.0*scale);
+    // Decide the side from THIS monitor's halves, then flip if the other side has more room.
+    let rail_cx=pos.x as f64+size.width as f64/2.0;
+    let mon_cx=area.position.x as f64+area.size.width as f64/2.0;
+    let right_space=area.position.x as f64+area.size.width as f64-(pos.x as f64+size.width as f64);
+    let left_space=pos.x as f64-area.position.x as f64;
+    let prefer_right=rail_cx<mon_cx;
+    let side_right=if prefer_right{right_space>=dw||right_space>=left_space}else{left_space>=dw||left_space>right_space};
+    let x=if side_right{pos.x as f64+size.width as f64+8.0*scale}else{pos.x as f64-dw-8.0*scale};
+    let desired_y=pos.y as f64+size.height as f64*center_ratio-dh/2.0;
+    let y=desired_y.clamp(area.position.y as f64+8.0,area.position.y as f64+area.size.height as f64-dh-8.0);
+    let x=x.clamp(area.position.x as f64,area.position.x as f64+area.size.width as f64-dw);
+    let window=match app.get_webview_window("detail"){
+        Some(w)=>w,
+        None=>tauri::WebviewWindowBuilder::new(&app,"detail",tauri::WebviewUrl::App("index.html".into()))
+            .decorations(false).transparent(true).always_on_top(true).skip_taskbar(true).shadow(false).resizable(false).focused(false)
+            .inner_size(380.0,340.0).build().map_err(|e|format!("详情窗口创建失败：{e}"))?,
+    };
+    let _=window.set_size(tauri::PhysicalSize::new(dw as u32,dh as u32));
+    let _=window.set_position(tauri::PhysicalPosition::new(x as i32,y as i32));
+    let _=app.emit("detail-account",&account_id);
+    let _=window.show();
+    let _=window.set_always_on_top(true);
+    Ok(())
+}
+#[tauri::command]
+pub fn hide_detail(app:AppHandle)->Result<(),String>{
+    if let Some(w)=app.get_webview_window("detail"){let _=w.hide();}
+    Ok(())
+}

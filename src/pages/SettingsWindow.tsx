@@ -35,7 +35,8 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
-  const [newProvider, setNewProvider] = useState("kimi");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState("");
   const [screens, setScreens] = useState<MonitorOption[]>([]);
   const [toast, setToast] = useState<{ type: ToastKind; text: string } | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -126,11 +127,12 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
   const defaultOrder = useMemo(() => [...railOrder].sort((a, b) => providerName(settings.providers[a].provider_id).localeCompare(providerName(settings.providers[b].provider_id), "zh") || a.localeCompare(b)), [railOrder, settings.providers]);
   const isDefaultOrder = railOrder.every((id, i) => id === defaultOrder[i]);
 
-  const handleAddAccount = () => {
+  const handleAddAccount = (pid: string) => {
     const id = crypto.randomUUID();
-    patch(id, { provider_id: newProvider, label: providerName(newProvider), enabled: true, order: Object.values(settings.providers).reduce((m, c) => Math.max(m, c.order), -1) + 1, use_local: !!ROUTES[newProvider]?.local, credential_configured: false, primary_window: null, elapsed_window: null, ring_color: null, low_balance: null, low_balance_currency: null });
+    patch(id, { provider_id: pid, label: providerName(pid), enabled: true, order: Object.values(settings.providers).reduce((m, c) => Math.max(m, c.order), -1) + 1, use_local: !!ROUTES[pid]?.local, credential_configured: false, primary_window: null, elapsed_window: null, ring_color: null, low_balance: null, low_balance_currency: null });
+    setPickerOpen(false); setPickerQuery("");
     setView({ kind: "account", id });
-    showToast("info", `已添加 ${providerName(newProvider)}，完成配置后点击“保存”`);
+    showToast("info", `已添加 ${providerName(pid)} 账号，完成配置后点击“保存”`);
   };
   const remove = (id: string) => {
     const label = settings.providers[id]?.label || "该账号";
@@ -251,7 +253,7 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
                   <span className="min-w-0 flex-1"><span className="block truncate">{c.label || providerName(c.provider_id)}</span>{c.label && c.label !== providerName(c.provider_id) && <span className="block text-[10px] text-zinc-500 truncate">{providerName(c.provider_id)}</span>}</span>
                   {stateDot(u, c.enabled)}
                 </>, id); })}
-                {!q && <button onClick={handleAddAccount} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left text-xs text-emerald-400 hover:bg-emerald-950/40 cursor-pointer"><span className="font-bold">+</span><span>添加账号（{providerName(newProvider)}）</span></button>}
+                {!q && <button onClick={() => setPickerOpen(true)} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left text-xs text-emerald-400 hover:bg-emerald-950/40 cursor-pointer"><span className="font-bold">+</span><span>添加账号</span></button>}
               </div>
             )}
             {(!q || matchedPages.some(p => p.group === "app")) && (
@@ -278,11 +280,8 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
 
           {view.kind === "accounts" && (
             <div className="space-y-5 max-w-3xl">
-              <Section title="添加服务商账号" icon="➕" subtitle="同一服务商可添加多个账号，各自独立凭据、排序、颜色与通知。">
-                <div className="flex gap-3">
-                  <select className={selectCls} value={newProvider} onChange={e => setNewProvider(e.target.value)} aria-label="选择服务商">{PROVIDERS.map(p => <option key={p[0]} value={p[0]}>{p[1]}</option>)}</select>
-                  <button onClick={handleAddAccount} className={`${btnPrimary} shrink-0`}>+ 添加账号</button>
-                </div>
+              <Section title="添加服务商账号" icon="➕" subtitle="先选择服务商，再创建账号；同一服务商可添加多个账号，各自独立凭据、排序、颜色与通知。">
+                <button onClick={() => setPickerOpen(true)} className={btnPrimary}>+ 选择服务商并添加账号</button>
               </Section>
               <Section title="悬浮栏显示顺序" icon="☰" subtitle="拖动 ☰ 或用箭头调整，松手即保存并同步到悬浮栏；排序单位是账号。"
                 aside={<button className={btnGhost} disabled={locked || isDefaultOrder} onClick={() => commitOrder(defaultOrder)} title="按服务商名称排序">恢复默认顺序</button>}>
@@ -441,6 +440,35 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
           {view.kind === "account" && !current && <p className="text-xs text-zinc-500">该账号已不存在。</p>}
         </div>
       </div>
+      {pickerOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-8" onClick={() => { setPickerOpen(false); setPickerQuery(""); }}>
+          <div className="w-[26rem] max-h-[32rem] bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="p-4 border-b border-white/5 space-y-3">
+              <div className="flex justify-between items-center"><h3 className="text-sm font-semibold text-white">添加账号 · 选择服务商</h3>
+                <button className="text-zinc-400 hover:text-white cursor-pointer" onClick={() => { setPickerOpen(false); setPickerQuery(""); }} aria-label="取消">✕</button></div>
+              <input autoFocus value={pickerQuery} onChange={e => setPickerQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") { setPickerOpen(false); setPickerQuery(""); } }} placeholder="🔍 搜索服务商" aria-label="搜索服务商" className={inputCls} />
+            </div>
+            <ul className="flex-1 overflow-y-auto p-2 space-y-1">
+              {PROVIDERS.filter(p => `${p[1]} ${p[0]}`.toLowerCase().includes(pickerQuery.trim().toLowerCase())).map(([pid, name]) => {
+                const existing = railOrder.filter(id => settings.providers[id].provider_id === pid).length;
+                const addable = !!ROUTES[pid]?.manual;
+                return (
+                  <li key={pid}>
+                    <button disabled={!addable} onClick={() => handleAddAccount(pid)} className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left text-xs cursor-pointer ${addable ? "hover:bg-zinc-800 text-zinc-200" : "opacity-40 cursor-not-allowed"}`}>
+                      <span className="w-7 h-7 rounded-lg bg-zinc-800/90 border border-zinc-700/50 flex items-center justify-center text-zinc-200 shrink-0"><ProviderIcon id={pid} size={15} /></span>
+                      <span className="flex-1 min-w-0"><span className="block truncate">{name}</span>
+                        <span className="block text-[11px] text-zinc-500">{existing > 0 ? `已存在 ${existing} 个账号 · 支持多账号` : ROUTES[pid]?.local ? `支持本机登录与手动凭据` : `手动凭据`}</span>
+                      </span>
+                      {!addable && <span className="text-[10px] text-zinc-500 shrink-0">本机唯一服务，无法添加</span>}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="px-4 py-2 border-t border-white/5 text-[11px] text-zinc-500">取消不会创建空账号，也不会影响现有排序。</p>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

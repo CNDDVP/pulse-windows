@@ -47,8 +47,8 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
           </div>
         )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-white/5">
-          <Field label="鼠标移开后自动折叠" hint="折叠后只留一条 4px 的边缘细线，与悬浮栏等高。">
-            <select className={selectCls} value={settings.auto_collapse_seconds} onChange={e => update({ auto_collapse_seconds: Number(e.target.value) })}>
+          <Field label="鼠标移开后自动折叠" hint={settings.dock_side === "free" ? "自由浮动模式下不会自动折叠。" : "折叠后只留一条 4px 的边缘细线，与悬浮栏等高。"}>
+            <select disabled={settings.dock_side === "free"} className={selectCls} value={settings.auto_collapse_seconds} onChange={e => update({ auto_collapse_seconds: Number(e.target.value) })}>
               <option value={0}>不折叠</option><option value={1}>1 秒</option><option value={2}>2 秒</option><option value={3}>3 秒</option><option value={5}>5 秒</option><option value={10}>10 秒</option>
             </select>
           </Field>

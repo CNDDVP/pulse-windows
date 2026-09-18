@@ -6,7 +6,9 @@ import {UsageDetailCard} from "./UsageDetailCard";
 import {orderedIds} from "../ordering";
 import type {AppSettings,ProviderUsage} from "../types";
 export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:AppSettings}){
+  const free=settings.dock_side==="free";
   const [hovered,setHovered]=useState<string|null>(null),[inside,setInside]=useState(false),[collapsed,setCollapsed]=useState(false),[pinned,setPinned]=useState(false);
+  const detailPointer=useRef(false);const dragArmed=useRef<{x:number;y:number;t:number}|null>(null);const draggingFree=useRef(false);
   const leave=useRef<ReturnType<typeof setTimeout>|null>(null);
   const railRef=useRef<HTMLDivElement>(null);
   // Measured rail box (border-box) lets the collapsed edge bar mirror the rail's exact
@@ -39,8 +41,28 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     const t=setTimeout(()=>setPinned(false),Math.max(settings.auto_collapse_seconds,5)*1000);
     return()=>clearTimeout(t);
   },[pinned,settings.auto_collapse_seconds]);
-  useEffect(()=>{if(inside||pinned||settings.auto_collapse_seconds===0){setCollapsed(false);return}const t=setTimeout(()=>{setHovered(null);setCollapsed(true)},settings.auto_collapse_seconds*1000);return()=>clearTimeout(t)},[inside,pinned,settings.auto_collapse_seconds]);
-  useEffect(()=>{void invoke("set_window_state",{state:collapsed?"collapsed":hovered?"expanded":"rail"});},[collapsed,hovered,settings.dock_side]);
+  useEffect(()=>{if(free){setCollapsed(false);return}if(inside||pinned||settings.auto_collapse_seconds===0){setCollapsed(false);return}const t=setTimeout(()=>{setHovered(null);setCollapsed(true)},settings.auto_collapse_seconds*1000);return()=>clearTimeout(t)},[inside,pinned,free,settings.auto_collapse_seconds]);
+  useEffect(()=>{if(free){void invoke("set_window_state",{state:"rail"});return}void invoke("set_window_state",{state:collapsed?"collapsed":hovered?"expanded":"rail"});},[collapsed,hovered,free,settings.dock_side]);
+  // Free mode: the hover card is a separate overlay window so the rail bounds never move.
+  useEffect(()=>{
+    if(!free)return;
+    const stop=listen<boolean>("detail-pointer",e=>{detailPointer.current=e.payload});
+    return()=>{void stop.then(f=>f())};
+  },[free]);
+  useEffect(()=>{
+    if(!free||!hovered)return;
+    const el=document.querySelector(`[data-account="${hovered}"]`);
+    const ratio=el?(el.getBoundingClientRect().top+el.getBoundingClientRect().height/2)/(window.innerHeight||1):0.5;
+    void invoke("show_detail",{accountId:hovered,centerRatio:Math.min(1,Math.max(0,ratio))});
+  },[free,hovered]);
+  const closeFreeDetail=()=>{setHovered(null);void invoke("hide_detail");};
+  // Free-mode drag: 6dip threshold or 200ms hold on the rail background starts a native move.
+  useEffect(()=>{
+    if(!free)return;
+    const up=()=>{if(draggingFree.current){draggingFree.current=false;void invoke("commit_free_position");}dragArmed.current=null;};
+    window.addEventListener("pointerup",up);
+    return()=>window.removeEventListener("pointerup",up);
+  },[free]);
   useEffect(()=>()=>{if(leave.current)clearTimeout(leave.current)},[]);
   const active=usages.find(u=>u.account_id===hovered),top=settings.dock_side==="top",left=settings.dock_side==="left";
   const dark=settings.theme==="obsidian";
@@ -54,7 +76,21 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     leave.current = setTimeout(() => {
       setInside(false);
       setHovered(null);
+      if(free&&!detailPointer.current)closeFreeDetail();
     }, 250);
+  };
+  const onRailPointerDown=(e:React.PointerEvent)=>{
+    if(!free||draggingFree.current)return;
+    if(e.button!==0)return;
+    dragArmed.current={x:e.clientX,y:e.clientY,t:Date.now()};
+    const hold=setTimeout(()=>startFreeDrag(e.clientX,e.clientY),200);
+    const move=(ev:PointerEvent)=>{if(Math.hypot(ev.clientX-e.clientX,ev.clientY-e.clientY)>6)startFreeDrag(ev.clientX,ev.clientY);};
+    const cancel=()=>{clearTimeout(hold);window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",cancel);};
+    window.addEventListener("pointermove",move);window.addEventListener("pointerup",cancel);
+  };
+  const startFreeDrag=(_x:number,_y:number)=>{
+    if(draggingFree.current)return;draggingFree.current=true;dragArmed.current=null;
+    setHovered(null);void invoke("hide_detail");void invoke("begin_free_drag");
   };
 
   // The rail follows the account order from settings, not the arrival order of readings.
@@ -77,13 +113,16 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     {/* The rail stays mounted (invisible) while collapsed so its live measurements keep driving the edge bar. */}
     <div
       ref={railRef}
-      className={`relative flex ${top ? "flex-row max-w-full" : "flex-col max-h-full"} shrink-0 ${
+      className={`relative flex ${top ? "flex-row max-w-full max-h-full" : "flex-col max-h-full"} shrink-0 ${
         top
           ? "rounded-b-2xl border-b border-x border-t-0"
           : left
           ? "rounded-r-2xl border-r border-y border-l-0"
+          : free
+          ? "rounded-2xl border"
           : "rounded-l-2xl border-l border-y border-r-0"
-      } p-1.5 ${dark ? "glass-obsidian text-zinc-200" : "glass-translucent text-zinc-800"} ${collapsed ? "invisible" : ""}`}
+      } p-1.5 ${dark ? "glass-obsidian text-zinc-200" : "glass-translucent text-zinc-800"} ${collapsed ? "invisible" : ""} ${free?"cursor-move touch-none":""}`.replace("${top","${top")}
+      onPointerDown={onRailPointerDown}
     >
       <div className={`flex ${top ? "flex-row space-x-2" : "flex-col space-y-1.5"} overflow-y-auto max-h-full scrollbar-none`}>
         {ordered.map(u => (
