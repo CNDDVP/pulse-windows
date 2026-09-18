@@ -430,7 +430,7 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
                     </div>
                   )}
                   {reading?.windows && reading.windows.length > 1 && (
-                    <Field label="第二额度内环（可选）" hint="在主环内侧用细环显示另一项额度；自动优先选同一模型组里最满的一项。">
+                    <Field label="第二额度内环（可选）" hint="在主环内侧用细环显示所选额度；选择“关闭”即完全清除内环。">
                       <select className={selectCls} value={c.secondary_window || ""} onChange={e => patch(id, { secondary_window: e.target.value || null })}>
                         <option value="">关闭</option>
                         {reading.windows.map(w => <option key={w.id} value={w.id}>{w.name} — 已使用 {w.used_percent.toFixed(1)}%</option>)}

@@ -89,6 +89,29 @@ pub fn dock_rect(settings:&AppSettings,m:&tauri::Monitor,side:&str,ratio:(f64,f6
     let count=settings.providers.values().filter(|c|c.enabled).count();
     geometry(Rect{x:area.position.x,y:area.position.y,w:area.size.width,h:area.size.height},m.scale_factor(),side,"rail",count,ratio.0,ratio.1)
 }
+/// Atomic size+position for drag following: separate set_size/set_position calls let the
+/// WebView resize land between them and the window visibly oscillates.
+pub fn place_at(window:&tauri::WebviewWindow,x:i32,y:i32,w:u32,h:u32){
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, SWP_NOZORDER,
+        };
+        if let Ok(hwnd) = window.hwnd() {
+            unsafe {
+                let _ = SetWindowPos(
+                    HWND(hwnd.0), HWND(std::ptr::null_mut()),
+                    x, y, w as i32, h as i32,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOCOPYBITS,
+                );
+            }
+            return;
+        }
+    }
+    let _=window.set_size(PhysicalSize::new(w,h));
+    let _=window.set_position(PhysicalPosition::new(x,y));
+}
 /// Skip-and-set placement shared by the periodic loop and drag docking.
 pub fn place(window:&tauri::WebviewWindow,rect:&Rect){
     #[cfg(windows)]
