@@ -59,13 +59,14 @@ fn discover(root:&PathBuf,out:&mut Vec<PathBuf>,depth:usize){
 
 /// Last classified event from the bytes appended after `offset`; returns the offset of the
 /// last complete line so a torn tail is retried after the next append.
-fn scan_appended(path:&PathBuf,offset:u64,source:&str)->Option<(Option<Event>,u64)>{
+fn scan_appended(path:&PathBuf,offset:u64,budget:u64,source:&str)->Option<(Option<Event>,u64)>{
     let mut f=fs::File::open(path).ok()?;
     let len=f.metadata().ok()?.len();
     if len<=offset{return None}
     f.seek(SeekFrom::Start(offset)).ok()?;
-    let mut buf=Vec::new();
-    f.read_to_end(&mut buf).ok()?;
+    let take=((len-offset) as u64).min(budget) as usize;
+    let mut buf=vec![0u8;take];
+    f.read_exact(&mut buf).ok()?;
     let complete_end=match buf.iter().rposition(|&b|b==b'\n'){Some(i)=>i+1,None=>return None};
     let mut last=None;
     for line in buf[..complete_end].split(|&b|b==b'\n'){
@@ -79,14 +80,20 @@ fn scan_appended(path:&PathBuf,offset:u64,source:&str)->Option<(Option<Event>,u6
 
 /// Incremental watcher: first sight of a file starts at its end (history is not activity);
 /// truncation restarts from zero; a working verdict decays after 3 quiet minutes.
+/// 每文件=一个会话；3 分钟无事件衰减；每轮/每文件读取预算防大积压阻塞。
+const SESSION_DECAY_SECS:i64=180;
+const READ_BUDGET_BYTES:u64=1024*1024;
+const POLL_TOTAL_BUDGET_BYTES:u64=8*1024*1024;
 #[derive(Default)]
 pub struct Watcher{
     roots:Vec<(&'static str,PathBuf)>,
     files:HashMap<PathBuf,u64>,
-    last_working:HashMap<&'static str,i64>,
-    states:HashMap<&'static str,bool>,
+    sessions:HashMap<PathBuf,(bool,i64)>,
 }
 impl Watcher{
+    fn source_of(&self,path:&PathBuf)->Option<&'static str>{
+        self.roots.iter().find(|(_,root)|path.starts_with(root)).map(|(s,_)|*s)
+    }
     /// Real CLI log locations (Claude projects, Codex sessions).
     pub fn system_roots()->Vec<(&'static str,PathBuf)>{
         let mut out=vec![];
@@ -96,6 +103,8 @@ impl Watcher{
     }
     pub fn new(roots:Vec<(&'static str,PathBuf)>)->Self{Self{roots,..Default::default()}}
     pub fn poll(&mut self,now:i64)->HashMap<&'static str,bool>{
+        // 每轮总读取预算：超大积压分多轮消化，不阻塞扫描。
+        let mut budget=POLL_TOTAL_BUDGET_BYTES;
         for (source,root) in self.roots.clone(){
             let mut files=vec![];discover(&root,&mut files,0);
             for path in files{
@@ -105,20 +114,28 @@ impl Watcher{
                     None=>{self.files.insert(path.clone(),len);continue}
                 };
                 if len==offset{continue}
-                if let Some((ev,new_off))=scan_appended(&path,offset,source){
-                    self.files.insert(path,new_off);
+                let take=((len-offset) as u64).min(READ_BUDGET_BYTES).min(budget);
+                if take==0{continue}
+                budget-=take;
+                if let Some((ev,new_off))=scan_appended(&path,offset,take,source){
+                    self.files.insert(path.clone(),new_off);
                     match ev{
-                        Some(Event::Working)=>{self.last_working.insert(source,now);self.states.insert(source,true);}
-                        Some(Event::Idle)=>{self.states.insert(source,false);}
+                        Some(Event::Working)=>{self.sessions.insert(path.clone(),(true,now));}
+                        Some(Event::Idle)=>{self.sessions.insert(path.clone(),(false,now));}
                         None=>{}
                     }
                 }
             }
         }
-        for (source,last) in &self.last_working{
-            if now-*last>180{self.states.insert(source,false);}
+        // 会话级衰减：每个文件独立 3 分钟无事件即转空闲；任一会话工作即源工作。
+        self.sessions.retain(|_,(_,last)|now-*last<=SESSION_DECAY_SECS);
+        let mut states:HashMap<&'static str,bool>=HashMap::new();
+        for path in self.files.keys(){
+            if self.sessions.get(path).is_some_and(|(w,_)|*w){
+                if let Some(src)=self.source_of(path){states.insert(src,true);}
+            }
         }
-        self.states.clone()
+        states
     }
 }
 
@@ -137,6 +154,24 @@ mod tests{
         assert_eq!(classify_line("codex",&json!({"type":"event_msg","payload":{"type":"task_complete"}})),Some(Event::Idle));
         assert_eq!(classify_line("codex",&json!({"type":"event_msg","payload":{"type":"unknown_thing"}})),None);
         assert_eq!(classify_line("codex",&json!({"type":"turn_context"})),None);
+    }
+    #[test]fn two_sessions_any_working_keeps_source_active(){
+        let d=tempfile::tempdir().unwrap();
+        let a=d.path().join("a.jsonl");let b=d.path().join("b.jsonl");
+        fs::write(&a,format!("{}
+",json!({"type":"user"}))).unwrap();
+        fs::write(&b,format!("{}
+",json!({"type":"user"}))).unwrap();
+        let mut w=Watcher::new(vec![("claude",d.path().to_path_buf())]);
+        w.poll(1_000); // 首见跳过
+        fs::write(&a,format!("{}
+{}
+",json!({"type":"user"}),json!({"type":"user"}))).unwrap();
+        fs::write(&b,format!("{}
+{}
+",json!({"type":"assistant","message":{"stop_reason":"end_turn"}}),json!({"type":"assistant","message":{"stop_reason":"end_turn"}}))).unwrap();
+        let states=w.poll(2_000);
+        assert_eq!(states.get("claude"),Some(&true),"B 会话空闲不应清掉 A 会话的工作状态");
     }
     #[test]fn first_sight_skips_history_and_appends_count(){
         let d=tempfile::tempdir().unwrap();let p=d.path().join("s.jsonl");

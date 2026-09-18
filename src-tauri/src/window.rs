@@ -86,7 +86,10 @@ pub fn geometry(area:Rect,scale:f64,side:&str,state:&str,count:usize,fx:f64,fy:f
 /// Docked rail rect on a specific monitor at a ratio along the edge.
 pub fn dock_rect(settings:&AppSettings,m:&tauri::Monitor,side:&str,ratio:(f64,f64))->Rect{
     let area=m.work_area();
-    let count=settings.providers.values().filter(|c|c.enabled).count();
+    let count=settings.providers.values()
+        .filter(|c|c.enabled)
+        .map(|c|1+usize::from(c.split_model_groups&&c.provider_id=="antigravity"))
+        .sum();
     geometry(Rect{x:area.position.x,y:area.position.y,w:area.size.width,h:area.size.height},m.scale_factor(),side,"rail",count,ratio.0,ratio.1)
 }
 /// Atomic size+position for drag following: separate set_size/set_position calls let the

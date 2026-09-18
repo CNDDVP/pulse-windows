@@ -114,6 +114,41 @@ impl AppState {
         next
     }
 }
+pub static RAIL_APP:std::sync::OnceLock<tauri::AppHandle>=std::sync::OnceLock::new();
+/// WebView2 在控制器层吞掉右键事件：在原生窗口过程上挂子类，直接捕获 WM_RBUTTONUP。
+pub fn rail_menu(app:tauri::AppHandle)->Result<(),String>{
+    use tauri::menu::{ContextMenu,Menu,MenuItem};
+    use tauri::Manager as _;
+    let win=app.get_webview_window("main").ok_or("窗口不存在")?;
+    let m_set=MenuItem::with_id(&app,"rail-settings","设置…",true,None::<&str>).map_err(|e|e.to_string())?;
+    let m_ref=MenuItem::with_id(&app,"rail-refresh","立即刷新",true,None::<&str>).map_err(|e|e.to_string())?;
+    let m_tog=MenuItem::with_id(&app,"rail-toggle","显示 / 隐藏悬浮栏",true,None::<&str>).map_err(|e|e.to_string())?;
+    let m_quit=MenuItem::with_id(&app,"rail-quit","退出 Pulse",true,None::<&str>).map_err(|e|e.to_string())?;
+    let menu=Menu::with_items(&app,&[&m_set,&m_ref,&m_tog,&m_quit]).map_err(|e|e.to_string())?;
+    let native=win.as_ref().window();
+    menu.popup(native).map_err(|e|e.to_string())
+}
+pub fn install_rail_context_menu_subclass(app:&AppHandle){
+    use windows::Win32::Foundation::{HWND,LPARAM,LRESULT,WPARAM};
+    use windows::Win32::UI::Shell::{DefSubclassProc,SetWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::{WM_RBUTTONUP};
+    extern "system" fn proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM,_id:usize,_data:usize)->LRESULT{
+        if msg==WM_RBUTTONUP{
+            if let Some(app)=RAIL_APP.get(){
+                let app=app.clone();
+                let _=rail_menu(app);
+            }
+        }
+        unsafe{DefSubclassProc(hwnd,msg,wp,lp)}
+    }
+    if let Some(win)=app.get_webview_window("main"){
+        if let Ok(h)=win.hwnd(){
+            unsafe{
+                let _=SetWindowSubclass(HWND(h.0),Some(proc),1,0);
+            }
+        }
+    }
+}
 pub fn toggle_rail(app:&AppHandle){
     let state=app.state::<AppState>();
     let hidden=!state.user_hidden.load(Ordering::Relaxed);
@@ -171,7 +206,13 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
     let settings=state.settings.lock().await.clone();
     let now=Instant::now();
     let mut due=settings.clone();
-    {let schedule=state.schedule.lock().await;for (id,cfg) in due.providers.iter_mut(){if schedule.get(id).is_some_and(|(at,_)|*at>now){cfg.enabled=false}}}
+    {let schedule=state.schedule.lock().await;
+     let inflight=state.inflight.lock().await;
+     for (id,cfg) in due.providers.iter_mut(){
+        // 手动刷新在途的账号由该请求负责写回，定时轮不再重复发起。
+        if inflight.contains_key(id){cfg.enabled=false}
+        else if schedule.get(id).is_some_and(|(at,_)|*at>now){cfg.enabled=false}
+     }}
     let start_gens=state.account_generations.lock().await.clone();
     let mut rx=providers::fetch_all_stream(&due,&state.http,state.refresh_slots.clone());
     let mut incoming=vec![];
@@ -327,11 +368,13 @@ pub fn run(){
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(state)
         .setup(|app|{
-            let _=app.state::<AppState>().app_handle.set(app.handle().clone());
             let app_handle=app.handle().clone();
+            let _=app.state::<AppState>().app_handle.set(app_handle.clone());
+            let _=RAIL_APP.set(app_handle.clone());
             tray::setup_tray(&app_handle)?;
             let handle=app_handle.clone();
             let window_handle=app_handle.clone();
+            install_rail_context_menu_subclass(&app_handle);
             tauri::async_runtime::spawn(async move{
                 loop{
                     let state=window_handle.state::<AppState>();
