@@ -20,6 +20,13 @@ export interface ProviderConfig {
   ring_color: string | null;
   /** Low-balance notice line, compared only against `low_balance_currency`. */
   low_balance: number | null; low_balance_currency: string | null;
+  /** "icon" (default) or "bot" — animated mark instead of the provider badge. */
+  mark_mode: string | null;
+  bot_persona: string | null; bot_shape: string | null; bot_color: string | null;
+  /** Optional second quota drawn as an inner ring; null = single ring. */
+  secondary_window: string | null;
+  /** Antigravity only: split Gemini / Claude-GPT into separate rail slots. */
+  split_model_groups: boolean;
 }
 export interface NotificationSettings { threshold: number | null; on_spent: boolean; on_reset: boolean; on_failure: boolean }
 export interface HotkeySettings { open_settings: string | null; toggle_rail: string | null }
@@ -30,7 +37,7 @@ export interface AppSettings {
   refresh_interval_seconds: number; display_mode: "used" | "remaining";
   forecast: boolean; show_elapsed: boolean; follow_active_display: boolean; hide_fullscreen: boolean;
   monitor_name: string | null; free_x: number; free_y: number;
-  warning_threshold: number; show_rail: boolean; start_behavior: string;
+  warning_threshold: number; show_rail: boolean; reduce_motion: boolean; start_behavior: string;
   notifications: NotificationSettings; hotkeys: HotkeySettings;
   providers: Record<string, ProviderConfig>;
 }

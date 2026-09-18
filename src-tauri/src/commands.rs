@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use crate::{types::{AppSettings,ProviderUsage},secrets::{SecretStore,WindowsSecrets},AppState};
 use tauri::{AppHandle,Emitter,State,Manager};
 #[tauri::command]
@@ -95,6 +96,7 @@ pub async fn test_account(account_id:String,state:State<'_,AppState>)->Result<Pr
 pub async fn set_window_state(state:String,app:AppHandle)->Result<(),String>{
     if !["collapsed","rail","expanded"].contains(&state.as_str()){return Err("窗口状态无效".into())}
     *app.state::<AppState>().window_mode.lock().await=state.clone();
+    if app.state::<AppState>().dragging.load(Ordering::Relaxed){return Ok(())}
     let settings=app.state::<AppState>().settings.lock().await.clone();crate::window::position(&app,&settings,&state);Ok(())
 }
 #[tauri::command]
@@ -408,4 +410,101 @@ mod tests {
         let clean = "network timeout on https://api.openai.com";
         assert_eq!(sanitize_diagnostics_string(clean), clean);
     }
+}
+
+#[tauri::command]
+pub fn drag_begin(app:AppHandle,cx:f64,cy:f64)->Result<(),String>{
+    let state=app.state::<AppState>();
+    state.dragging.store(true,Ordering::Relaxed);
+    if let Some(w)=app.get_webview_window("detail"){let _=w.hide();}
+    if let Ok(mut g)=state.detail_account.lock(){*g=None;}
+    let win=app.get_webview_window("main").ok_or("窗口不存在")?;
+    let scale=win.scale_factor().unwrap_or(1.0);
+    let pos=win.outer_position().map_err(|e|e.to_string())?;
+    let px=pos.x+(cx*scale) as i32;let py=pos.y+(cy*scale) as i32;
+    *state.drag_grab.lock().unwrap()=(px-pos.x,py-pos.y);
+    Ok(())
+}
+/// Custom drag: the rail follows the pointer; edges snap with 32/48 DIP hysteresis.
+#[tauri::command]
+pub fn drag_move(app:AppHandle,cx:f64,cy:f64)->Result<(),String>{
+    let state=app.state::<AppState>();
+    if !state.dragging.load(Ordering::Relaxed){return Ok(())}
+    let win=app.get_webview_window("main").ok_or("窗口不存在")?;
+    let wscale=win.scale_factor().unwrap_or(1.0);
+    let pos=win.outer_position().map_err(|e|e.to_string())?;
+    let px=pos.x+(cx*wscale) as i32;let py=pos.y+(cy*wscale) as i32;
+    let monitors=win.available_monitors().map_err(|e|e.to_string())?;
+    let m_owned:tauri::Monitor=monitors.iter().find(|m|{let a=m.work_area();px>=a.position.x&&px<a.position.x+a.size.width as i32&&py>=a.position.y&&py<a.position.y+a.size.height as i32}).cloned()
+        .or_else(||win.current_monitor().ok().flatten())
+        .or_else(||win.primary_monitor().ok().flatten()).ok_or("无法确定显示器")?;
+    let m=&m_owned;
+    let area=m.work_area();let ms=m.scale_factor();
+    let dl=(px-area.position.x) as f64/ms;let dr=(area.position.x+area.size.width as i32-px) as f64/ms;
+    let dt=(py-area.position.y) as f64/ms;
+    let cur=state.drag_side.lock().unwrap().clone();
+    let side=(match cur.as_str(){
+        "left" if dl<=48.0=>"left","right" if dr<=48.0=>"right","top" if dt<=48.0=>"top",
+        _=>if dl<=32.0{"left"}else if dr<=32.0{"right"}else if dt<=32.0{"top"}else{"free"},
+    }).to_string();
+    *state.drag_side.lock().unwrap()=side.clone();
+    if side=="free"{
+        let (gx,gy)=*state.drag_grab.lock().unwrap();
+        let _=win.set_position(tauri::PhysicalPosition::new(px-gx,py-gy));
+    }else{
+        let (mut fx,mut fy)=(0.5f64,0.5f64);
+        if side=="top"{fx=((px-area.position.x) as f64/area.size.width as f64).clamp(0.0,1.0);}
+        else{fy=((py-area.position.y) as f64/area.size.height as f64).clamp(0.0,1.0);}
+        *state.drag_ratio.lock().unwrap()=(fx,fy);
+        let Some(settings)=state.settings.try_lock().ok().map(|s|s.clone())else{return Ok(())};
+        let rect=crate::window::dock_rect(&settings,&m,&side,(fx,fy));
+        crate::window::place(&win,&rect);
+    }
+    Ok(())
+}
+#[tauri::command]
+pub async fn drag_end(app:AppHandle)->Result<(),String>{
+    let state=app.state::<AppState>();
+    if !state.dragging.swap(false,Ordering::Relaxed){return Ok(())}
+    let side=state.drag_side.lock().unwrap().clone();
+    let (fx,fy)=*state.drag_ratio.lock().unwrap();
+    let win=app.get_webview_window("main").ok_or("窗口不存在")?;
+    let m=win.current_monitor().ok().flatten().or_else(||win.primary_monitor().ok().flatten()).ok_or("无法确定显示器")?;
+    let area=m.work_area();
+    let mut settings=state.settings.lock().await.clone();
+    settings.dock_side=side.clone();
+    settings.monitor_name=m.name().cloned();
+    if side=="free"{
+        let pos=win.outer_position().map_err(|e|e.to_string())?;
+        let x=(pos.x as f64-area.position.x as f64).clamp(0.0,(area.size.width as f64).max(1.0));
+        let y=(pos.y as f64-area.position.y as f64).clamp(0.0,(area.size.height as f64).max(1.0));
+        settings.free_x=(x/area.size.width as f64).clamp(0.0,1.0);
+        settings.free_y=(y/area.size.height as f64).clamp(0.0,1.0);
+    }else{
+        settings.free_x=fx;settings.free_y=fy;
+        crate::window::position(&app,&settings,"rail");
+    }
+    crate::config::save_settings(&settings)?;
+    *state.settings.lock().await=settings.clone();
+    let _=app.emit("settings-updated",&settings);
+    Ok(())
+}
+#[tauri::command]
+pub async fn drag_cancel(app:AppHandle)->Result<(),String>{
+    let state=app.state::<AppState>();
+    state.dragging.store(false,Ordering::Relaxed);
+    let mode=state.window_mode.lock().await.clone();
+    let settings=state.settings.lock().await.clone();
+    crate::window::position(&app,&settings,&mode);Ok(())
+}
+
+#[tauri::command]
+pub fn rail_menu_cmd(app:AppHandle,window:tauri::Window)->Result<(),String>{
+    use tauri::menu::{ContextMenu,Menu,MenuItem};
+    let m_set=MenuItem::with_id(&app,"rail-settings","设置…",true,None::<&str>).map_err(|e|e.to_string())?;
+    let m_ref=MenuItem::with_id(&app,"rail-refresh","立即刷新",true,None::<&str>).map_err(|e|e.to_string())?;
+    let m_tog=MenuItem::with_id(&app,"rail-toggle","显示 / 隐藏悬浮栏",true,None::<&str>).map_err(|e|e.to_string())?;
+    let m_quit=MenuItem::with_id(&app,"rail-quit","退出 Pulse",true,None::<&str>).map_err(|e|e.to_string())?;
+    let menu=Menu::with_items(&app,&[&m_set,&m_ref,&m_tog,&m_quit]).map_err(|e|e.to_string())?;
+    menu.popup(window).map_err(|e|e.to_string())
 }

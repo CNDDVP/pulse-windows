@@ -7,6 +7,7 @@ pub const PROVIDERS: &[(&str, &str)] = &[
     ("ollama", "Ollama Cloud"), ("zai", "z.ai"), ("zhipu", "Zhipu"),
     ("minimax", "MiniMax"), ("minimax-cn", "MiniMax CN"), ("volcengine", "Volcengine"),
     ("command-code", "Command Code"), ("deepseek", "DeepSeek"), ("devin", "Devin"),
+    ("xiaomi", "小米 Coding Plan"),
 ];
 pub fn name(id: &str) -> String { PROVIDERS.iter().find(|p| p.0 == id).map(|p| p.1).unwrap_or(id).into() }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -47,6 +48,13 @@ pub struct ProviderConfig {
     pub elapsed_window: Option<String>,
     /// `#rrggbb` override for the ring; `None` keeps the pressure colour.
     pub ring_color: Option<String>,
+    /// `icon` (default) or `bot` — animated mark instead of the provider badge.
+    pub mark_mode: Option<String>,
+    pub bot_persona: Option<String>, pub bot_shape: Option<String>, pub bot_color: Option<String>,
+    /// Optional second quota drawn as an inner ring; `None` keeps a single ring.
+    pub secondary_window: Option<String>,
+    /// Antigravity only: split Gemini / Claude-GPT into separate rail slots.
+    pub split_model_groups: bool,
     /// Per-account money line for the low-balance notice, in `low_balance_currency` only.
     pub low_balance: Option<f64>, pub low_balance_currency: Option<String>,
 }
@@ -71,6 +79,8 @@ pub struct AppSettings {
     /// Used share at which rings turn red (60..=95); amber starts 15 points earlier.
     pub warning_threshold: u8,
     pub show_rail: bool,
+    /// Honour prefers-reduced-motion and skip continuous animations (bot mark).
+    pub reduce_motion: bool,
     /// What to show right after launch: "rail" | "settings" | "tray".
     pub start_behavior: String,
     pub notifications: NotificationSettings,
@@ -85,7 +95,7 @@ impl Default for AppSettings {
         Self { schema_version:SCHEMA_VERSION, generation:0, dock_side:"right".into(), auto_collapse_seconds:0, theme:"obsidian".into(),
             refresh_interval_seconds:120, display_mode:"used".into(), forecast:false, show_elapsed:false,
             follow_active_display:false, hide_fullscreen:false, monitor_name:None, free_x:0.5, free_y:0.5,
-            warning_threshold:90, show_rail:true, start_behavior:"rail".into(),
+            warning_threshold:90, show_rail:true, reduce_motion:false, start_behavior:"rail".into(),
             notifications:NotificationSettings::default(), hotkeys:HotkeySettings::default(), providers }
     }
 }
@@ -105,6 +115,12 @@ impl AppSettings {
             if !valid_id(id) || !PROVIDERS.iter().any(|p|p.0==cfg.provider_id) || cfg.label.len()>160 { return Err("账号配置无效".into()); }
             if cfg.ring_color.as_deref().is_some_and(|c|!(c.len()==7 && c.starts_with('#') && c[1..].bytes().all(|b|b.is_ascii_hexdigit()))) { return Err("圆环颜色无效".into()); }
             if cfg.low_balance.is_some_and(|v|!v.is_finite()||v<0.0) || cfg.low_balance_currency.as_deref().is_some_and(|c|c.is_empty()||c.len()>8) { return Err("余额阈值无效".into()); }
+            if cfg.mark_mode.as_deref().is_some_and(|m|m!="icon"&&m!="bot") { return Err("标识模式无效".into()); }
+            const PERSONAS:&[&str]=&["calm","eager","steady","curious","sleepy","playful","stoic","proud"];
+            if cfg.bot_persona.as_deref().is_some_and(|p|!PERSONAS.contains(&p)) { return Err("机器人个性无效".into()); }
+            const SHAPES:&[&str]=&["blob","pebble","bean","egg","squircle","tablet","capsule","cylinder","hex","gem","crystal","wedge","shield","dome","arch","cloud","teardrop","leaf"];
+            if cfg.bot_shape.as_deref().is_some_and(|p|!SHAPES.contains(&p)) { return Err("机器人形状无效".into()); }
+            if cfg.bot_color.as_deref().is_some_and(|c|!(c.len()==7 && c.starts_with('#') && c[1..].bytes().all(|b|b.is_ascii_hexdigit()))) { return Err("机器人颜色无效".into()); }
         }
         Ok(())
     }

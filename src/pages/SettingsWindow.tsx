@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { AppSettings, HotkeySettings, MonitorOption, ProviderConfig, ProviderUsage } from "../types";
 import { ProviderIcon } from "../components/icons/ProviderIcons";
+const BOT_PERSONAS: [string,string][]=[["calm","沉稳"],["eager","热切"],["steady","踏实"],["curious","好奇"],["sleepy","瞌睡"],["playful","顽皮"],["stoic","淡漠"],["proud","骄傲"]];
+const BOT_SHAPES: [string,string][]=[["blob","圆团"],["pebble","卵石"],["bean","豆子"],["egg","蛋"],["squircle","方圆"],["tablet","平板"],["capsule","胶囊"],["cylinder","圆柱"],["hex","六边"],["gem","宝石"],["crystal","晶体"],["wedge","楔形"],["shield","盾牌"],["dome","穹顶"],["arch","拱门"],["cloud","云朵"],["teardrop","泪滴"],["leaf","叶片"]];
 import { TokenSpend } from "./TokenSpend";
 import { resetText, pickElapsedWindow } from "../presentation";
 import { orderedIds, moveItem, applyOrder } from "../ordering";
@@ -136,7 +138,7 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
 
   const handleAddAccount = (pid: string) => {
     const id = crypto.randomUUID();
-    patch(id, { provider_id: pid, label: providerName(pid), enabled: true, order: Object.values(settings.providers).reduce((m, c) => Math.max(m, c.order), -1) + 1, use_local: !!ROUTES[pid]?.local, credential_configured: false, primary_window: null, elapsed_window: null, ring_color: null, low_balance: null, low_balance_currency: null });
+    patch(id, { provider_id: pid, label: providerName(pid), enabled: true, order: Object.values(settings.providers).reduce((m, c) => Math.max(m, c.order), -1) + 1, use_local: !!ROUTES[pid]?.local, credential_configured: false, primary_window: null, elapsed_window: null, ring_color: null, low_balance: null, low_balance_currency: null, mark_mode: null, bot_persona: null, bot_shape: null, bot_color: null, secondary_window: null, split_model_groups: false });
     setPickerOpen(false); setPickerQuery("");
     setView({ kind: "account", id });
     showToast("info", `已添加 ${providerName(pid)} 账号，完成配置后点击“保存”`);
@@ -414,6 +416,32 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
                       {c.ring_color && <input type="color" value={c.ring_color} onChange={e => patch(id, { ring_color: e.target.value })} className="w-9 h-8 rounded-lg bg-transparent border border-zinc-700 cursor-pointer" aria-label="选择圆环颜色" />}
                     </div>
                   </Row>
+                  <Row title="动画机器人" subtitle="用一个会反应账号状态的小机器人替代服务商图标；个性、形状、颜色可调。">
+                    <Switch checked={c.mark_mode === "bot"} onChange={v => patch(id, { mark_mode: v ? "bot" : "icon" })} label="动画机器人" />
+                  </Row>
+                  {c.mark_mode === "bot" && (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
+                      <Field label="个性"><select className={selectCls} value={c.bot_persona ?? ""} onChange={e => patch(id, { bot_persona: e.target.value || null })}><option value="">自动（沉稳）</option>{BOT_PERSONAS.map(p => <option key={p[0]} value={p[0]}>{p[1]}</option>)}</select></Field>
+                      <Field label="形状"><select className={selectCls} value={c.bot_shape ?? ""} onChange={e => patch(id, { bot_shape: e.target.value || null })}><option value="">自动（圆团）</option>{BOT_SHAPES.map(p => <option key={p[0]} value={p[0]}>{p[1]}</option>)}</select></Field>
+                      <Field label="颜色"><div className="flex items-center gap-2">
+                        <select className={selectCls} value={c.bot_color ? "custom" : "auto"} onChange={e => patch(id, { bot_color: e.target.value === "custom" ? (c.bot_color ?? "#10b981") : null })} aria-label="机器人颜色模式"><option value="auto">跟随主题</option><option value="custom">自定义</option></select>
+                        {c.bot_color && <input type="color" value={c.bot_color} onChange={e => patch(id, { bot_color: e.target.value })} className="w-9 h-8 rounded-lg bg-transparent border border-zinc-700 cursor-pointer" aria-label="选择机器人颜色" />}
+                      </div></Field>
+                    </div>
+                  )}
+                  {reading?.windows && reading.windows.length > 1 && (
+                    <Field label="第二额度内环（可选）" hint="在主环内侧用细环显示另一项额度；自动优先选同一模型组里最满的一项。">
+                      <select className={selectCls} value={c.secondary_window || ""} onChange={e => patch(id, { secondary_window: e.target.value || null })}>
+                        <option value="">关闭</option>
+                        {reading.windows.map(w => <option key={w.id} value={w.id}>{w.name} — 已使用 {w.used_percent.toFixed(1)}%</option>)}
+                      </select>
+                    </Field>
+                  )}
+                  {c.provider_id === "antigravity" && (
+                    <Row title="按模型组拆分展示" subtitle="Gemini 与 Claude/GPT 各占一个悬浮栏位置；点击任一项仍刷新同一账号。">
+                      <Switch checked={c.split_model_groups} onChange={v => patch(id, { split_model_groups: v })} label="按模型组拆分展示" />
+                    </Row>
+                  )}
                 </Section>
 
                 {reading && reading.balances.length > 0 && (

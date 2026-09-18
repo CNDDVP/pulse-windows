@@ -5,6 +5,7 @@ pub mod volcengine;
 pub mod command_code;
 pub mod devin;
 pub mod ollama;
+pub mod xiaomi;
 
 use crate::{secrets::{SecretStore,WindowsSecrets},types::{AppSettings,ProviderConfig,ProviderUsage}};
 use std::{sync::Arc,time::Duration};
@@ -14,7 +15,7 @@ use serde_json::Value;
 pub const IMPLEMENTED:&[&str]=&[
     "claude","codex","antigravity","cursor","copilot","grok","grok-bot",
     "opencode","kimi","zai","zhipu","minimax","minimax-cn","deepseek",
-    "volcengine","command-code","devin","ollama"
+    "volcengine","command-code","devin","ollama","xiaomi"
 ];
 
 pub fn client()->Result<reqwest::Client,String>{
@@ -115,6 +116,13 @@ async fn fetch_inner(account:&str,cfg:&ProviderConfig,http:&reqwest::Client)->Pr
         let mut r=match answer{Ok(v)=>parsers::parse(id,&v,chrono::Utc::now().timestamp()),Err(r)=>r};
         r.scope=scope_of(&credential.token);
         r.source=if cfg.use_local && !cfg.credential_configured{"本地工具登录 → 服务接口"}else{"已保存凭据 → 服务接口"}.into();
+        return r;
+    }
+    if id=="xiaomi"{
+        let answer=xiaomi::fetch(&credential.token,http).await;
+        let mut r=match answer{Ok(v)=>parsers::parse(id,&v,chrono::Utc::now().timestamp()),Err(r)=>r};
+        r.scope=scope_of(&credential.token);
+        r.source=if cfg.use_local && !cfg.credential_configured{"粘贴的会话 Cookie → 控制台接口"}else{"已保存凭据 → 控制台接口"}.into();
         return r;
     }
     if id=="ollama"{

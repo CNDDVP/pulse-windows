@@ -85,6 +85,9 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
           <Row title="显示耗尽预测" subtitle="按周期平均速度估算是否会在重置前用满。">
             <Switch checked={settings.forecast} onChange={v => update({ forecast: v })} label="显示耗尽预测" />
           </Row>
+          <Row title="减少动态效果" subtitle="动画机器人等连续动画改为静态表情；系统开启“减少动态”时同样生效。">
+            <Switch checked={settings.reduce_motion} onChange={v => update({ reduce_motion: v })} label="减少动态效果" />
+          </Row>
         </div>
       </Section>
 

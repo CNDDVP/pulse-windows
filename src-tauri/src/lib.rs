@@ -29,6 +29,11 @@ pub struct AppState {
     pub request_counter:AtomicU64,
     pub activity:std::sync::Mutex<HashMap<String,(bool,String)>>,
     pub activity_watcher:std::sync::Mutex<activity::Watcher>,
+    pub app_handle:std::sync::OnceLock<tauri::AppHandle>,
+    pub dragging:AtomicBool,
+    pub drag_grab:std::sync::Mutex<(i32,i32)>,
+    pub drag_side:std::sync::Mutex<String>,
+    pub drag_ratio:std::sync::Mutex<(f64,f64)>,
 }
 impl AppState {
     pub fn config_error(&self)->Option<String>{self.configuration_error.lock().ok().and_then(|g|g.clone())}
@@ -296,13 +301,14 @@ pub fn run(){
     let (settings,error)=match config::load_settings(){Ok(s)=>(s,None),Err(e)=>(AppSettings::default(),Some(e))};
     let http=providers::client().expect("HTTP client initialization failed");
     let settings_start_hidden=settings.start_behavior=="tray";
-    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),ledger_gate:Mutex::new(()),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None),account_generations:Mutex::new(HashMap::new()),refresh_slots:Arc::new(Semaphore::new(4)),inflight:Mutex::new(HashMap::new()),request_counter:AtomicU64::new(0),activity:std::sync::Mutex::new(HashMap::new()),activity_watcher:std::sync::Mutex::new(activity::Watcher::new(activity::Watcher::system_roots()))};
+    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),ledger_gate:Mutex::new(()),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None),account_generations:Mutex::new(HashMap::new()),refresh_slots:Arc::new(Semaphore::new(4)),inflight:Mutex::new(HashMap::new()),request_counter:AtomicU64::new(0),activity:std::sync::Mutex::new(HashMap::new()),activity_watcher:std::sync::Mutex::new(activity::Watcher::new(activity::Watcher::system_roots())),app_handle:std::sync::OnceLock::new(),dragging:AtomicBool::new(false),drag_grab:std::sync::Mutex::new((0,0)),drag_side:std::sync::Mutex::new("free".into()),drag_ratio:std::sync::Mutex::new((0.5,0.5))};
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app,_,_|open_settings_window(app)))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(state)
         .setup(|app|{
+            let _=app.state::<AppState>().app_handle.set(app.handle().clone());
             let app_handle=app.handle().clone();
             tray::setup_tray(&app_handle)?;
             let handle=app_handle.clone();
@@ -313,10 +319,12 @@ pub fn run(){
                     let settings=state.settings.lock().await.clone();
                     let mode=state.window_mode.lock().await.clone();
                     let user_hidden=state.user_hidden.load(Ordering::Relaxed);
-                    // Monitor enumeration and the foreground probe are synchronous Win32 calls;
-                    // keep them off the async workers that serve IPC commands.
+                    // A drag owns placement. Monitor enumeration and the foreground probe are
+                    // synchronous Win32 calls; keep them off the async workers that serve IPC.
                     let tick_handle=window_handle.clone();
+                    let dragging=state.dragging.load(Ordering::Relaxed);
                     let _=tauri::async_runtime::spawn_blocking(move||{
+                        if dragging{return}
                         let Some(w)=tick_handle.get_webview_window("main")else{return};
                         let hide=user_hidden || !settings.show_rail || (settings.hide_fullscreen && window::fullscreen_other(&tick_handle));
                         if hide {
@@ -362,6 +370,15 @@ pub fn run(){
             });
             Ok(())
         })
+        .on_menu_event(|app,event|{
+            match event.id().0.as_str(){
+                "rail-settings"=>open_settings_window(app),
+                "rail-refresh"=>{let a=app.clone();tauri::async_runtime::spawn(async move{let _=refresh_usages_and_emit(&a).await;});}
+                "rail-toggle"=>toggle_rail(app),
+                "rail-quit"=>app.exit(0),
+                _=>{}
+            }
+        })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "settings" {
@@ -370,6 +387,6 @@ pub fn run(){
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::refresh_account,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::set_credential,commands::delete_credential,commands::delete_account,commands::diagnostics,commands::test_account,commands::token_spend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::hide_detail,commands::detail_account,commands::set_detail_hover,commands::is_portable,commands::get_profile_info,commands::clear_profile_credentials,commands::create_isolated_profile])
+        .invoke_handler(tauri::generate_handler![commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::refresh_account,commands::drag_begin,commands::drag_move,commands::drag_end,commands::drag_cancel,commands::rail_menu_cmd,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::set_credential,commands::delete_credential,commands::delete_account,commands::diagnostics,commands::test_account,commands::token_spend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::hide_detail,commands::detail_account,commands::set_detail_hover,commands::is_portable,commands::get_profile_info,commands::clear_profile_credentials,commands::create_isolated_profile])
         .run(tauri::generate_context!()).expect("Pulse runtime failed");
 }

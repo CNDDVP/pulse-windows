@@ -83,6 +83,43 @@ pub fn geometry(area:Rect,scale:f64,side:&str,state:&str,count:usize,fx:f64,fy:f
     let y=if horizontal{area.y}else{area.y+((area.h-h) as f64*fy.clamp(0.0,1.0)).round() as i32};
     Rect{x,y,w,h}
 }
+/// Docked rail rect on a specific monitor at a ratio along the edge.
+pub fn dock_rect(settings:&AppSettings,m:&tauri::Monitor,side:&str,ratio:(f64,f64))->Rect{
+    let area=m.work_area();
+    let count=settings.providers.values().filter(|c|c.enabled).count();
+    geometry(Rect{x:area.position.x,y:area.position.y,w:area.size.width,h:area.size.height},m.scale_factor(),side,"rail",count,ratio.0,ratio.1)
+}
+/// Skip-and-set placement shared by the periodic loop and drag docking.
+pub fn place(window:&tauri::WebviewWindow,rect:&Rect){
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{HWND, RECT};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, SWP_NOZORDER,
+        };
+        if let Ok(hwnd) = window.hwnd() {
+            unsafe {
+                let mut current = RECT::default();
+                if GetWindowRect(HWND(hwnd.0), &mut current).is_ok() {
+                    if current.left == rect.x && current.top == rect.y
+                        && (current.right - current.left) == rect.w as i32
+                        && (current.bottom - current.top) == rect.h as i32 {
+                        return;
+                    }
+                }
+                let _ = SetWindowPos(
+                    HWND(hwnd.0), HWND(std::ptr::null_mut()),
+                    rect.x, rect.y, rect.w as i32, rect.h as i32,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOCOPYBITS,
+                );
+            }
+            return;
+        }
+    }
+    if window.outer_position().ok()==Some(PhysicalPosition::new(rect.x,rect.y)) && window.inner_size().ok()==Some(PhysicalSize::new(rect.w,rect.h)){return}
+    let _=window.set_size(PhysicalSize::new(rect.w,rect.h));
+    let _=window.set_position(PhysicalPosition::new(rect.x,rect.y));
+}
 pub fn position(app:&AppHandle,settings:&AppSettings,state:&str){
     let Some(window)=app.get_webview_window("main")else{return};
     let monitors=window.available_monitors().unwrap_or_default();

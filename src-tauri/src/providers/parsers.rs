@@ -32,6 +32,8 @@ pub fn window(id:&str,name:&str,pct:f64,reset:&Value,seconds:Option<i64>)->Optio
 fn add(w:&mut Vec<UsageWindow>,v:Option<UsageWindow>){if let Some(v)=v{w.push(v)}}
 pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
     let mut w=vec![];
+    let mut reading_plan:Option<String>=None;
+    let mut reading_balances:Vec<Balance>=vec![];
     match id {
         "claude"=>{
             if let Some(limits)=v["limits"].as_array(){for (i,l) in limits.iter().enumerate(){
@@ -163,6 +165,29 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
             if let Some(p)=number(&v["session"]["percent"]){add(&mut w,window("session","5小时限额",p,&v["session"]["reset"],Some(18000)));}
             if let Some(p)=number(&v["weekly"]["percent"]){add(&mut w,window("weekly","每周限额",p,&v["weekly"]["reset"],Some(604800)));}
         }
+        "xiaomi"=>{
+            for (i,item) in v["items"].as_array().unwrap_or(&Vec::new()).iter().enumerate(){
+                let (Some(used),Some(limit))=(number(&item["used"]),number(&item["limit"]))else{continue};
+                if limit<=0.0{continue}
+                let name=if i==0{"套餐额度".to_string()}else{format!("套餐额度 {}",i+1)};
+                // Reset comes from the detail route's currentPeriodEnd; no trusted bucket
+                // length is reported, so no window length and therefore no time ring/forecast.
+                add(&mut w,window(&format!("plan-{i}"),&name,(used/limit*100.0).max(0.0),&v.pointer("/detail/currentPeriodEnd").unwrap_or(&Value::Null),None));
+            }
+            if v.pointer("/detail/expired")==Some(&Value::Bool(true)){
+                let mut reading=ProviderUsage::problem(id,"plan_expired","套餐已过期；显示的是上一周期用量，续期后恢复");
+                for b in balances_of(&v){reading.balances.push(b);}
+                return reading;
+            }
+            if v["items"].as_array().is_some_and(|a|a.is_empty()){
+                return ProviderUsage::problem(id,"no_plan","该账号未购买 Coding Plan（按量计费账户）");
+            }
+            if let Some(plan)=v.pointer("/detail/planCode").and_then(Value::as_str){reading_plan=Some(plan.to_string());}
+            if let Some(balance)=v.pointer("/balance/balance").and_then(number){
+                let cur=v.pointer("/balance/currency").and_then(Value::as_str).unwrap_or("CNY").to_string();
+                reading_balances.push(Balance{currency:cur,amount:balance});
+            }
+        }
         "grok-bot"=>{
             if v["usesPooledEnterpriseAllowance"]==true || v["includedLimitZero"]==true || v["hasNonZeroIncludedLimit"]==false {return ProviderUsage::problem(id,"not_included","当前套餐不含个人 Grok Bot 额度")}
             if v["hasNonZeroIncludedLimit"]==true{if let Some(p)=number(&v["usagePercent"]){add(&mut w,window("weekly","每周额度",p,&v["nextResetTimestampUtc"],None));}}
@@ -227,6 +252,8 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
         _=>return ProviderUsage::problem(id,"unsupported","该数据路线尚未实现，不能报告额度"),
     }
     let mut reading=ProviderUsage::reading(id,w);
+    if !reading_balances.is_empty(){reading.balances=reading_balances.clone();}
+    if let Some(p)=reading_plan{reading.plan_name=Some(normalize_plan_name(&p));return reading;}
     reading.plan_name=match id {
         "codex"=>v["plan_type"].as_str(),
         "cursor"=>v["membershipType"].as_str(),
@@ -247,6 +274,11 @@ fn normalize_plan_name(raw:&str)->String{
         "enterprise"=>"Enterprise".into(),
         _=>raw.into(),
     }
+}
+fn balances_of(v:&Value)->Vec<Balance>{
+    v.pointer("/balance/balance").and_then(number).map(|amount|vec![Balance{
+        currency:v.pointer("/balance/currency").and_then(Value::as_str).unwrap_or("CNY").to_string(),amount
+    }]).unwrap_or_default()
 }
 fn count_window(id:&str,name:&str,v:&Value,seconds:Option<i64>)->Option<UsageWindow>{let limit=number(&v["limit"]).filter(|n|*n>0.0)?;let used=number(&v["used"]).or_else(||Some(limit-number(&v["remaining"])?))?;window(id,name,(used/limit*100.0).max(0.0),&v["resetTime"],seconds)}
 
@@ -314,6 +346,23 @@ fn count_window(id:&str,name:&str,v:&Value,seconds:Option<i64>)->Option<UsageWin
         assert_eq!(w.window_seconds,None,"monthly without explicit duration stays None without fake 30-day assumption");
         let w=window("a","Cursor 专属模型",10.0,&serde_json::json!("2030-01-01T00:00:00Z"),None).unwrap();
         assert_eq!(w.window_seconds,None,"unnameable windows stay period-less");
+    }
+    #[test]fn xiaomi_plan_buckets_balance_and_expiry(){
+        let ok=json!({"items":[{"used":120.0,"limit":1000.0},{"used":5.0,"limit":100.0}],
+            "detail":{"planCode":"pro-monthly","currentPeriodEnd":"2026-10-18T00:00:00Z","expired":false},
+            "balance":{"balance":"12.5","currency":"CNY"}});
+        let r=parse("xiaomi",&ok,0);
+        assert_eq!(r.windows.len(),2);assert_eq!(r.windows[0].name,"套餐额度");assert_eq!(r.windows[0].used_percent,12.0);
+        assert_eq!(r.windows[0].window_seconds,None,"no trusted bucket length: no time ring");
+        assert_eq!(r.balances[0].amount,12.5);assert_eq!(r.plan_name,Some("pro-monthly".into()));
+        let expired=json!({"items":[{"used":120.0,"limit":1000.0}],
+            "detail":{"planCode":"pro","currentPeriodEnd":"2026-09-01T00:00:00Z","expired":true},
+            "balance":{"balance":"3","currency":"CNY"}});
+        let r=parse("xiaomi",&expired,0);
+        assert_eq!(r.state,"unavailable");assert_eq!(r.error_code.as_deref(),Some("plan_expired"));
+        assert_eq!(r.balances[0].amount,3.0,"balance still shown for an expired plan");
+        let noplan=json!({"items":[],"detail":Value::Null,"balance":Value::Null});
+        assert_eq!(parse("xiaomi",&noplan,0).error_code.as_deref(),Some("no_plan"));
     }
     #[test]fn ollama_session_weekly(){let r=parse("ollama",&json!({"session":{"percent":15,"reset":"2026-09-17T12:00:00Z"},"weekly":{"percent":40}}),0);assert_eq!(r.windows.len(),2);assert_eq!(r.primary_percent,Some(40.0));}
 }
