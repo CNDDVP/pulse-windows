@@ -64,4 +64,6 @@ jobs:
           files: |
             release-artifacts/Pulse-*-windows-x64-setup.exe
             release-artifacts/Pulse-*-windows-x64-portable.zip
+            release-artifacts/DEPENDENCIES.txt
+            release-artifacts/BUILD_INFO.txt
             release-artifacts/SHA256SUMS.txt
