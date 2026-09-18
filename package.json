@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "typecheck": "tsc --noEmit",
     "tauri:dev": "tauri dev -c src-tauri/tauri.dev.conf.json",
     "tauri:build": "tauri build",
     "lint": "oxlint",
