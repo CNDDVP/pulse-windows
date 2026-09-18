@@ -12,6 +12,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   // Ring click → per-account refresh; the arc keeps spinning >=650ms even for fast replies.
   const [refreshing,setRefreshing]=useState<Record<string,boolean>>({});
   const refreshShownUntil=useRef<Record<string,number>>({});
+  const suppressClickUntil=useRef(0);
   // Unified drag state machine: idle → armed(pointer down) → dragging(>6 dip) in every mode.
   const [draggingUI,setDraggingUI]=useState(false);
   const draggingRef=useRef(false);
@@ -74,7 +75,10 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     });
     return()=>{void stop.then(f=>f())};
   },[]);
-  const refreshAccount=(id:string)=>{void invoke("refresh_account",{accountId:id}).catch(()=>{});};
+  const refreshAccount=(id:string)=>{
+      if(Date.now()<suppressClickUntil.current)return; // the pointerup that ended a drag must not refresh
+      void invoke("refresh_account",{accountId:id}).catch(()=>{});
+    };
 
   // The hover card is a separate overlay window in all modes so the rail bounds never move.
   useEffect(()=>{
@@ -119,7 +123,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
         // WebView2 swallows right-button events at the controller level: neither
         // `contextmenu` nor pointerdown(button=2) reaches the page. The tray menu
         // covers these actions; try the native menu anyway for a future fix.
-        arm=null;void invoke("rail_menu").catch(()=>{});return;
+        arm=null;void invoke("rail_menu_cmd").catch(()=>{});return;
       }
       if(e.button!==0)return;arm={x:e.clientX,y:e.clientY};
     };
@@ -127,6 +131,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       if(!arm)return;
       if(!dragging&&Math.hypot(e.clientX-arm.x,e.clientY-arm.y)>6){
         dragging=true;draggingRef.current=true;setDraggingUI(true);
+        suppressClickUntil.current=Date.now()+400;
         setHovered(null);void invoke("hide_detail");
         void invoke("drag_begin").catch(err=>{document.title="BEGERR "+String(err).slice(0,70)});
         document.title="DRAG-ON";
@@ -210,7 +215,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     className={`relative w-full h-full flex ${top?"flex-col items-center":left?"flex-row items-center":"flex-row-reverse items-center"} select-none overflow-hidden`}
     onMouseEnter={enter}
     onMouseLeave={exit}
-    onContextMenu={e=>{e.preventDefault();void invoke("rail_menu").catch(()=>{})}}
+    onContextMenu={e=>{e.preventDefault();void invoke("rail_menu_cmd").catch(()=>{})}}
   >
     {/* The rail stays mounted (invisible) while collapsed so its live measurements keep driving the edge bar. */}
     <div
@@ -245,7 +250,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
         aria-label="展开 Pulse"
         onMouseEnter={enter}
         onDoubleClick={() => { setCollapsed(false); }}
-        onContextMenu={e=>{e.preventDefault();void invoke("rail_menu").catch(()=>{})}}
+        onContextMenu={e=>{e.preventDefault();void invoke("rail_menu_cmd").catch(()=>{})}}
         className={`absolute cursor-pointer rounded-full ${top ? "top-0 left-1/2 -translate-x-1/2 h-1" : left ? "left-0 top-1/2 -translate-y-1/2 w-1" : "right-0 top-1/2 -translate-y-1/2 w-1"} ${glowClass}`}
         style={top ? { width: railBox?.w ?? "100%" } : { height: railBox?.h ?? "100%" }}
       />
