@@ -4,7 +4,8 @@ import type { ProviderConfig } from './types';
 
 const cfg = (order: number): ProviderConfig => ({
   provider_id: 'codex', label: 'x', enabled: true, order, use_local: false,
-  credential_configured: false, primary_window: null, elapsed_window: null, ring_color: null, low_balance: null, low_balance_currency: null
+  credential_configured: false, primary_window: null, elapsed_window: null, ring_color: null, low_balance: null, low_balance_currency: null,
+  mark_mode: null, bot_persona: null, bot_shape: null, bot_color: null, secondary_window: null, split_model_groups: false
 });
 
 describe('rail ordering', () => {
