@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+@layer base {
+  * {
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+  
+  body, html, #root {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden !important;
+    background: transparent !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  ::-webkit-scrollbar {
+    display: none !important;
+  }
+}
+
+/* Crisp high-contrast styling without outer blurry shadow to eliminate WebView2 grey fringes */
+.glass-obsidian {
+  background: #121216;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.glass-translucent {
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.04);
+}
+
+.card-obsidian {
+  background: #151519;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.card-translucent {
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.04);
+}
+
+@keyframes cardEnterRight {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes cardEnterLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.card-animate-right {
+  animation: cardEnterRight 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.card-animate-left {
+  animation: cardEnterLeft 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Custom glowing edge sliver */
+.sliver-glow {
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.6);
+}
+
+.sliver-glow-warn {
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.7);
+}
+
+.sliver-glow-danger {
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.85);
+}

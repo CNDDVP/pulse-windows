@@ -1,0 +1,23 @@
+Pulse for Windows
+Copyright 2026 Pulse Windows Contributors
+
+This product includes software developed as part of the Pulse project:
+- Upstream Pulse for macOS: https://github.com/qunqin24/Pulse
+  Copyright (c) 2025-2026 qunqin24
+  Licensed under the Apache License, Version 2.0 (the "License").
+
+This product also includes third-party software components:
+- Tauri (https://tauri.app/)
+  Copyright 2019-2026 Tauri Programme within The Commons Conservancy
+  Licensed under Apache-2.0 or MIT.
+
+- React (https://react.dev/)
+  Copyright (c) Meta Platforms, Inc. and affiliates.
+  Licensed under the MIT License.
+
+- Simple Icons (https://simpleicons.org/)
+  Licensed under CC0 1.0 Universal.
+
+- Tailwind CSS (https://tailwindcss.com/)
+  Copyright (c) Tailwind Labs, Inc.
+  Licensed under the MIT License.

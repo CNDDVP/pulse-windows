@@ -1,0 +1,72 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Pulse",
+  "version": "0.3.1",
+  "identifier": "com.cnddvp.pulse",
+  "build": {
+    "frontendDist": "../dist",
+    "beforeDevCommand": "npm run dev", "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Pulse",
+        "url": "index.html",
+        "width": 72,
+        "height": 300,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false
+      },
+      {
+        "label": "settings",
+        "title": "Pulse 设置",
+        "dragDropEnabled": false,
+        "alwaysOnTop": false,
+        "url": "index.html",
+        "width": 900,
+        "height": 700,
+        "minWidth": 700,
+        "minHeight": 480,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "center": true,
+        "visible": false
+      },
+      {
+        "label": "detail",
+        "title": "Pulse 详情",
+        "url": "index.html",
+        "width": 380,
+        "height": 340,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-src 'none'; form-action 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost ws://localhost:5173 http://localhost:5173; object-src 'none'; base-uri 'self'; frame-src 'none'"
+    }
+  },
+  "bundle": {
+    "active":true,"targets":["nsis"],"publisher":"Pulse Windows Contributors",
+    "shortDescription":"Windows AI coding allowance monitor",
+    "icon":["icons/32x32.png","icons/128x128.png","icons/128x128@2x.png","icons/icon.ico"],
+    "windows":{"nsis":{"installMode":"currentUser","displayLanguageSelector":false}}
+  }
+}

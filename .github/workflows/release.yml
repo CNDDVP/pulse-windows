@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish-release:
+    name: Build & Publish Release Packages
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@439cf6005038885eb7018b7e49f8842e47455b57 # stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Run verification checks
+        run: |
+          npx oxlint
+          npx tsc --noEmit
+          npm test
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Extract Tag Version
+        id: tag_info
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $ver = $tag.TrimStart('v')
+          echo "VERSION=$ver" >> $env:GITHUB_ENV
+          echo "TAG_NAME=$tag" >> $env:GITHUB_ENV
+
+      - name: Build Setup & Portable Packages
+        shell: pwsh
+        run: |
+          .\scripts\build-dist.ps1 -Version $env:VERSION -OutputDir release-artifacts
+
+      - name: Create GitHub Pre-Release
+        uses: softprops/action-gh-release@c95fe1489396fe8a9ec87454c6603b782930f827 # v2.2.1
+        with:
+          name: Pulse for Windows ${{ env:TAG_NAME }}
+          tag_name: ${{ env:TAG_NAME }}
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            release-artifacts/Pulse-*-windows-x64-setup.exe
+            release-artifacts/Pulse-*-windows-x64-portable.zip
+            release-artifacts/SHA256SUMS.txt

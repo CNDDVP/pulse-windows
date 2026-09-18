@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-check:
+    name: Privacy & Secret Scan
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Scan for forbidden patterns
+        shell: pwsh
+        run: |
+          $forbidden = @(
+            "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----",
+            "ghp_[A-Za-z0-9_]{36}",
+            "github_pat_[A-Za-z0-9_]{82}"
+          )
+          $failed = $false
+          foreach ($pattern in $forbidden) {
+            $matches = git grep -i -E "$pattern" -- ':(exclude).github/workflows/ci.yml'
+            if ($matches) {
+              Write-Error "Found forbidden pattern '$pattern':`n$matches"
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+          Write-Host "Privacy and secret check passed." -ForegroundColor Green
+
+  build-and-test:
+    name: Build & Test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@439cf6005038885eb7018b7e49f8842e47455b57 # stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@82a92a6e8fbeee08c636dad575c633089781ae56 # v2.7.7
+        with:
+          workspaces: src-tauri
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Oxlint check
+        run: npx oxlint
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Frontend unit tests
+        run: npm test
+
+      - name: Rust unit & regression tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Frontend production build
+        run: npm run build

@@ -1,0 +1,61 @@
+import { useEffect, useState } from "react";
+import type { AppSettings, HotkeySettings } from "../../types";
+import { Section } from "./shared";
+import { btnGhost } from "./constants";
+
+const MODS = ["Control", "Alt", "Shift", "Meta"] as const;
+const KEY_LABEL: Record<string, string> = { Space: "Space", Enter: "Enter", Tab: "Tab", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" };
+/** `e.code` → the token the Rust side (`global_hotkey`) parses: KeyP→P, Digit1→1, F1→F1. */
+const normKey = (code: string) => code.startsWith("Key") ? code.slice(3) : code.startsWith("Digit") ? code.slice(5) : (KEY_LABEL[code] ?? code);
+
+function Recorder({ label, value, onChange, onError }: { label: string; value: string | null; onChange: (v: string | null) => void; onError: (m: string) => void }) {
+  const [recording, setRecording] = useState(false);
+  useEffect(() => {
+    if (!recording) return;
+    const down = (e: KeyboardEvent) => {
+      e.preventDefault(); e.stopPropagation();
+      if (e.key === "Escape") { setRecording(false); return; }
+      if (e.key === "Backspace" || e.key === "Delete") { onChange(null); setRecording(false); return; }
+      if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+      const mods = MODS.filter(m => e.getModifierState(m));
+      if (!mods.some(m => m !== "Shift")) { onError("请至少配合 Ctrl / Alt / Win 之一，避免占用普通按键"); return; }
+      // Injected or remote-desktop keys may carry no scan code (empty `code`); fall back to `key`.
+      const token = e.code ? normKey(e.code) : e.key.length === 1 ? e.key.toUpperCase() : e.key;
+      if (!token) { onError("无法识别该按键，请换一个"); return; }
+      onChange(`${mods.join("+")}+${token}`);
+      setRecording(false);
+    };
+    window.addEventListener("keydown", down, true);
+    return () => window.removeEventListener("keydown", down, true);
+  }, [recording, onChange, onError]);
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div className="min-w-0">
+        <strong className="text-xs text-zinc-200">{label}</strong>
+        <p className="text-[11px] text-zinc-400">点击右侧后按下组合键 · Esc 取消 · Backspace 清除</p>
+      </div>
+      <button type="button" className={`${btnGhost} font-mono min-w-36 ${recording ? "ring-2 ring-emerald-500" : ""}`} onClick={() => setRecording(r => !r)} aria-label={`${label}快捷键`}>
+        {recording ? "按下组合键…" : value ?? "未设置"}
+      </button>
+    </div>
+  );
+}
+
+export function HotkeysPage({ settings, save, onError }: {
+  settings: AppSettings; save: (next: HotkeySettings) => void; onError: (m: string) => void;
+}) {
+  const hk = settings.hotkeys;
+  const assign = (field: keyof HotkeySettings, v: string | null) => {
+    const other = field === "open_settings" ? hk.toggle_rail : hk.open_settings;
+    if (v !== null && v === other) { onError("两个快捷键不能相同"); return; }
+    save({ ...hk, [field]: v });
+  };
+  return (
+    <div className="space-y-5 max-w-2xl">
+      <Section title="全局快捷键" icon="⌨" subtitle="录入即保存并立即生效，不触发额度刷新；与其他程序冲突时保留原快捷键并提示。">
+        <Recorder label="打开设置" value={hk.open_settings ?? null} onChange={v => assign("open_settings", v)} onError={onError} />
+        <Recorder label="显示 / 隐藏悬浮栏" value={hk.toggle_rail ?? null} onChange={v => assign("toggle_rail", v)} onError={onError} />
+      </Section>
+    </div>
+  );
+}

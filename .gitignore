@@ -1,0 +1,57 @@
+# Logs
+logs
+*.log
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencies & Build outputs
+node_modules
+dist
+dist-ssr
+dist-portable
+*.local
+src-tauri/target/
+src-tauri/gen/
+staging/
+release-artifacts/
+*.pdb
+
+# Runtime data, profiles & user configurations
+settings.json*
+usage-cache.json*
+alerts.json*
+profile.json*
+portable.flag
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+ledger.db*
+.audit/
+
+# Backups & temporary files
+*.bak
+*.backup
+*.tmp
+*~
+
+# Credentials & environment variables
+*.pfx
+*.p12
+*.key
+*.pem
+.env
+.env.*
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
