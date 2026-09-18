@@ -73,11 +73,15 @@ pub async fn get_usages(state:State<'_,AppState>)->Result<Vec<ProviderUsage>,Str
     let now=crate::cache::now();
     Ok(state.cached_usages.lock().await.iter().cloned().map(|r|{
         let pin=settings.providers.get(&r.account_id).and_then(|c|c.primary_window.as_deref());
-        crate::cache::expire_with_pin(r,pin,now)
+        let mut x=crate::cache::expire_with_pin(r,pin,now);
+        x.is_active=state.activity_flag(&x.account_id);
+        x
     }).collect())
 }
 #[tauri::command]
 pub async fn refresh_usages(app:AppHandle)->Result<Vec<ProviderUsage>,String>{crate::refresh_usages_and_emit(&app).await}
+#[tauri::command]
+pub async fn refresh_account(account_id:String,app:AppHandle)->Result<u64,String>{crate::AppState::refresh_account_now(&app,&account_id).await}
 #[tauri::command]
 pub async fn test_account(account_id:String,state:State<'_,AppState>)->Result<ProviderUsage,String>{
     let cfg={

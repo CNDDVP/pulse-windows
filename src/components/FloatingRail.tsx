@@ -8,6 +8,9 @@ import type {AppSettings,ProviderUsage} from "../types";
 export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:AppSettings}){
   const free=settings.dock_side==="free";
   const [hovered,setHovered]=useState<string|null>(null),[inside,setInside]=useState(false),[collapsed,setCollapsed]=useState(false),[pinned,setPinned]=useState(false);
+  // Ring click → per-account refresh; the arc keeps spinning >=650ms even for fast replies.
+  const [refreshing,setRefreshing]=useState<Record<string,boolean>>({});
+  const refreshShownUntil=useRef<Record<string,number>>({});
   const detailPointer=useRef(false);const dragArmed=useRef<{x:number;y:number;t:number}|null>(null);const draggingFree=useRef(false);
   const leave=useRef<ReturnType<typeof setTimeout>|null>(null);
   const railRef=useRef<HTMLDivElement>(null);
@@ -60,6 +63,21 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   useEffect(()=>{
     void invoke("set_window_state",{state:collapsed?"collapsed":"rail"});
   },[collapsed,settings.dock_side]);
+
+  useEffect(()=>{
+    const stop=listen<{account_id:string;request_id:number;phase:string}>("refresh-state",e=>{
+      const {account_id,phase}=e.payload;
+      if(phase==="started"){
+        refreshShownUntil.current[account_id]=Date.now()+650;
+        setRefreshing(r=>({...r,[account_id]:true}));
+      }else{
+        const wait=Math.max(0,(refreshShownUntil.current[account_id]??0)-Date.now());
+        window.setTimeout(()=>setRefreshing(r=>{const {[account_id]:_,...rest}=r;return rest;}),wait);
+      }
+    });
+    return()=>{void stop.then(f=>f())};
+  },[]);
+  const refreshRing=(id:string)=>{void invoke("refresh_account",{accountId:id}).catch(()=>{});};
 
   // The hover card is a separate overlay window in all modes so the rail bounds never move.
   useEffect(()=>{
@@ -184,7 +202,8 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     >
       <div className={`flex ${top ? "flex-row space-x-2" : "flex-col space-y-1.5"} overflow-y-auto max-h-full scrollbar-none`}>
         {ordered.map(u => (
-          <UsageRing key={u.account_id} usage={u} settings={settings} onHover={() => setHovered(u.account_id)} />
+          <UsageRing key={u.account_id} usage={u} settings={settings} onHover={() => setHovered(u.account_id)}
+            refreshing={!!refreshing[u.account_id]} onClick={() => refreshRing(u.account_id)} />
         ))}
         {!ordered.length && (
           <button className="text-xs p-2 text-zinc-400 hover:text-zinc-200" onClick={() => void invoke("open_settings")}>

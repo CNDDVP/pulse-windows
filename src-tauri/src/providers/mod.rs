@@ -158,9 +158,8 @@ async fn fetch_inner(account:&str,cfg:&ProviderConfig,http:&reqwest::Client)->Pr
     r
 }
 
-pub fn fetch_all_stream(settings:&AppSettings,http:&reqwest::Client)->tokio::sync::mpsc::Receiver<ProviderUsage>{
+pub fn fetch_all_stream(settings:&AppSettings,http:&reqwest::Client,semaphore:Arc<Semaphore>)->tokio::sync::mpsc::Receiver<ProviderUsage>{
     let (tx,rx)=tokio::sync::mpsc::channel(16);
-    let semaphore=Arc::new(Semaphore::new(4));
     let mut ordered:Vec<_>=settings.providers.iter().filter(|(_,c)|c.enabled).collect();
     ordered.sort_by_key(|(id,c)|(c.order,*id));
     for (id,cfg) in ordered {
@@ -184,8 +183,8 @@ pub fn fetch_all_stream(settings:&AppSettings,http:&reqwest::Client)->tokio::syn
     rx
 }
 
-pub async fn fetch_all_usages(settings:&AppSettings,http:&reqwest::Client)->Vec<ProviderUsage>{
-    let mut rx=fetch_all_stream(settings,http);
+pub async fn fetch_all_usages(settings:&AppSettings,http:&reqwest::Client,semaphore:Arc<Semaphore>)->Vec<ProviderUsage>{
+    let mut rx=fetch_all_stream(settings,http,semaphore);
     let mut out=vec![];
     while let Some(r)=rx.recv().await{
         out.push(r);
