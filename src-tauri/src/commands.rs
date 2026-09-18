@@ -453,7 +453,12 @@ pub fn drag_move(app:AppHandle)->Result<(),String>{
         // A docked preview may have resized the window: restore rail size for this monitor.
         let Some(settings)=state.settings.try_lock().ok().map(|s|s.clone())else{return Ok(())};
         let rect=crate::window::dock_rect(&settings,&m,"rail",(0.5,0.5));
-        crate::window::place_at(&win,px-gx,py-gy,rect.w,rect.h);
+        let area=m.work_area();
+        let aw=(area.size.width as i32-rect.w as i32).max(0);
+        let ah=(area.size.height as i32-rect.h as i32).max(0);
+        let x=(px-gx).clamp(area.position.x,area.position.x+aw);
+        let y=(py-gy).clamp(area.position.y,area.position.y+ah);
+        crate::window::place_at(&win,x,y,rect.w,rect.h);
     }else{
         let Some(settings)=state.settings.try_lock().ok().map(|s|s.clone())else{return Ok(())};
         let rect=crate::window::dock_rect(&settings,&m,&side,(fx,fy));
@@ -508,6 +513,9 @@ pub async fn drag_end(app:AppHandle)->Result<(),String>{
         let nfx=(x/aw).clamp(0.0,1.0);let nfy=(y/ah).clamp(0.0,1.0);
         if (settings.free_x-nfx).abs()>1e-4{settings.free_x=nfx;changed=true;}
         if (settings.free_y-nfy).abs()>1e-4{settings.free_y=nfy;changed=true;}
+        // 松手时把窗口完整钳回工作区，避免悬浮栏半挂在屏幕外。
+        let _=win.set_position(tauri::PhysicalPosition::new(
+            area.position.x+(x as i32),area.position.y+(y as i32)));
     }else{
         if (settings.free_x-fx).abs()>1e-4{settings.free_x=fx;changed=true;}
         if (settings.free_y-fy).abs()>1e-4{settings.free_y=fy;changed=true;}
