@@ -11,9 +11,30 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Parse and validate tag
+        id: tag_info
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $stable = [regex]::Match($tag, '^v(\d+\.\d+\.\d+)$').Success
+          $pre = [regex]::Match($tag, '^v(\d+\.\d+\.\d+)-([0-9A-Za-z.-]+)$').Success
+          if (-not $stable -and -not $pre) {
+            Write-Error "Invalid tag '$tag': expected vX.Y.Z (stable) or vX.Y.Z-identifier (pre-release)"
+            exit 1
+          }
+          $ver = $tag.TrimStart('v')
+          $channel = if ($stable) { 'stable' } else { 'pre-release' }
+          echo "VERSION=$ver" >> $env:GITHUB_ENV
+          echo "TAG_NAME=$tag" >> $env:GITHUB_ENV
+          echo "CHANNEL=$channel" >> $env:GITHUB_ENV
+          Write-Host "Tag $tag -> version $ver ($channel)"
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -34,33 +55,67 @@ jobs:
         run: npm run build
 
       - name: Run verification checks
-        run: |
-          npm run lint
-          npm run typecheck
-          npm test
-          cargo test --manifest-path src-tauri/Cargo.toml
-
-      - name: Extract Tag Version
-        id: tag_info
         shell: pwsh
         run: |
-          $tag = $env:GITHUB_REF_NAME
-          $ver = $tag.TrimStart('v')
-          echo "VERSION=$ver" >> $env:GITHUB_ENV
-          echo "TAG_NAME=$tag" >> $env:GITHUB_ENV
+          $fail = $false
+          npm run lint;      if ($LASTEXITCODE -ne 0) { $fail = $true }
+          npm run typecheck; if ($LASTEXITCODE -ne 0) { $fail = $true }
+          npm test;          if ($LASTEXITCODE -ne 0) { $fail = $true }
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { $fail = $true }
+          # 版本一致性：tag 必须与三处版本源一致
+          $tagVer = $env:VERSION
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargoLine = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($pkg -ne $tagVer -or $conf -ne $tagVer -or $cargoLine -ne $tagVer) {
+            Write-Error "Version mismatch: tag=$tagVer package=$pkg tauri=$conf cargo=$cargoLine"
+            $fail = $true
+          }
+          if ($fail) { exit 1 }
 
       - name: Build Setup & Portable Packages
         shell: pwsh
         run: |
           .\scripts\build-dist.ps1 -Version $env:VERSION -OutputDir release-artifacts
 
-      - name: Create GitHub Pre-Release
+      - name: Verify required artifacts exist
+        shell: pwsh
+        run: |
+          $required = @(
+            "release-artifacts/Pulse-$env:VERSION-windows-x64-setup.exe",
+            "release-artifacts/Pulse-$env:VERSION-windows-x64-portable.zip",
+            "release-artifacts/DEPENDENCIES.txt",
+            "release-artifacts/BUILD_INFO.txt",
+            "release-artifacts/SHA256SUMS.txt"
+          )
+          $missing = $required | Where-Object { -not (Test-Path $_) }
+          if ($missing) { Write-Error ("Missing required artifacts: " + ($missing -join ', ')); exit 1 }
+          Write-Host "All required artifacts present."
+
+      - name: Generate release notes
+        shell: pwsh
+        run: |
+          # 确定性来源：取 CHANGELOG 中对应版本的段落，整份替换，杜绝重复追加。
+          $ver = $env:VERSION
+          $body = @()
+          $inSection = $false
+          foreach ($line in Get-Content CHANGELOG.md) {
+            if ($line -match '^## ') {
+              if ($inSection) { break }
+              $inSection = $line -match [regex]::Escape($ver)
+            } elseif ($inSection) { $body += $line }
+          }
+          if ($body.Count -eq 0) { $body = @("Pulse for Windows v$ver", '', 'See commit history for details.') }
+          $body | Out-File RELEASE_BODY.md -Encoding utf8
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           name: Pulse for Windows ${{ env.TAG_NAME }}
           tag_name: ${{ env.TAG_NAME }}
-          prerelease: true
-          generate_release_notes: true
+          prerelease: ${{ env.CHANNEL == 'pre-release' }}
+          body_path: RELEASE_BODY.md
           files: |
             release-artifacts/Pulse-*-windows-x64-setup.exe
             release-artifacts/Pulse-*-windows-x64-portable.zip

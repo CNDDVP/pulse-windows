@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/CNDDVP/pulse-windows?include_prereleases)](https://github.com/CNDDVP/pulse-windows/releases)
 
-1:1 深度像素级复刻 **[qunqin24/Pulse](https://github.com/qunqin24/Pulse)**（macOS 原生 AI 编码额度监视器）的 Windows 原生桌面版。
+基于 **[qunqin24/Pulse](https://github.com/qunqin24/Pulse)**（macOS 原生 AI 编码额度监视器）的 **Windows 原生移植与增强版**——保留其功能语义与交互设计，并针对 Windows 深度适配（凭据管理器、多显示器、自由拖拽、通知与快捷键均为 Windows 原生实现）。
 
 采用 **Tauri 2 + Rust + React 19 + Win32 原生调用** 架构，针对 Windows 11/10 进行了深度适配与架构加固。
 

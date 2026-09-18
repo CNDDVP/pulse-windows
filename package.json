@@ -1,12 +1,12 @@
 {
   "name": "pulse-windows",
   "private": true,
-  "version": "0.3.2",
+  "version": "0.3.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -b",
     "tauri:dev": "tauri dev -c src-tauri/tauri.dev.conf.json",
     "tauri:build": "tauri build",
     "lint": "oxlint",
