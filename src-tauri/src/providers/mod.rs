@@ -21,7 +21,7 @@ pub const IMPLEMENTED:&[&str]=&[
 pub fn client()->Result<reqwest::Client,String>{
     reqwest::Client::builder()
         .timeout(Duration::from_secs(12))
-        .connect_timeout(Duration::from_secs(5))
+        .connect_timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!("PulseWindows/",env!("CARGO_PKG_VERSION")))
         .build()
