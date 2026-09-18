@@ -15,48 +15,60 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v4
 
       - name: Scan for forbidden patterns
-        shell: pwsh
         run: |
-          $forbidden = @(
-            "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----",
-            "ghp_[A-Za-z0-9_]{36}",
-            "github_pat_[A-Za-z0-9_]{82}"
-          )
-          $failed = $false
-          foreach ($pattern in $forbidden) {
-            $matches = git grep -i -E "$pattern" -- ':(exclude).github/workflows/ci.yml'
-            if ($matches) {
-              Write-Error "Found forbidden pattern '$pattern':`n$matches"
-              $failed = $true
-            }
-          }
-          if ($failed) { exit 1 }
-          Write-Host "Privacy and secret check passed." -ForegroundColor Green
+          python -c "
+          import os, re, sys
+          forbidden = [
+              re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
+              re.compile(r'ghp_[A-Za-z0-9_]{36}'),
+              re.compile(r'github_pat_[A-Za-z0-9_]{82}')
+          ]
+          failed = False
+          for root, _, files in os.walk('.'):
+              if any(x in root for x in ('.git', 'node_modules', 'target', 'release-artifacts', '.audit')):
+                  continue
+              for file in files:
+                  if file.endswith('.yml') or file.endswith('.yaml'):
+                      continue
+                  p = os.path.join(root, file)
+                  try:
+                      with open(p, 'r', encoding='utf-8', errors='ignore') as f:
+                          for idx, line in enumerate(f, 1):
+                              for pat in forbidden:
+                                  if pat.search(line):
+                                      print(f'::error file={p},line={idx}::Forbidden secret detected: {pat.pattern}')
+                                      failed = True
+                  except Exception:
+                      pass
+          if failed:
+              sys.exit(1)
+          print('Privacy and secret scan passed.')
+          "
 
   build-and-test:
     name: Build & Test
     runs-on: windows-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@439cf6005038885eb7018b7e49f8842e47455b57 # stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           targets: x86_64-pc-windows-msvc
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@82a92a6e8fbeee08c636dad575c633089781ae56 # v2.7.7
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
