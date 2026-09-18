@@ -165,6 +165,8 @@ pub fn run(){
             std::process::exit(1);
         }
     };
+    // profile_id exists from first run, not first credential use.
+    let _=config::get_profile();
     if mode == config::ConfigMode::Portable || std::env::var_os("PULSE_DATA_DIR").is_some() {
         let wv2_dir = data_dir.join("webview2");
         let _ = std::fs::create_dir_all(&wv2_dir);

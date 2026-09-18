@@ -19,6 +19,14 @@ if (Test-Path $ArtifactsDir) {
 }
 New-Item -ItemType Directory -Force -Path $ArtifactsDir | Out-Null
 
+# 1b. Stop a running instance: linking would fail with os error 5 otherwise
+$proc = Get-Process -Name "pulse-windows" -ErrorAction SilentlyContinue
+if ($proc) {
+    Write-Host "  -> Stopping running pulse-windows instance (PID $($proc.Id))..." -ForegroundColor Yellow
+    Stop-Process -Name "pulse-windows" -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+}
+
 # 2. Build Frontend
 Write-Host "`n[1/5] Building frontend assets..." -ForegroundColor Yellow
 npm run build
@@ -69,10 +77,28 @@ Compress-Archive -Path "$StagingDir\*" -DestinationPath $FinalZipPath -Force
 Remove-Item -Recurse -Force $StagingDir
 Write-Host "  -> Portable ZIP created: $FinalZipName" -ForegroundColor Green
 
-# 5. Generate SHA256SUMS.txt
-Write-Host "`n[4/5] Generating SHA256 checksums..." -ForegroundColor Yellow
+# 5. Dependency & build manifests
+Write-Host "`n[4/6] Generating manifests..." -ForegroundColor Yellow
+$DepFile = Join-Path $ArtifactsDir "DEPENDENCIES.txt"
+"pulse-windows v$Version`nGenerated: $((Get-Date).ToUniversalTime().ToString('u'))`nCommit: $((git rev-parse HEAD))`n`n=== npm (direct) ===" | Out-File -FilePath $DepFile -Encoding utf8
+npm ls --depth=0 2>$null | Out-File -FilePath $DepFile -Encoding utf8 -Append
+"`n=== cargo (direct) ===" | Out-File -FilePath $DepFile -Encoding utf8 -Append
+cargo tree --manifest-path src-tauri/Cargo.toml --depth 1 2>$null | Out-File -FilePath $DepFile -Encoding utf8 -Append
+$BuildFile = Join-Path $ArtifactsDir "BUILD_INFO.txt"
+@"
+product: Pulse for Windows
+version: $Version
+commit: $((git rev-parse HEAD))
+built: $((Get-Date).ToUniversalTime().ToString('u'))
+targets: x86_64-pc-windows-msvc
+signing: unsigned
+webview2: system install required (bootstrapped by installer when missing)
+"@ | Out-File -FilePath $BuildFile -Encoding ascii
+
+# 6. Generate SHA256SUMS.txt
+Write-Host "`n[5/6] Generating SHA256 checksums..." -ForegroundColor Yellow
 $ShaFile = Join-Path $ArtifactsDir "SHA256SUMS.txt"
-$ItemsToHash = @($FinalSetupPath, $FinalZipPath)
+$ItemsToHash = @($FinalSetupPath, $FinalZipPath, $DepFile, $BuildFile)
 $HashLines = foreach ($item in $ItemsToHash) {
     $hash = (Get-FileHash -Path $item -Algorithm SHA256).Hash.ToLower()
     $name = [System.IO.Path]::GetFileName($item)
@@ -81,5 +107,5 @@ $HashLines = foreach ($item in $ItemsToHash) {
 $HashLines | Out-File -FilePath $ShaFile -Encoding ascii
 Get-Content $ShaFile | Write-Host -ForegroundColor Cyan
 
-Write-Host "`n[5/5] Build Completed Successfully!" -ForegroundColor Green
+Write-Host "`n[6/6] Build Completed Successfully!" -ForegroundColor Green
 Write-Host "Artifacts located in: $ArtifactsDir" -ForegroundColor Green
