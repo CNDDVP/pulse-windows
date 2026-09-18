@@ -55,8 +55,8 @@ jobs:
       - name: Create GitHub Pre-Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Pulse for Windows ${{ env:TAG_NAME }}
-          tag_name: ${{ env:TAG_NAME }}
+          name: Pulse for Windows ${{ env.TAG_NAME }}
+          tag_name: ${{ env.TAG_NAME }}
           prerelease: true
           generate_release_notes: true
           files: |
