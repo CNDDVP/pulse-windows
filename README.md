@@ -41,8 +41,8 @@ Pulse for Windows 提供两种分发形态：
 
 | 分发版本 | 文件名 | 适用场景 | 说明 |
 |---|---|---|---|
-| **安装版 (Setup)** | `Pulse-0.3.1-windows-x64-setup.exe` | 日常固定使用 | 基于 NSIS 当前用户安装，支持安装/升级/卸载，配置保存在 `%APPDATA%\pulse-windows`，支持开机自启 |
-| **便携版 (Portable)** | `Pulse-0.3.1-windows-x64-portable.zip` | 免安装、U 盘随身携带 | 解压即用，所有配置、账本与 WebView2 数据保存在同级 `data/` 目录中 |
+| **安装版 (Setup)** | `Pulse-<版本>-windows-x64-setup.exe`（文件名随版本变化，见 [Latest Release](https://github.com/CNDDVP/pulse-windows/releases/latest)） | 日常固定使用 | 基于 NSIS 当前用户安装，支持安装/升级/卸载，配置保存在 `%APPDATA%\pulse-windows`，支持开机自启 |
+| **便携版 (Portable)** | `Pulse-<版本>-windows-x64-portable.zip`（同上下载页） | 免安装、U 盘随身携带 | 解压即用，所有配置、账本与 WebView2 数据保存在同级 `data/` 目录中 |
 
 前往 **[Releases 页面](https://github.com/CNDDVP/pulse-windows/releases)** 下载最新发布文件与 `SHA256SUMS.txt`。
 
@@ -89,7 +89,8 @@ npx oxlint
 cargo test --manifest-path src-tauri/Cargo.toml
 
 # 4. 一键打包双版本（安装版 EXE + 便携版 ZIP）
-.\scripts\build-dist.ps1 -Version 0.3.1 -OutputDir release-artifacts
+.\scripts\bump-version.ps1 0.3.8    # 结构化改版：三处版本 + Cargo.lock 重新解析
+.\scripts\build-dist.ps1 -OutputDir release-artifacts
 ```
 
 产物将输出在 `release-artifacts/` 目录下，并自动附带 `SHA256SUMS.txt` 校验文件。
