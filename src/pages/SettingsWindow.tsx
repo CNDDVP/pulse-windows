@@ -126,10 +126,12 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
 
   const railOrder = useMemo(() => orderedIds(settings.providers), [settings.providers]);
   const commitOrder = (ids: string[]) => {
-    const next = { ...settings, providers: applyOrder(settings.providers, ids) };
+    // B21：顺序调整提交 providers 基线上的新顺序，不把账号页草稿一起带走。
+    const persisted = { ...settings, providers: applyOrder(appliedRef.current.providers, ids) };
+    const next = { ...persisted };
     setSettings(next);
     if (locked) { showToast("info", "顺序已调整；当前有测试在进行，稍后保存即可生效"); return; }
-    persist(next, "悬浮栏顺序已保存并同步").catch(() => {});
+    persist(persisted, "悬浮栏顺序已保存并同步").catch(() => {});
   };
   const moveAccount = (from: number, to: number) => commitOrder(moveItem(railOrder, from, to));
   const startDrag = (e: React.PointerEvent, id: string, from: number) => {
@@ -170,7 +172,9 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
     void (async () => {
       try {
         const updated = await invoke<AppSettings>("delete_account", { accountId: id });
-        appliedRef.current = updated;
+        // markApplied 同步 render 镜像（B13）：只写 ref 会让 applied 与基线漂移，
+        // 随后的 anyDirty 可能一直提示未保存。
+        markApplied(updated);
         setSettings(updated);
         setView({ kind: "accounts" });
         showToast("info", `已删除 ${label}`);

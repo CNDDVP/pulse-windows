@@ -88,10 +88,42 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     });
     return()=>{void stop.then(f=>f())};
   },[]);
-  const refreshAccount=(id:string)=>{
-      if(Date.now()<suppressClickUntil.current)return; // the pointerup that ended a drag must not refresh
-      void invoke("refresh_account",{accountId:id}).catch(()=>{});
+  const clickTimer = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (clickTimer.current) clearTimeout(clickTimer.current.timer);
     };
+  }, []);
+
+  const handleRingClick = (id: string) => {
+    if (Date.now() < suppressClickUntil.current) return; // the pointerup that ended a drag must not refresh
+    if (clickTimer.current) {
+      if (clickTimer.current.id !== id) {
+        clearTimeout(clickTimer.current.timer);
+        const prevId = clickTimer.current.id;
+        void invoke("refresh_account", { accountId: prevId }).catch(() => {});
+      } else {
+        clearTimeout(clickTimer.current.timer);
+      }
+      clickTimer.current = null;
+    }
+    const timer = setTimeout(() => {
+      clickTimer.current = null;
+      if (Date.now() < suppressClickUntil.current) return;
+      void invoke("refresh_account", { accountId: id }).catch(() => {});
+    }, 250);
+    clickTimer.current = { id, timer };
+  };
+
+  const handleRingDoubleClick = () => {
+    if (Date.now() < suppressClickUntil.current) return;
+    if (clickTimer.current) {
+      clearTimeout(clickTimer.current.timer);
+      clickTimer.current = null;
+    }
+    void invoke("refresh_usages").catch(() => {});
+  };
 
   // The hover card is a separate overlay window in all modes so the rail bounds never move.
   useEffect(()=>{
@@ -139,12 +171,14 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
         // covers these actions; try the native menu anyway for a future fix.
         arm=null;void invoke("rail_menu_cmd").catch(()=>{});return;
       }
-      if(e.button!==0)return;arm={x:e.clientX,y:e.clientY};
+      // B09：位移用屏幕坐标——窗口跟随鼠标时 client 坐标的差不代表真实拖动距离。
+      if(e.button!==0)return;arm={x:e.screenX,y:e.screenY};
     };
     const move=(e:PointerEvent)=>{
       if(!arm)return;
-      if(!dragging&&Math.hypot(e.clientX-arm.x,e.clientY-arm.y)>6){
+      if(!dragging&&Math.hypot(e.screenX-arm.x,e.screenY-arm.y)>6){
         dragging=true;draggingRef.current=true;setDraggingUI(true);
+        if(clickTimer.current){clearTimeout(clickTimer.current.timer);clickTimer.current=null;}
         setHovered(null);void invoke("hide_detail");
         void invoke("drag_begin").catch(err=>{document.title="BEGERR "+String(err).slice(0,70)});
         document.title="DRAG-ON";
@@ -161,7 +195,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
         dragging=false;draggingRef.current=false;setDraggingUI(false);
         // 只有真正拖动了 rail（≥12 逻辑px）才抑制后续 click：6-12dip 的手抖"微拖"
         // 视为点击意图，不吞刷新（drag_end 照常执行，位移极小、保存的位置无害）。
-        if(arm&&Math.hypot(e.clientX-arm.x,e.clientY-arm.y)>=12)suppressClickUntil.current=Date.now()+400;
+        if(arm&&Math.hypot(e.screenX-arm.x,e.screenY-arm.y)>=12)suppressClickUntil.current=Date.now()+400;
         void invoke("drag_end");
         // settings-updated 通常先到（drag_end 同步保存）；超时兜底防 cancel 路径卡住预览态。
         setTimeout(()=>setDragSide(null),400);
@@ -263,7 +297,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       <div className={`flex ${top ? "flex-row space-x-2" : "flex-col space-y-1.5"} overflow-y-auto max-h-full scrollbar-none`}>
         {slots.map(s => (
           <UsageRing key={s.key} dataKey={s.key} usage={s.usage} settings={settings} onHover={() => { if(!draggingRef.current) setHovered(s.key); }}
-            refreshing={!!refreshing[s.account]} onClick={() => refreshAccount(s.account)} lookX={lookX} />
+            refreshing={!!refreshing[s.account]} onClick={() => handleRingClick(s.account)} onDoubleClick={handleRingDoubleClick} lookX={lookX} />
         ))}
         {!slots.length && (
           <button className="text-xs p-2 text-zinc-400 hover:text-zinc-200" onClick={() => void invoke("open_settings")}>

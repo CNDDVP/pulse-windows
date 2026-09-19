@@ -54,6 +54,8 @@ pub fn fetch_local() -> Result<Value, ProviderUsage> {
 fn read_state_vscdb(path: &PathBuf) -> Result<Value, String> {
     // 新鲜度判定（A23）：超 7 天、elapsed 异常、或元数据都取不到——一律视为不可信，
     // 打上 _unverified 让上层按未验证展示，而不是把旧额度包装成实时读数。
+    // 已知局限（B12）：Windsurf 的记录不含自身时间戳，任何对 state.vscdb 的写入都会
+    // 刷新 mtime——这是数据源上限；_unverified 标记是当前能做到的诚实披露。
     let is_stale = std::fs::metadata(path)
         .and_then(|m| m.modified())
         .map(|mtime| mtime.elapsed().map(|el| el.as_secs() > 7 * 86400).unwrap_or(true))

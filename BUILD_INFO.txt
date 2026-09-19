@@ -1,0 +1,10 @@
+product: Pulse for Windows
+version: 0.3.10
+commit: 1a9c1421b67ed0906b09a2742c3f1601cb7056ce
+built: 2026-09-19 09:06:44Z
+target: x86_64-pc-windows-msvc
+node: v20.20.2
+cargo: cargo 1.98.1 (797e8a9bc 2026-08-05)
+mode: release
+signing: unsigned
+webview2: system install required (bootstrapped by installer when missing)

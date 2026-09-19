@@ -60,7 +60,10 @@ impl AppState {
             if let Some((at,failures))=schedule.get(account_id){
                 if *failures>0 && *at>Instant::now(){
                     let left=at.duration_since(Instant::now()).as_secs().max(1);
-                    return Err(format!("服务商限流/退避中，约 {} 秒后可重试",left));
+                    let msg=format!("服务商限流/退避中，约 {} 秒后可重试",left);
+                    // B20：退避拒绝也发 finished 事件，前端/诊断能看到点击不是无响应。
+                    let _=app.emit("refresh-state",serde_json::json!({"account_id":account_id,"request_id":0,"phase":"finished","ok":false,"kind":"backoff","message":msg}));
+                    return Err(msg);
                 }
             }
         }
@@ -99,9 +102,11 @@ impl AppState {
                     let r=reading.unwrap_or_else(||{
                         let mut r=ProviderUsage::problem(&cfg_clone.provider_id,"timeout","查询超时；稍后自动重试");
                         r.account_id=aid.clone();r.display_name=cfg_clone.label.clone();
+                        // 与定时轮的超时构造同语义（B17）：带 scope 与采集时间，避免回退口径不一致。
+                        r.checked_at=Some(chrono::Utc::now().to_rfc3339());
                         r
                     });
-                    let _=apply_single_reading(&app2,&aid,r).await;
+                    let _=apply_single_reading(&app2,&aid,r,Some(generation)).await;
                 }
                 let _=app2.emit("refresh-state",serde_json::json!({"account_id":aid,"request_id":request_id,"phase":"finished","ok":ok,"kind":kind}));
             });
@@ -201,7 +206,7 @@ pub fn open_settings_window(app:&AppHandle){
 /// 一次全量刷新的结果：读数快照 + 实际发起/被冷却跳过的账号数（A07，反馈用）。
 #[derive(serde::Serialize,Clone)]
 pub struct RefreshSummary{pub readings:Vec<ProviderUsage>,pub initiated:usize,pub skipped:usize}
-pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<RefreshSummary,String>{
+pub async fn refresh_usages_and_emit(app:&AppHandle,manual:bool)->Result<RefreshSummary,String>{
     let state=app.state::<AppState>();
     let Ok(_gate)=state.refresh_gate.try_lock() else {
         let readings=state.cached_usages.lock().await.clone();
@@ -210,38 +215,85 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<RefreshSummary,Stri
     if let Some(e)=state.config_error(){return Err(e)}
     let settings=state.settings.lock().await.clone();
     let now=Instant::now();
-    let mut enabled_total=0usize;
+    let enabled_total;
     let mut due=settings.clone();
     let to_fetch:Vec<String>;
+    let mut account_req_ids: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     {let schedule=state.schedule.lock().await;
      let mut inflight=state.inflight.lock().await;
      for (id,cfg) in due.providers.iter_mut(){
         // 手动刷新在途的账号由该请求负责写回，定时轮不再重复发起。
         if inflight.contains_key(id){cfg.enabled=false}
-        else if schedule.get(id).is_some_and(|(at,_)|*at>now){cfg.enabled=false}
+        else if manual {
+            // 手动刷新（A07）：仅在服务商限流/退避窗口内跳过，其余已启用账号立即发起
+            if schedule.get(id).is_some_and(|(at,failures)|*failures>0 && *at>now){cfg.enabled=false}
+        } else if schedule.get(id).is_some_and(|(at,_)|*at>now){
+            // 定时轮调度：正常刷新周期未到期则跳过
+            cfg.enabled=false
+        }
      }
      // A07：反馈统计——enabled 总数与实际发起数的差即被冷却/在途跳过的账号。
      enabled_total=settings.providers.values().filter(|c|c.enabled).count();
      // 本轮真正要发起的账号登记进 inflight（A02）：定时在途期间用户点手动刷新
      // 会合并到同一请求，而不是并发第二个连接造成旧响应覆盖新结果。
      to_fetch=due.providers.iter().filter(|(_,c)|c.enabled).map(|(id,_)|id.clone()).collect();
-     for id in &to_fetch{inflight.entry(id.clone()).or_insert_with(||state.next_request_id());}
+     for id in &to_fetch{
+         let req_id=*inflight.entry(id.clone()).or_insert_with(||state.next_request_id());
+         account_req_ids.insert(id.clone(), req_id);
+     }
     }
+
+    // 为本轮发起的所有账号广播 started 状态，使悬浮栏同步转起
+    for id in &to_fetch {
+        if let Some(&req_id) = account_req_ids.get(id) {
+            let _ = app.emit("refresh-state", serde_json::json!({
+                "account_id": id,
+                "request_id": req_id,
+                "phase": "started"
+            }));
+        }
+    }
+
     let start_gens=state.account_generations.lock().await.clone();
     let mut rx=providers::fetch_all_stream(&due,&state.http,state.refresh_slots.clone());
     let mut incoming=vec![];
     let mut passed:Vec<ProviderUsage>=vec![];
+    let mut finished_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     while let Some(fresh)=rx.recv().await {
         incoming.push(fresh.clone());
         let current_settings=state.settings.lock().await.clone();
         let id=fresh.account_id.clone();
         state.inflight.lock().await.remove(&id); // 本轮发起的请求已落地，放行后续手动刷新
+        finished_ids.insert(id.clone());
+
         // Drop late response if account was deleted or modified during fetch
-        if !current_settings.providers.contains_key(&id) { continue; }
+        if !current_settings.providers.contains_key(&id) {
+            if let Some(&req_id) = account_req_ids.get(&id) {
+                let _ = app.emit("refresh-state", serde_json::json!({
+                    "account_id": id,
+                    "request_id": req_id,
+                    "phase": "finished",
+                    "ok": false,
+                    "kind": "deleted"
+                }));
+            }
+            continue;
+        }
         {
             let end_gens=state.account_generations.lock().await;
-            if start_gens.get(&id) != end_gens.get(&id) { continue; }
+            if start_gens.get(&id) != end_gens.get(&id) {
+                if let Some(&req_id) = account_req_ids.get(&id) {
+                    let _ = app.emit("refresh-state", serde_json::json!({
+                        "account_id": id,
+                        "request_id": req_id,
+                        "phase": "finished",
+                        "ok": false,
+                        "kind": "stale"
+                    }));
+                }
+                continue;
+            }
         }
         passed.push(fresh.clone());
 
@@ -253,7 +305,7 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<RefreshSummary,Stri
         let delay=if failures==0{current_settings.refresh_interval_seconds}else{fresh.retry_after_seconds.unwrap_or((30u64.saturating_mul(1u64<<failures.min(6))).min(1800)).max(current_settings.refresh_interval_seconds)};
         schedule.insert(id.clone(),(Instant::now()+Duration::from_secs(delay),failures));
         let pin=current_settings.providers.get(&id).and_then(|c|c.primary_window.as_deref());
-        let result=cache::reconcile_with_pin(fresh,previous,pin,cache::now());
+        let result=cache::reconcile_with_pin(fresh.clone(),previous,pin,cache::now());
         cached.retain(|u|u.account_id!=id);cached.push(result);
         cached.retain(|u|current_settings.providers.get(&u.account_id).is_some_and(|c|c.enabled));
         for u in cached.iter_mut(){
@@ -267,6 +319,32 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<RefreshSummary,Stri
         drop(cached);
 
         let _=app.emit("usages-updated",&snapshot);
+
+        let ok = fresh.state == "live";
+        let kind = if ok { "live".to_string() } else { fresh.error_code.clone().unwrap_or_else(|| fresh.state.clone()) };
+        if let Some(&req_id) = account_req_ids.get(&id) {
+            let _ = app.emit("refresh-state", serde_json::json!({
+                "account_id": id,
+                "request_id": req_id,
+                "phase": "finished",
+                "ok": ok,
+                "kind": kind
+            }));
+        }
+    }
+
+    // 兜底：若有异常未能返回的账号，补发 finished
+    for (id, req_id) in &account_req_ids {
+        if !finished_ids.contains(id) {
+            state.inflight.lock().await.remove(id);
+            let _ = app.emit("refresh-state", serde_json::json!({
+                "account_id": id,
+                "request_id": req_id,
+                "phase": "finished",
+                "ok": false,
+                "kind": "aborted"
+            }));
+        }
     }
 
     // Notices are judged on this cycle's raw fetches, before cache reconciliation can mask a failure.
@@ -286,12 +364,17 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<RefreshSummary,Stri
 
 /// Apply one freshly fetched reading with the same reconcile/schedule/emit semantics as
 /// the scheduled stream.
-async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderUsage)->Result<(),String>{
+async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderUsage,expected_gen:Option<u64>)->Result<(),String>{
     let state=app.state::<AppState>();
     let current_settings=state.settings.lock().await.clone();
     // 通知判断用 reconcile 前的原始读数（与定时轮 passed 语义一致，A10）。
     let raw_for_alerts=fresh.clone();
     let mut cached=state.cached_usages.lock().await;
+    // B04：提交前在写锁内复查代际——捕获检查与写缓存之间凭据/Profile 变化的窗口。
+    if let Some(g)=expected_gen{
+        let cur=state.account_generations.lock().await.get(account_id).copied().unwrap_or(0);
+        if cur!=g{return Ok(())}
+    }
     let mut schedule=state.schedule.lock().await;
     let previous=cached.iter().find(|u|u.account_id==account_id);
     let failures=if fresh.state=="live"{0}else{schedule.get(account_id).map(|v|v.1).unwrap_or(0).saturating_add(1)};
@@ -318,6 +401,8 @@ async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderUsage
         notices
     };
     for n in &notices{let _=notify(app,&n.title,&n.body);}
+    // B18：持久缓存写盘串行——手动/定时并发时保证新快照后写，--json 回退不拿旧文件。
+    let _io=state.settings_io.lock().await;
     if let Ok(bytes)=serde_json::to_vec(&snapshot){let path=config::get_config_dir().join("usage-cache.json");let _=tauri::async_runtime::spawn_blocking(move||config::atomic_write(&path,&bytes)).await;}
     Ok(())
 }
@@ -340,7 +425,19 @@ fn poll_activity(app:&AppHandle){
         let single=ids.len()==1;
         for id in ids{
             let newv=(single&&active,if single{"measured".to_string()}else{"unknown".to_string()});
-            if map.get(&id)!=Some(&newv){map.insert(id,newv);changed=true;}
+            if map.get(&id)!=Some(&newv){
+                // 诊断轨迹（外部建议）：只记状态与触发原因，便于验收"结束后正常熄灯"。
+                let line=format!("{} codex {id} -> {} ({})
+",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    if newv.0 {"working"}else{"idle"}, newv.1);
+                let path=config::get_config_dir().join("activity-trace.log");
+                if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open(&path){
+                    use std::io::Write as _;let _=f.write_all(line.as_bytes());
+                    if let Ok(meta)=f.metadata(){if meta.len()>200_000{drop(f);let _=std::fs::write(&path,b"");}}
+                }
+                map.insert(id,newv);changed=true;
+            }
         }
     }
     if !changed{return}
@@ -455,10 +552,12 @@ pub fn run(){
                                 // A15 断屏恢复（每 ~5s 查一次）：自由模式窗口落在任何已知
                                 // 显示器之外（屏被拔/显示配置切换）时，按 free_x/free_y 比例
                                 // 重挂主屏工作区，避免悬浮栏不可达。吸附模式由 position() 兜底。
-                                if let (Ok(pos),Ok(monitors),Some(primary))=(w.outer_position(),w.available_monitors(),w.primary_monitor().ok().flatten()){
+                                if let (Ok(pos),Ok(sz),Ok(monitors),Some(primary))=(w.outer_position(),w.outer_size(),w.available_monitors(),w.primary_monitor().ok().flatten()){
+                                    // B10：用窗口中心点判定——左上角在屏内但主体在屏外同样算不可达。
+                                    let cx=pos.x+(sz.width as i32)/2;let cy=pos.y+(sz.height as i32)/2;
                                     let on_screen=monitors.iter().any(|m|{
                                         let b=m.position();let s=m.size();
-                                        pos.x>=b.x&&pos.x<b.x+s.width as i32&&pos.y>=b.y&&pos.y<b.y+s.height as i32
+                                        cx>=b.x&&cx<b.x+s.width as i32&&cy>=b.y&&cy<b.y+s.height as i32
                                     });
                                     if !on_screen{
                                         let area=primary.work_area();
@@ -488,7 +587,7 @@ pub fn run(){
                 // A conflict at launch must not stop the app; the settings page reports it on the next save.
                 let _=apply_hotkeys(&handle,&settings.hotkeys);
                 loop {
-                    let _ = refresh_usages_and_emit(&handle).await;
+                    let _ = refresh_usages_and_emit(&handle, false).await;
                     let interval = {
                         let state = handle.state::<AppState>();
                         let s = state.settings.lock().await;
@@ -515,7 +614,7 @@ pub fn run(){
         .on_menu_event(|app,event|{
             match event.id().0.as_str(){
                 "rail-settings"=>open_settings_window(app),
-                "rail-refresh"=>{let a=app.clone();tauri::async_runtime::spawn(async move{let _=refresh_usages_and_emit(&a).await;});}
+                "rail-refresh"=>{let a=app.clone();tauri::async_runtime::spawn(async move{let _=refresh_usages_and_emit(&a, true).await;});}
                 "rail-toggle"=>toggle_rail(app),
                 "rail-quit"=>app.exit(0),
                 _=>{}

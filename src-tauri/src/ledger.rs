@@ -2,7 +2,7 @@
 use std::{collections::BTreeMap,fs::{self,File},io::{BufRead,BufReader,Read,Seek,SeekFrom},path::{Path,PathBuf}};
 use serde::{Serialize,Deserialize};use serde_json::Value;use sha2::{Digest,Sha256};
 use rusqlite::{Connection,params};
-#[derive(Default,Clone,Serialize,Deserialize)]struct State{model:String,totals:[u64;4]}
+#[derive(Default,Clone,Serialize,Deserialize)]struct State{model:String,totals:[u64;4],bad_lines:u64}
 #[derive(Clone,Serialize)]pub struct Row{pub source:String,pub model:String,pub day:String,pub hour:String,pub input:u64,pub output:u64,pub cache_read:u64,pub cache_write:u64,pub partial:bool}
 #[derive(Serialize)]pub struct Summary{pub rows:Vec<Row>,pub scanned_files:usize,pub skipped_files:usize,pub changed_files:usize,pub days:u32,pub partial:bool,pub cost_estimate:Option<f64>,pub notes:Vec<String>,pub duration_ms:Option<u64>,pub coverage_gap:bool}
 struct Event{id:String,ts:i64,model:String,counts:[u64;4],partial:bool}
@@ -144,7 +144,7 @@ fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool)
                     let mut line=vec![];let read=reader.by_ref().take(2*1024*1024+1).read_until(b'\n',&mut line).map_err(|_|"line")?;
                     if read==0{break}if read>2*1024*1024{return Err("oversized line".into())}
                     if !line.ends_with(b"\n"){break} // incomplete trailing record retried after append
-                    match serde_json::from_slice::<Value>(&line){Ok(v)=>insert(&v,offset,&mut state)?,Err(_)=>{skipped+=1;}}
+                    match serde_json::from_slice::<Value>(&line){Ok(v)=>insert(&v,offset,&mut state)?,Err(_)=>{skipped+=1;state.bad_lines+=1;}}
                     offset+=read as u64;
                 }
             }else{
@@ -193,7 +193,15 @@ fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool)
     }
     let cost_estimate = if any_cost { Some((total_cost * 100.0).round() / 100.0) } else { None };
     let coverage_gap=truncated;
-    let partial=skipped>0||rows.iter().any(|r|r.partial)||coverage_gap;
+    // B08：坏行状态持久化在 files.state——后续扫描跳过未变化文件时标记不丢。
+    let persisted_bad:u64={
+        let mut stmt=db.prepare("SELECT state FROM files WHERE state LIKE '%bad_lines%'").map_err(|_|"读取坏行状态失败")?;
+        let total=stmt.query_map([],|r|r.get::<_,String>(0)).map_err(|_|"读取坏行状态失败")?
+            .filter_map(|s|s.ok()).filter_map(|s|serde_json::from_str::<State>(&s).ok())
+            .map(|st|st.bad_lines).sum();
+        total
+    };
+    let partial=skipped>0||persisted_bad>0||rows.iter().any(|r|r.partial)||coverage_gap;
     let duration_ms=Some(scan_start.elapsed().as_millis() as u64);
     let mut notes=vec![
         "仅读取本机记录；缺失文件不代表零消耗。".into(),
@@ -206,6 +214,9 @@ fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool)
     ];
     if coverage_gap{
         notes.push("目录扫描达到上限或受限，已保留既有历史记录，统计可能存在缺口。".into());
+    }
+    if persisted_bad>0{
+        notes.push(format!("历史扫描中曾有 {persisted_bad} 行无法解析（已跳过，不影响已解析事件）。"));
     }
     if unpriced>0{
         notes.push(format!("有 {unpriced} 组记录来自未知定价的模型，未计入费用估算（已计价 {priced} 组）。"));
