@@ -23,6 +23,7 @@ pub struct AppState {
     pub ledger_gate:Mutex<()>,
     pub alerts:Mutex<alerts::Memory>,
     pub detail_account:std::sync::Mutex<Option<String>>,
+    pub settings_io:tokio::sync::Mutex<()>,
     pub account_generations:Mutex<HashMap<String,u64>>,
     pub refresh_slots:Arc<Semaphore>,
     pub inflight:Mutex<HashMap<String,u64>>,
@@ -197,14 +198,19 @@ pub fn open_settings_window(app:&AppHandle){
         .build();
     }
 }
-pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,String>{
+/// 一次全量刷新的结果：读数快照 + 实际发起/被冷却跳过的账号数（A07，反馈用）。
+#[derive(serde::Serialize,Clone)]
+pub struct RefreshSummary{pub readings:Vec<ProviderUsage>,pub initiated:usize,pub skipped:usize}
+pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<RefreshSummary,String>{
     let state=app.state::<AppState>();
     let Ok(_gate)=state.refresh_gate.try_lock() else {
-        return Ok(state.cached_usages.lock().await.clone());
+        let readings=state.cached_usages.lock().await.clone();
+        return Ok(RefreshSummary{readings,initiated:0,skipped:0});
     };
     if let Some(e)=state.config_error(){return Err(e)}
     let settings=state.settings.lock().await.clone();
     let now=Instant::now();
+    let mut enabled_total=0usize;
     let mut due=settings.clone();
     let to_fetch:Vec<String>;
     {let schedule=state.schedule.lock().await;
@@ -214,6 +220,8 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
         if inflight.contains_key(id){cfg.enabled=false}
         else if schedule.get(id).is_some_and(|(at,_)|*at>now){cfg.enabled=false}
      }
+     // A07：反馈统计——enabled 总数与实际发起数的差即被冷却/在途跳过的账号。
+     enabled_total=settings.providers.values().filter(|c|c.enabled).count();
      // 本轮真正要发起的账号登记进 inflight（A02）：定时在途期间用户点手动刷新
      // 会合并到同一请求，而不是并发第二个连接造成旧响应覆盖新结果。
      to_fetch=due.providers.iter().filter(|(_,c)|c.enabled).map(|(id,_)|id.clone()).collect();
@@ -273,7 +281,7 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
     let final_cached=state.cached_usages.lock().await.clone();
     // This cache is sanitized and only used for --json, never for credentials or fallback across launches.
     if let Ok(bytes)=serde_json::to_vec(&final_cached){let path=config::get_config_dir().join("usage-cache.json");let _=tauri::async_runtime::spawn_blocking(move||config::atomic_write(&path,&bytes)).await;}
-    Ok(final_cached)
+    Ok(RefreshSummary{readings:final_cached,initiated:to_fetch.len(),skipped:enabled_total.saturating_sub(to_fetch.len())})
 }
 
 /// Apply one freshly fetched reading with the same reconcile/schedule/emit semantics as
@@ -281,6 +289,8 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
 async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderUsage)->Result<(),String>{
     let state=app.state::<AppState>();
     let current_settings=state.settings.lock().await.clone();
+    // 通知判断用 reconcile 前的原始读数（与定时轮 passed 语义一致，A10）。
+    let raw_for_alerts=fresh.clone();
     let mut cached=state.cached_usages.lock().await;
     let mut schedule=state.schedule.lock().await;
     let previous=cached.iter().find(|u|u.account_id==account_id);
@@ -300,6 +310,15 @@ async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderUsage
     let snapshot=cached.clone();
     drop(schedule);drop(cached);
     app.emit("usages-updated",&snapshot).map_err(|_|"无法通知窗口".to_string())?;
+    // 与定时轮同语义（A10）：手动结果同样走通知判断并落持久缓存。
+    let notices={
+        let mut mem=state.alerts.lock().await;
+        let (notices,next)=alerts::evaluate(std::slice::from_ref(&raw_for_alerts),&current_settings,mem.clone(),cache::now());
+        if next!=*mem{*mem=next;let path=config::get_config_dir().join("alerts.json");let snapshot=mem.clone();let _=tauri::async_runtime::spawn_blocking(move||alerts::save(&path,&snapshot)).await;}
+        notices
+    };
+    for n in &notices{let _=notify(app,&n.title,&n.body);}
+    if let Ok(bytes)=serde_json::to_vec(&snapshot){let path=config::get_config_dir().join("usage-cache.json");let _=tauri::async_runtime::spawn_blocking(move||config::atomic_write(&path,&bytes)).await;}
     Ok(())
 }
 
@@ -332,6 +351,26 @@ fn poll_activity(app:&AppHandle){
         updated=cached.clone();
     }
     if !updated.is_empty(){let _=app.emit("usages-updated",&updated);}
+}
+
+/// A19：独立推进缓存过期。长刷新间隔/退避期间，过期状态原来只能等下一次请求
+/// 结果才被 reconcile 掩盖成 stale——这里由 5 秒活动轮驱动（每 6 轮 ≈30s），
+/// 让超过有效期/重置点的读数及时在 UI 转为过期，无需刷新成功。
+fn expire_tick(app:&AppHandle){
+    let state=app.state::<AppState>();
+    let Ok(mut cached)=state.cached_usages.try_lock()else{return};
+    let Ok(settings)=state.settings.try_lock()else{return};
+    let now=cache::now();
+    let mut changed=false;
+    for u in cached.iter_mut(){
+        let pin=settings.providers.get(&u.account_id).and_then(|c|c.primary_window.as_deref());
+        let before=serde_json::to_string(u).ok();
+        let expired=cache::expire_with_pin(u.clone(),pin,now);
+        let after=serde_json::to_string(&expired).ok();
+        if before!=after{*u=expired;changed=true;u.is_active=state.activity_flag(&u.account_id);}
+    }
+    drop(settings);
+    if changed{let snapshot=cached.clone();drop(cached);let _=app.emit("usages-updated",&snapshot);}
 }
 
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
@@ -368,7 +407,7 @@ pub fn run(){
     let (settings,error)=match config::load_settings(){Ok(s)=>(s,None),Err(e)=>(AppSettings::default(),Some(e))};
     let http=providers::client().expect("HTTP client initialization failed");
     let settings_start_hidden=settings.start_behavior=="tray";
-    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),ledger_gate:Mutex::new(()),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None),account_generations:Mutex::new(HashMap::new()),refresh_slots:Arc::new(Semaphore::new(4)),inflight:Mutex::new(HashMap::new()),request_counter:AtomicU64::new(0),activity:std::sync::Mutex::new(HashMap::new()),activity_watcher:std::sync::Mutex::new(activity::Watcher::new(activity::Watcher::system_roots())),app_handle:std::sync::OnceLock::new(),dragging:AtomicBool::new(false),drag_grab:std::sync::Mutex::new((0,0)),drag_side:std::sync::Mutex::new("free".into()),drag_ratio:std::sync::Mutex::new((0.5,0.5)),drag_monitors:std::sync::Mutex::new(Vec::new())};
+    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),ledger_gate:Mutex::new(()),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None),settings_io:tokio::sync::Mutex::new(()),account_generations:Mutex::new(HashMap::new()),refresh_slots:Arc::new(Semaphore::new(4)),inflight:Mutex::new(HashMap::new()),request_counter:AtomicU64::new(0),activity:std::sync::Mutex::new(HashMap::new()),activity_watcher:std::sync::Mutex::new(activity::Watcher::new(activity::Watcher::system_roots())),app_handle:std::sync::OnceLock::new(),dragging:AtomicBool::new(false),drag_grab:std::sync::Mutex::new((0,0)),drag_side:std::sync::Mutex::new("free".into()),drag_ratio:std::sync::Mutex::new((0.5,0.5)),drag_monitors:std::sync::Mutex::new(Vec::new())};
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app,_,_|open_settings_window(app)))
         .plugin(tauri_plugin_notification::init())
@@ -383,11 +422,14 @@ pub fn run(){
             let window_handle=app_handle.clone();
             install_rail_context_menu_subclass(&app_handle);
             tauri::async_runtime::spawn(async move{
+                let mut tick_no=0u32;
                 loop{
                     let state=window_handle.state::<AppState>();
                     let settings=state.settings.lock().await.clone();
                     let mode=state.window_mode.lock().await.clone();
                     let user_hidden=state.user_hidden.load(Ordering::Relaxed);
+                    tick_no=tick_no.wrapping_add(1);
+                    let tick_no=tick_no;
                     // A drag owns placement. Monitor enumeration and the foreground probe are
                     // synchronous Win32 calls; keep them off the async workers that serve IPC.
                     let tick_handle=window_handle.clone();
@@ -409,6 +451,24 @@ pub fn run(){
                             }
                             if mode != "expanded" && settings.dock_side != "free" {
                                 window::position(&tick_handle,&settings,&mode);
+                            } else if settings.dock_side == "free" && tick_no % 5 == 0 {
+                                // A15 断屏恢复（每 ~5s 查一次）：自由模式窗口落在任何已知
+                                // 显示器之外（屏被拔/显示配置切换）时，按 free_x/free_y 比例
+                                // 重挂主屏工作区，避免悬浮栏不可达。吸附模式由 position() 兜底。
+                                if let (Ok(pos),Ok(monitors),Some(primary))=(w.outer_position(),w.available_monitors(),w.primary_monitor().ok().flatten()){
+                                    let on_screen=monitors.iter().any(|m|{
+                                        let b=m.position();let s=m.size();
+                                        pos.x>=b.x&&pos.x<b.x+s.width as i32&&pos.y>=b.y&&pos.y<b.y+s.height as i32
+                                    });
+                                    if !on_screen{
+                                        let area=primary.work_area();
+                                        let count=settings.providers.values().filter(|c|c.enabled).count();
+                                        let rect=crate::window::geometry(
+                                            crate::window::Rect{x:area.position.x,y:area.position.y,w:area.size.width,h:area.size.height},
+                                            primary.scale_factor(),"free","rail",count,settings.free_x,settings.free_y);
+                                        crate::window::place_at(&w,rect.x,rect.y,rect.w,rect.h);
+                                    }
+                                }
                             }
                         }
                     }).await;
@@ -439,7 +499,16 @@ pub fn run(){
             });
             tauri::async_runtime::spawn(async move{
                 let poll_handle=app_handle.clone();
-                    loop{tokio::time::sleep(Duration::from_secs(5)).await;poll_activity(&poll_handle);}
+                let expire_handle=app_handle.clone();
+                tauri::async_runtime::spawn_blocking(move||{
+                    let mut tick=0u32;
+                    loop{
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                        poll_activity(&poll_handle);
+                        tick+=1;
+                        if tick%6==0{expire_tick(&expire_handle);} // ≈30s 独立推进过期（A19）
+                    }
+                });
             });
             Ok(())
         })
