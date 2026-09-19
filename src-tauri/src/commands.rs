@@ -299,6 +299,9 @@ pub async fn show_detail(
     state:State<'_,AppState>,
 )->Result<(),String>{
     use tauri::Manager;
+    // 拖动中一律拒绝弹出：drag_begin 已 hide，但拖动里窗口跟随光标的相对抖动会
+    // 重新触发图标的 mouseenter——没有这道闸详情面板会残留在屏幕上。
+    if state.dragging.load(Ordering::Relaxed){return Ok(())}
     let rail=app.get_webview_window("main").ok_or("窗口不存在")?;
     let (pos,size)=match (rail.outer_position(),rail.outer_size()){(Ok(p),Ok(s))=>(p,s),_=>return Err("无法读取悬浮栏位置".into())};
     let monitor=rail.current_monitor().ok().flatten().or_else(||rail.primary_monitor().ok().flatten()).ok_or("无法确定显示器")?;
@@ -334,7 +337,14 @@ pub async fn show_detail(
             let desired_x = pos.x as f64 + size.width as f64 * h_ratio - dw / 2.0;
             let x = desired_x.clamp(min_x, max_x);
             let y = (pos.y + size.height as i32) as f64;
-            ((x, y), "left")
+            ((x, y), "top")
+        }
+        "bottom" => {
+            let h_ratio = horizontal_ratio.unwrap_or(0.5);
+            let desired_x = pos.x as f64 + size.width as f64 * h_ratio - dw / 2.0;
+            let x = desired_x.clamp(min_x, max_x);
+            let y = (pos.y as f64 - dh).clamp(min_y, max_y);
+            ((x, y), "bottom")
         }
         _ => {
             let rail_cx = pos.x as f64 + size.width as f64 / 2.0;
@@ -447,7 +457,11 @@ pub fn drag_move(app:AppHandle)->Result<(),String>{
         .or_else(||win.current_monitor().ok().flatten())
         .or_else(||win.primary_monitor().ok().flatten()).ok_or("无法确定显示器")?;
     let m=&m_owned;
+    let prev_side=state.drag_side.lock().unwrap().clone();
     let (side,fx,fy)=classify_drag(&state,m,px,py);
+    // 预览停靠边变化时通知前端切换布局：窗口在 free 分支已按竖排 rail 尺寸 resize，
+    // 布局若仍按旧 dock_side 渲染，横排内容会被裁成"只剩一个图标"的窄条。
+    if side!=prev_side{use tauri::Emitter;let _=app.emit("drag-side",&side);}
     if side=="free"{
         let (gx,gy)=*state.drag_grab.lock().unwrap();
         // A docked preview may have resized the window: restore rail size for this monitor.
