@@ -13,8 +13,26 @@ interface ProfileInfo {
   mode: string;
 }
 
+interface RuntimeInfo {
+  version: string;
+  commit: string;
+  build_time: string;
+  mode: string;
+  data_dir: string;
+  exe_path: string;
+  exe_sha256: string;
+  profile_id: string;
+}
+
+function sanitizePath(raw: string): string {
+  return raw
+    .replace(/[a-zA-Z]:\\[^"\s,;]+/g, "[PATH]")
+    .replace(/\/(Users|home|etc)\/[^"\s,;]+/g, "[PATH]");
+}
+
 export function AboutPage() {
   const [profile, setProfile] = useState<ProfileInfo | null>(null);
+  const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const [msg, setMsg] = useState("");
   const [confirmArmed, setConfirmArmed] = useState<string | null>(null);
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -37,6 +55,7 @@ export function AboutPage() {
 
   const refreshProfile = () => {
     invoke<ProfileInfo>("get_profile_info").then(setProfile).catch(() => {});
+    invoke<RuntimeInfo>("get_runtime_info").then(setRuntime).catch(() => {});
   };
 
   useEffect(() => {
@@ -73,19 +92,66 @@ export function AboutPage() {
     }
   };
 
+  const handleImportInstalled = async () => {
+    if (confirmArmed !== "import_installed") {
+      armConfirm("import_installed");
+      return;
+    }
+    disarmConfirm();
+    try {
+      const imported = await invoke<any>("import_installed_config");
+      setMsg(`已成功从安装版导入 ${Object.keys(imported.providers || {}).length} 个账号与凭据！`);
+      refreshProfile();
+    } catch (e) {
+      setMsg(`导入失败: ${String(e)}`);
+    }
+  };
+
+  const handleCopyDiagnostics = async () => {
+    try {
+      const rawDiag = await invoke<string>("diagnostics");
+      const sanitizedExe = runtime?.exe_path ? sanitizePath(runtime.exe_path) : "[PATH]";
+      const sanitizedDir = runtime?.data_dir ? sanitizePath(runtime.data_dir) : "[PATH]";
+      const text = [
+        "=== Pulse 运行与诊断信息 ===",
+        `版本: v${runtime?.version || __APP_VERSION__}`,
+        `构建: ${runtime?.commit || __GIT_COMMIT__} · ${runtime?.build_time || __BUILD_TIME__}`,
+        `部署模式: ${runtime?.mode || "unknown"}`,
+        `配置身份: ${runtime?.profile_id || "unknown"}`,
+        `程序 SHA256: ${runtime?.exe_sha256 || "unknown"}`,
+        `数据目录: ${sanitizedDir}`,
+        `程序路径: ${sanitizedExe}`,
+        "",
+        "=== 连接与读数诊断 ===",
+        rawDiag,
+      ].join("\n");
+      await navigator.clipboard.writeText(text);
+      setMsg("已复制脱敏诊断信息至剪贴板，可直接粘贴提交 Issue。");
+    } catch (e) {
+      setMsg(`复制失败: ${String(e)}`);
+    }
+  };
+
   const rows: [string, string][] = [
-    ["版本", `v${__APP_VERSION__}`],
-    ["构建", `${__GIT_COMMIT__} · ${__BUILD_TIME__}`],
+    ["版本", `v${runtime?.version || __APP_VERSION__}`],
+    ["构建", `${runtime?.commit || __GIT_COMMIT__} · ${runtime?.build_time || __BUILD_TIME__}`],
     ["部署模式", profile?.mode === "portable" ? "便携版 (运行数据保存在 data/)" : profile?.mode === "custom_env" ? "自定义环境变量 (PULSE_DATA_DIR)" : "标准安装版 (数据保存在 AppData)"],
     ["配置身份", profile ? `${profile.profile_id.slice(0, 16)}...` : "正在读取..."],
+    ["程序 SHA256", runtime?.exe_sha256 ? `${runtime.exe_sha256.slice(0, 16)}...${runtime.exe_sha256.slice(-16)}` : "正在计算..."],
+    ["数据目录", runtime?.data_dir || "正在读取..."],
+    ["程序路径", runtime?.exe_path || "正在读取..."],
     ["开源仓库", "https://github.com/CNDDVP/pulse-windows"],
     ["技术栈", "Tauri 2 · Rust · React 19 · Tailwind CSS"],
   ];
 
   return (
     <div className="space-y-5 max-w-2xl">
-      <Section title="关于 Pulse for Windows" icon="ℹ️">
-        <dl className="grid grid-cols-[6rem_1fr] gap-y-2 text-xs">
+      <Section
+        title="关于 Pulse for Windows"
+        icon="ℹ️"
+        aside={<button className={btnGhost} onClick={() => void handleCopyDiagnostics()}>📋 复制脱敏诊断</button>}
+      >
+        <dl className="grid grid-cols-[6.5rem_1fr] gap-y-2 text-xs">
           {rows.map(([k, v]) => (
             <Fragment key={k}>
               <dt className="text-zinc-500">{k}</dt>
@@ -100,6 +166,14 @@ export function AboutPage() {
 
       <Section title="配置与凭据隔离" icon="🛡️" subtitle="便携版与安装版凭据独立托管于系统凭据管理器。">
         <div className="flex flex-wrap gap-3">
+          {profile?.mode === "portable" && (
+            <button
+              className={confirmArmed === "import_installed" ? "px-3 py-1.5 bg-emerald-950/50 text-emerald-300 border border-emerald-900/60 rounded-xl text-xs font-medium transition-all cursor-pointer" : btnGhost}
+              onClick={() => void handleImportInstalled()}
+            >
+              {confirmArmed === "import_installed" ? "再次点击以确认从安装版导入" : "从本机安装版导入配置与凭据"}
+            </button>
+          )}
           <button
             className={confirmArmed === "clear_creds" ? "px-3 py-1.5 bg-red-950/50 text-red-300 border border-red-900/60 rounded-xl text-xs font-medium transition-all cursor-pointer" : btnGhost}
             onClick={() => void handleClearCreds()}
@@ -118,7 +192,7 @@ export function AboutPage() {
 
       <Section title="更新与开源" icon="⬆️" subtitle="本项目遵循 Apache-2.0 许可证公开开源。"
         aside={<a className={btnGhost} href="https://github.com/qunqin24/Pulse" target="_blank" rel="noreferrer">上游项目</a>}>
-        <div className="text-xs text-zinc-400">当前版本 v{__APP_VERSION__} · 遵循零遥测、零数据回传隐私承诺</div>
+        <div className="text-xs text-zinc-400">当前版本 v{runtime?.version || __APP_VERSION__} · 遵循零遥测、零数据回传隐私承诺</div>
       </Section>
 
       <Section title="开发者集成" icon="🧩" subtitle="供脚本与状态栏读取，不含任何凭据。">

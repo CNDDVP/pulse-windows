@@ -450,6 +450,85 @@ pub async fn create_isolated_profile(state:State<'_,AppState>,app:AppHandle)->Re
     Ok(new_id)
 }
 
+#[derive(serde::Serialize, Clone)]
+pub struct RuntimeInfo {
+    pub version: String,
+    pub commit: String,
+    pub build_time: String,
+    pub mode: String,
+    pub data_dir: String,
+    pub exe_path: String,
+    pub exe_sha256: String,
+    pub profile_id: String,
+}
+
+static CACHED_EXE_SHA256: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+pub fn get_exe_sha256() -> String {
+    CACHED_EXE_SHA256.get_or_init(|| {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Ok(bytes) = std::fs::read(&exe) {
+                use sha2::{Sha256, Digest};
+                let mut hasher = Sha256::new();
+                hasher.update(&bytes);
+                return format!("{:x}", hasher.finalize());
+            }
+        }
+        "unknown".to_string()
+    }).clone()
+}
+
+#[tauri::command]
+pub fn get_runtime_info() -> RuntimeInfo {
+    let mode_str = match crate::config::get_config_mode() {
+        crate::config::ConfigMode::Installed => "installed",
+        crate::config::ConfigMode::Portable => "portable",
+        crate::config::ConfigMode::CustomEnv => "custom_env",
+    };
+    RuntimeInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        commit: option_env!("GIT_COMMIT").unwrap_or("unknown").to_string(),
+        build_time: option_env!("BUILD_TIME").unwrap_or("unknown").to_string(),
+        mode: mode_str.to_string(),
+        data_dir: crate::config::get_config_dir().to_string_lossy().to_string(),
+        exe_path: std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+        exe_sha256: get_exe_sha256(),
+        profile_id: crate::config::get_profile_id(),
+    }
+}
+
+#[tauri::command]
+pub fn check_importable_config() -> Result<Option<crate::config::ImportableConfigSummary>, String> {
+    crate::config::check_importable_config()
+}
+
+#[tauri::command]
+pub async fn import_installed_config(state: State<'_, AppState>, app: AppHandle) -> Result<AppSettings, String> {
+    let _io = state.settings_io.lock().await;
+    let imported = tauri::async_runtime::spawn_blocking(move || {
+        crate::config::import_installed_config()
+    }).await.map_err(|_| "导入任务失败")??;
+
+    *state.settings.lock().await = imported.clone();
+    state.clear_config_error();
+    for id in imported.providers.keys() {
+        state.bump_account_gen(id).await;
+    }
+    state.schedule.lock().await.clear();
+    let snapshot = {
+        let mut cached = state.cached_usages.lock().await;
+        cached.clear();
+        cached.clone()
+    };
+    let _ = app.emit("usages-updated", &snapshot);
+    let _ = app.emit("settings-updated", &imported);
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::refresh_usages_and_emit(&app_clone, true).await;
+    });
+    Ok(imported)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

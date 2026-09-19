@@ -108,12 +108,12 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
       <Section title="启动" icon="🚀">
         <Row
           title="登录 Windows 时启动 Pulse"
-          subtitle={isPortable ? "便携模式已禁用开机自启（避免移动文件夹后在系统产生死链）。如需自启请使用安装版。" : startup === null ? "无法读取系统启动项状态" : "写入当前用户的注册表 Run 项，状态直接读自系统。"}
-          disabled={isPortable || startup === null}
+          subtitle={isPortable ? "便携版开机自启将指向当前 EXE 路径；移动文件夹后首次手动运行将自动修复路径。" : startup === null ? "无法读取系统启动项状态" : "写入当前用户的注册表 Run 项，状态直接读自系统。"}
+          disabled={startup === null}
         >
           <Switch
-            checked={isPortable ? false : !!startup}
-            disabled={isPortable || startup === null}
+            checked={!!startup}
+            disabled={startup === null}
             label="登录 Windows 时启动 Pulse"
             onChange={v => void invoke<boolean>("set_startup", { enable: v }).then(s => { setStartup(s); toast("success", s ? "已加入开机启动" : "已移除开机启动"); }).catch(e => toast("error", String(e)))}
           />
