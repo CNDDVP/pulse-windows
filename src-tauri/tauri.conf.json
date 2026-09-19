@@ -5,7 +5,8 @@
   "identifier": "com.cnddvp.pulse",
   "build": {
     "frontendDist": "../dist",
-    "beforeDevCommand": "npm run dev", "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "windows": [
@@ -64,9 +65,23 @@
     }
   },
   "bundle": {
-    "active":true,"targets":["nsis"],"publisher":"Pulse Windows Contributors",
-    "shortDescription":"Windows AI coding allowance monitor",
-    "icon":["icons/32x32.png","icons/128x128.png","icons/128x128@2x.png","icons/icon.ico"],
-    "windows":{"nsis":{"installMode":"currentUser","displayLanguageSelector":false}}
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "publisher": "Pulse Windows Contributors",
+    "shortDescription": "Windows AI coding allowance monitor",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    }
   }
 }
