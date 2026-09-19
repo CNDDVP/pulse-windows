@@ -29,7 +29,10 @@ pub fn classify_line(source:&str,v:&Value)->Option<Event>{
             if v["type"].as_str()?!="event_msg"{return None}
             let pt=v.pointer("/payload/type").and_then(|x|x.as_str())?;
             match pt{
-                "token_count"|"task_started"|"agent_reasoning"|"exec_command_begin"|"turn_started"=>Some(Event::Working),
+                // token_count 是用量遥测，不是活动信号（Codex 会在 task_complete 同秒补发统计，
+            // 字节边界切批时会被当成"最后一个事件"把刚熄的灯重新点亮）——任务执行期的
+            // 点亮由 task_started/agent_reasoning/exec_command_begin/turn_started 覆盖。
+            "task_started"|"agent_reasoning"|"exec_command_begin"|"turn_started"=>Some(Event::Working),
                 "task_complete"|"turn_aborted"|"task_interrupted"|"shutdown_complete"=>Some(Event::Idle),
                 _=>None,
             }
@@ -185,7 +188,7 @@ mod tests{
         assert_eq!(classify_line("claude",&json!({"type":"summary"})),None);
     }
     #[test]fn codex_events(){
-        assert_eq!(classify_line("codex",&json!({"type":"event_msg","payload":{"type":"token_count"}})),Some(Event::Working));
+        assert_eq!(classify_line("codex",&json!({"type":"event_msg","payload":{"type":"token_count"}})),None,"用量遥测不点亮（结束后统计不得重新点亮）");
         assert_eq!(classify_line("codex",&json!({"type":"event_msg","payload":{"type":"task_complete"}})),Some(Event::Idle));
         assert_eq!(classify_line("codex",&json!({"type":"event_msg","payload":{"type":"unknown_thing"}})),None);
         assert_eq!(classify_line("codex",&json!({"type":"turn_context"})),None);
@@ -233,7 +236,7 @@ mod tests{
         let mut w=Watcher::new(vec![("codex",d.path().to_path_buf())]);
         w.poll(1_000); // 首见跳过
         let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
-        f.write_all(line(json!({"type":"event_msg","payload":{"type":"token_count"}})).as_bytes()).unwrap();drop(f);
+        f.write_all(line(json!({"type":"event_msg","payload":{"type":"agent_reasoning"}})).as_bytes()).unwrap();drop(f);
         assert_eq!(w.poll(2_000).get("codex"),Some(&true),"工作中");
         let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         f.write_all(line(json!({"type":"event_msg","payload":{"type":"task_complete"}})).as_bytes()).unwrap();drop(f);

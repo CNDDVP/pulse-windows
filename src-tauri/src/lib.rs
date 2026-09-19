@@ -352,7 +352,19 @@ fn poll_activity(app:&AppHandle){
         let single=ids.len()==1;
         for id in ids{
             let newv=(single&&active,if single{"measured".to_string()}else{"unknown".to_string()});
-            if map.get(&id)!=Some(&newv){map.insert(id,newv);changed=true;}
+            if map.get(&id)!=Some(&newv){
+                // 诊断轨迹（外部建议）：只记状态与触发原因，便于验收"结束后正常熄灯"。
+                let line=format!("{} codex {id} -> {} ({})
+",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    if newv.0 {"working"}else{"idle"}, newv.1);
+                let path=config::get_config_dir().join("activity-trace.log");
+                if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open(&path){
+                    use std::io::Write as _;let _=f.write_all(line.as_bytes());
+                    if let Ok(meta)=f.metadata(){if meta.len()>200_000{drop(f);let _=std::fs::write(&path,b"");}}
+                }
+                map.insert(id,newv);changed=true;
+            }
         }
     }
     if !changed{return}
