@@ -1,18 +1,19 @@
 import {useEffect,useState} from "react";
 import type {AppSettings,ProviderUsage} from "../types";
 import {resetText,forecast,forecastKind} from "../presentation";
-export function UsageDetailCard({usage,settings,placement}:{usage:ProviderUsage;settings:AppSettings;placement?: "left" | "right"}){
+export function UsageDetailCard({usage,settings,placement}:{usage:ProviderUsage;settings:AppSettings;placement?: "left" | "right" | "top" | "bottom"}){
   const [now,setNow]=useState(()=>Date.now());useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),10000);return()=>clearInterval(t)},[]);
   const dark = settings.theme === "obsidian";
-  const top = settings.dock_side === "top";
   const isRightOfRail = placement !== undefined ? placement === "right" : settings.dock_side === "left";
+  // 侧向小箭头只在卡片位于 rail 左/右侧时有意义；正下/正上时朝向用 dock_side 兜底。
+  const sideways = placement ? placement==="left"||placement==="right" : settings.dock_side!=="top";
 
   const isRemaining = settings.display_mode === "remaining";
   const red = settings.warning_threshold, amber = red - 15;
 
   const animClass = isRightOfRail ? "card-animate-left" : "card-animate-right";
   return <section className={`relative rounded-2xl p-4 max-h-full overflow-auto w-[290px] text-xs ${animClass} ${dark?"card-obsidian text-zinc-200":"card-translucent text-zinc-800"}`}>
-    {!top && (
+    {sideways && (
       <div
         className={`absolute top-6 w-3 h-3 rotate-45 pointer-events-none ${
           isRightOfRail

@@ -334,7 +334,14 @@ pub async fn show_detail(
             let desired_x = pos.x as f64 + size.width as f64 * h_ratio - dw / 2.0;
             let x = desired_x.clamp(min_x, max_x);
             let y = (pos.y + size.height as i32) as f64;
-            ((x, y), "left")
+            ((x, y), "top")
+        }
+        "bottom" => {
+            let h_ratio = horizontal_ratio.unwrap_or(0.5);
+            let desired_x = pos.x as f64 + size.width as f64 * h_ratio - dw / 2.0;
+            let x = desired_x.clamp(min_x, max_x);
+            let y = (pos.y as f64 - dh).clamp(min_y, max_y);
+            ((x, y), "bottom")
         }
         _ => {
             let rail_cx = pos.x as f64 + size.width as f64 / 2.0;

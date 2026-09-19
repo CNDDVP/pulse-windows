@@ -17,7 +17,7 @@ function DetailOverlay() {
   const [usages,setUsages]=useState<ProviderUsage[]|null>(null);
   const [accountId,setAccountId]=useState<string|null>(null);
   const [settings,setSettings]=useState<AppSettings|null>(null);
-  const [placement,setPlacement]=useState<"left"|"right">("left");
+  const [placement,setPlacement]=useState<"left"|"right"|"top"|"bottom">("left");
   useEffect(()=>{
     let alive=true;const stops:(()=>void)[]=[];let settingsVersion=0,usageVersion=0;
     void(async()=>{
@@ -27,7 +27,7 @@ function DetailOverlay() {
       if(b){if(!alive){void b();return}stops.push(b)}
       const c=await listen<AppSettings>("settings-updated",e=>{settingsVersion++;if(alive)setSettings(e.payload)}).catch(()=>null);
       if(c){if(!alive){void c();return}stops.push(c)}
-      const d=await listen<"left"|"right">("detail-placement",e=>{if(alive)setPlacement(e.payload)}).catch(()=>null);
+      const d=await listen<"left"|"right"|"top"|"bottom">("detail-placement",e=>{if(alive)setPlacement(e.payload)}).catch(()=>null);
       if(d){if(!alive){void d();return}stops.push(d)}
 
       const sv=settingsVersion,uv=usageVersion;
@@ -39,7 +39,10 @@ function DetailOverlay() {
     return()=>{alive=false;stops.forEach(f=>f())};
   },[]);
   const usage=usages?.find(u=>u.account_id===accountId);
-  return <div className="w-full h-full p-2 flex items-center"
+  // 窗口在 rail 正下/正上时内容贴边渲染，否则卡片矮时垂直居中会在窗口顶留出大片透明，
+  // 视觉上像"详情卡离悬浮栏很远"。
+  const alignClass = placement==="top" ? "items-start" : placement==="bottom" ? "items-end" : "items-center";
+  return <div className={`w-full h-full p-2 flex ${alignClass}`}
     onMouseEnter={()=>void invoke("set_detail_hover",{hovered:true})}
     onMouseLeave={()=>void invoke("set_detail_hover",{hovered:false})}
     onContextMenu={e=>e.preventDefault()}>
