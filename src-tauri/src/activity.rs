@@ -42,6 +42,18 @@ fn roots()->Vec<(&'static str,PathBuf)>{
     let mut out=vec![];
     if let Some(p)=crate::providers::credentials::home_path("CLAUDE_CONFIG_DIR",".claude"){out.push(("claude",p.join("projects")))}
     if let Some(p)=crate::providers::credentials::home_path("CODEX_HOME",".codex"){out.push(("codex",p.join("sessions")))}
+    // ZCode（zhipu 账号的 CLI）：会话任务日志（exec/*）与消息存储（v2 的 sqlite-wal）
+    // 都按追加写；写入即在使用。Antigravity：language server 日志按速率判定（空闲心跳
+    // ~280B/5s，agent 任务时流式日志远超阈值）。
+    if let Some(p)=crate::providers::credentials::home_path("ZCODE_HOME",".zcode"){
+        out.push(("zhipu",p.join("cli").join("exec")));
+        out.push(("zhipu",p.join("v2")));
+    }
+    #[cfg(windows)]
+    {
+        let appdata=std::env::var("APPDATA").ok().map(PathBuf::from);
+        if let Some(p)=appdata.map(|d|d.join("Antigravity").join("logs")){out.push(("antigravity",p))}
+    }
     out
 }
 
@@ -53,7 +65,7 @@ fn discover(root:&PathBuf,out:&mut Vec<PathBuf>,depth:usize){
         if kind.is_symlink(){continue}
         let p=e.path();
         if kind.is_dir(){discover(&p,out,depth+1)}
-        else if p.extension().is_some_and(|x|x=="jsonl"){out.push(p)}
+        else if p.extension().is_some_and(|x|x=="jsonl"||x=="log"||x=="sqlite-wal"){out.push(p)}
     }
 }
 
@@ -84,6 +96,9 @@ fn scan_appended(path:&PathBuf,offset:u64,budget:u64,source:&str)->Option<(Optio
 const SESSION_DECAY_SECS:i64=180;
 const READ_BUDGET_BYTES:u64=1024*1024;
 const POLL_TOTAL_BUDGET_BYTES:u64=8*1024*1024;
+/// Antigravity 的 language server 空闲时也匀速写日志（实测 ~280B/5s 心跳），
+/// agent 任务则是流式日志（每轮几十 KB）。按每轮增长量区分，低于阈值不算工作。
+const AGENT_RATE_BYTES:u64=2048;
 #[derive(Default)]
 pub struct Watcher{
     roots:Vec<(&'static str,PathBuf)>,
@@ -94,12 +109,9 @@ impl Watcher{
     fn source_of(&self,path:&PathBuf)->Option<&'static str>{
         self.roots.iter().find(|(_,root)|path.starts_with(root)).map(|(s,_)|*s)
     }
-    /// Real CLI log locations (Claude projects, Codex sessions).
+    /// Real CLI log locations (Claude projects, Codex sessions, ZCode, Antigravity).
     pub fn system_roots()->Vec<(&'static str,PathBuf)>{
-        let mut out=vec![];
-        if let Some(p)=crate::providers::credentials::home_path("CLAUDE_CONFIG_DIR",".claude"){out.push(("claude",p.join("projects")))}
-        if let Some(p)=crate::providers::credentials::home_path("CODEX_HOME",".codex"){out.push(("codex",p.join("sessions")))}
-        out
+        roots()
     }
     pub fn new(roots:Vec<(&'static str,PathBuf)>)->Self{Self{roots,..Default::default()}}
     pub fn poll(&mut self,now:i64)->HashMap<&'static str,bool>{
@@ -117,13 +129,17 @@ impl Watcher{
                 let take=((len-offset) as u64).min(READ_BUDGET_BYTES).min(budget);
                 if take==0{continue}
                 budget-=take;
-                if let Some((ev,new_off))=scan_appended(&path,offset,take,source){
-                    self.files.insert(path.clone(),new_off);
-                    match ev{
-                        Some(Event::Working)=>{self.sessions.insert(path.clone(),(true,now));}
-                        Some(Event::Idle)=>{self.sessions.insert(path.clone(),(false,now));}
-                        None=>{}
-                    }
+                // 字节级源（会话存储 / agent 日志）：不做 JSON 解析，按增长量判定。
+                let (ev,new_off)=match source{
+                    "zhipu"=>(Some(Event::Working),offset+take),
+                    "antigravity"=>(if take>=AGENT_RATE_BYTES{Some(Event::Working)}else{None},offset+take),
+                    _=>match scan_appended(&path,offset,take,source){Some((e,o))=>(e,o),None=>continue},
+                };
+                self.files.insert(path.clone(),new_off);
+                match ev{
+                    Some(Event::Working)=>{self.sessions.insert(path.clone(),(true,now));}
+                    Some(Event::Idle)=>{self.sessions.insert(path.clone(),(false,now));}
+                    None=>{}
                 }
             }
         }
@@ -186,5 +202,32 @@ mod tests{
         let states=w.poll(2_000);
         assert_eq!(states.get("claude"),Some(&true),"appended user event means working");
         assert_eq!(*w.files.get(&p).unwrap(),total,"offset advances past consumed lines");
+    }
+    #[test]fn zhipu_any_append_is_working(){
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("tasks-index.sqlite-wal");
+        fs::write(&p,vec![0u8;512]).unwrap();
+        let mut w=Watcher::new(vec![("zhipu",d.path().to_path_buf())]);
+        assert_eq!(w.poll(1_000).get("zhipu"),None,"首见跳历史");
+        // 二进制追加（sqlite-wal 写事务）——不做 JSON 解析，任何增长即工作。
+        use std::io::Write;let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(&[1,2,3,4]).unwrap();drop(f);
+        assert_eq!(w.poll(2_000).get("zhipu"),Some(&true),"会话存储被写入 = 工作中");
+        // 3 分钟无写入 → 衰减熄灭。
+        assert_eq!(w.poll(2_000+181).get("zhipu"),None,"衰减后熄灭");
+    }
+    #[test]fn antigravity_rate_gate(){
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("language_server.log");
+        fs::write(&p,"seed\n").unwrap();
+        let mut w=Watcher::new(vec![("antigravity",d.path().to_path_buf())]);
+        w.poll(1_000);
+        use std::io::Write;
+        // 心跳（<2KB/轮）：不点亮。
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(&[b'x';400]).unwrap();drop(f);
+        assert_eq!(w.poll(2_000).get("antigravity"),None,"空闲心跳不应点亮");
+        // 任务流式日志（≥2KB/轮）：点亮。
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(&[b'x';AGENT_RATE_BYTES as usize]).unwrap();drop(f);
+        assert_eq!(w.poll(3_000).get("antigravity"),Some(&true),"高速日志 = agent 任务");
     }
 }
