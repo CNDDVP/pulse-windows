@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Section } from "./shared";
 import { btnGhost } from "./constants";
@@ -16,6 +16,24 @@ interface ProfileInfo {
 export function AboutPage() {
   const [profile, setProfile] = useState<ProfileInfo | null>(null);
   const [msg, setMsg] = useState("");
+  const [confirmArmed, setConfirmArmed] = useState<string | null>(null);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const armConfirm = (key: string) => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmArmed(key);
+    confirmTimerRef.current = setTimeout(() => setConfirmArmed(null), 3000);
+  };
+  const disarmConfirm = () => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmArmed(null);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    };
+  }, []);
 
   const refreshProfile = () => {
     invoke<ProfileInfo>("get_profile_info").then(setProfile).catch(() => {});
@@ -26,7 +44,11 @@ export function AboutPage() {
   }, []);
 
   const handleClearCreds = async () => {
-    if (!window.confirm("确定要清除当前 Profile 在 Windows 凭据管理器中保存的全部凭据吗？")) return;
+    if (confirmArmed !== "clear_creds") {
+      armConfirm("clear_creds");
+      return;
+    }
+    disarmConfirm();
     try {
       await invoke("clear_profile_credentials");
       setMsg("已成功清除当前 Profile 关联的全部系统凭据。");
@@ -37,7 +59,11 @@ export function AboutPage() {
   };
 
   const handleIsolateProfile = async () => {
-    if (!window.confirm("确定要为当前数据目录重新生成独立的 Profile ID 吗？（此操作可用于克隆后的便携副本，使其拥有独立凭据空间）")) return;
+    if (confirmArmed !== "isolate_profile") {
+      armConfirm("isolate_profile");
+      return;
+    }
+    disarmConfirm();
     try {
       const newId = await invoke<string>("create_isolated_profile");
       setMsg(`已生成新配置身份: ${newId.slice(0, 12)}...`);
@@ -74,11 +100,17 @@ export function AboutPage() {
 
       <Section title="配置与凭据隔离" icon="🛡️" subtitle="便携版与安装版凭据独立托管于系统凭据管理器。">
         <div className="flex flex-wrap gap-3">
-          <button className={btnGhost} onClick={() => void handleClearCreds()}>
-            清理本机关联凭据
+          <button
+            className={confirmArmed === "clear_creds" ? "px-3 py-1.5 bg-red-950/50 text-red-300 border border-red-900/60 rounded-xl text-xs font-medium transition-all cursor-pointer" : btnGhost}
+            onClick={() => void handleClearCreds()}
+          >
+            {confirmArmed === "clear_creds" ? "再次点击以确认清除凭据" : "清理本机关联凭据"}
           </button>
-          <button className={btnGhost} onClick={() => void handleIsolateProfile()}>
-            重新生成独立配置身份
+          <button
+            className={confirmArmed === "isolate_profile" ? "px-3 py-1.5 bg-amber-950/50 text-amber-300 border border-amber-900/60 rounded-xl text-xs font-medium transition-all cursor-pointer" : btnGhost}
+            onClick={() => void handleIsolateProfile()}
+          >
+            {confirmArmed === "isolate_profile" ? "再次点击以确认重新生成身份" : "重新生成独立配置身份"}
           </button>
         </div>
         {msg && <p className="text-xs text-emerald-400 mt-2">{msg}</p>}

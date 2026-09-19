@@ -561,7 +561,7 @@ pub fn run(){
                                     });
                                     if !on_screen{
                                         let area=primary.work_area();
-                                        let count=settings.providers.values().filter(|c|c.enabled).count();
+                                        let count=crate::window::item_count(&settings);
                                         let rect=crate::window::geometry(
                                             crate::window::Rect{x:area.position.x,y:area.position.y,w:area.size.width,h:area.size.height},
                                             primary.scale_factor(),"free","rail",count,settings.free_x,settings.free_y);
