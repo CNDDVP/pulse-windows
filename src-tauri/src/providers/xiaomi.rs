@@ -45,14 +45,15 @@ async fn call(http:&reqwest::Client,cookie:&str,path:&str)->Result<Value,Provide
 pub async fn fetch(cookie:&str,http:&reqwest::Client)->Result<Value,ProviderUsage>{
     let cookie=normalize_cookie(cookie).map_err(|m|problem("invalid_credential",&m))?;
     // The ring lives on the usage route: its failure is the provider's failure. The other
-    // two only decorate the card and are kept as outcomes, not discarded.
+    // two only decorate the card and are kept as outcomes, not discarded. Optional calls
+    // get a 6s cap each so they cannot eat the 25s outer budget after a slow main call (A22).
     let usage=call(http,&cookie,"tokenPlan/usage").await?;
-    let detail=call(http,&cookie,"tokenPlan/detail").await;
-    let balance=call(http,&cookie,"balance").await;
+    let detail=tokio::time::timeout(std::time::Duration::from_secs(6),call(http,&cookie,"tokenPlan/detail")).await.ok().and_then(|r| r.ok());
+    let balance=tokio::time::timeout(std::time::Duration::from_secs(6),call(http,&cookie,"balance")).await.ok().and_then(|r| r.ok());
     let items=usage["monthUsage"]["items"].as_array().cloned()
         .ok_or_else(||problem("schema","月度用量响应缺少 monthUsage.items"))?;
     if items.is_empty(){return Err(problem("no_plan","该账号未购买 Coding Plan（按量计费账户）"))}
-    Ok(json!({"items":items,"detail":detail.ok(),"balance":balance.ok()}))
+    Ok(json!({"items":items,"detail":detail,"balance":balance}))
 }
 
 #[cfg(test)]

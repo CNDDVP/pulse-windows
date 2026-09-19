@@ -91,7 +91,7 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
         </div>
       </Section>
 
-      <Section title="刷新" icon="⚡" aside={<button className={btnGhost} disabled={busy} onClick={() => void onRefreshAll().then(() => toast("success", "已刷新全部账号")).catch(e => toast("error", `刷新失败: ${String(e)}`))}>立即刷新全部</button>}>
+      <Section title="刷新" icon="⚡" aside={<button className={btnGhost} disabled={busy} onClick={() => void onRefreshAll().catch(e => toast("error", `刷新失败: ${String(e)}`))}>立即刷新全部</button>}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Field label="自动刷新间隔" hint="读取失败时按退避自动拉长；服务商返回 Retry-After 时以其为准。">
             <select className={selectCls} value={settings.refresh_interval_seconds} onChange={e => update({ refresh_interval_seconds: Number(e.target.value) })}>

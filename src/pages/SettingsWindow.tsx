@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import type { AppSettings, HotkeySettings, MonitorOption, ProviderConfig, ProviderUsage } from "../types";
+import type { AppSettings, HotkeySettings, MonitorOption, ProviderConfig, ProviderUsage, RefreshSummary } from "../types";
 import { ProviderIcon } from "../components/icons/ProviderIcons";
 const BOT_PERSONAS: [string,string][]=[["calm","沉稳"],["eager","热切"],["steady","踏实"],["curious","好奇"],["sleepy","瞌睡"],["playful","顽皮"],["stoic","淡漠"],["proud","骄傲"]];
 const BOT_SHAPES: [string,string][]=[["blob","圆团"],["pebble","卵石"],["bean","豆子"],["egg","蛋"],["squircle","方圆"],["tablet","平板"],["capsule","胶囊"],["cylinder","圆柱"],["hex","六边"],["gem","宝石"],["crystal","晶体"],["wedge","楔形"],["shield","盾牌"],["dome","穹顶"],["arch","拱门"],["cloud","云朵"],["teardrop","泪滴"],["leaf","叶片"]];
@@ -92,11 +92,13 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
     markApplied(initialSettings); setSettings(initialSettings);
   }, [initialSettings]);
 
-  const persist = async (next: AppSettings, message: string) => {
+  const persist = async (next: AppSettings, message: string, keepDraftProviders = false) => {
     setBusy(true);
     try {
       const updated = await invoke<AppSettings>("update_settings", { newSettings: next });
-      markApplied(updated); setPendingRemote(null); onSaved(updated); setSettings(updated);
+      markApplied(updated); setPendingRemote(null); onSaved(updated);
+      // keepDraftProviders：普通设置自动保存只提交 providers 基线（A26），不打掉账号页正在编辑的草稿。
+      setSettings(keepDraftProviders ? (cur => ({ ...updated, providers: cur.providers })) : updated);
       if (message) showToast("success", message);
       return updated;
     } catch (e) { showToast("error", `保存失败: ${String(e)}`); throw e; } finally { setBusy(false); }
@@ -104,8 +106,10 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
   /** Ordinary settings save on change; a rejected save (e.g. hotkey conflict) rolls the UI back. */
   const update = (patch: Partial<AppSettings>, message = "") => {
     const prev = settings, next = { ...settings, ...patch };
+    // 提交时 providers 用已保存基线（A26）：账号草稿只在账号页显式保存时落盘。
+    const persisted = { ...next, providers: appliedRef.current.providers };
     setSettings(next);
-    persist(next, message).catch(() => setSettings(prev));
+    persist(persisted, message, true).catch(() => setSettings(prev));
   };
   const saveHotkeys = (hk: HotkeySettings) => update({ hotkeys: hk }, "快捷键已生效");
   const patch = (id: string, value: Partial<ProviderConfig>) => setSettings(s => ({ ...s, providers: { ...s.providers, [id]: { ...s.providers[id], ...value } } }));
@@ -203,7 +207,11 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
       showToast(r.state === "live" ? "success" : "error", r.state === "live" ? `${r.display_name}: 连接成功，已获取最新读数` : `${r.display_name}: ${r.error_message || r.state}`);
     } catch (e) { showToast("error", `测试失败: ${String(e)}`); } finally { setTestingId(null); }
   };
-  const refreshAll = async () => { await invoke("refresh_usages"); };
+  const refreshAll = async () => {
+    const r = await invoke<RefreshSummary>("refresh_usages");
+    if (r.initiated > 0) showToast("success", `已发起 ${r.initiated} 个账号刷新${r.skipped ? `（${r.skipped} 个冷却中跳过）` : ""}`);
+    else showToast("info", `全部账号都在冷却或刷新中，本次未发起（${r.skipped} 个跳过）`);
+  };
 
   const closeWindow = async () => {
     if (anyDirty && confirmArmed !== "close") { armConfirm("close"); showToast("info", "有未保存的更改——再次点击关闭将放弃它们"); return; }

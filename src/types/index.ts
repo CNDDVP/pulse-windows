@@ -41,3 +41,6 @@ export interface AppSettings {
   notifications: NotificationSettings; hotkeys: HotkeySettings;
   providers: Record<string, ProviderConfig>;
 }
+
+/** 一次全量刷新的结果（A07）：读数快照 + 实际发起/被冷却跳过的账号数。 */
+export interface RefreshSummary { readings: ProviderUsage[]; initiated: number; skipped: number; }

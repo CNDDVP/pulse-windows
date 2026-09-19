@@ -86,7 +86,7 @@ pub async fn get_usages(state:State<'_,AppState>)->Result<Vec<ProviderUsage>,Str
     }).collect())
 }
 #[tauri::command]
-pub async fn refresh_usages(app:AppHandle)->Result<Vec<ProviderUsage>,String>{crate::refresh_usages_and_emit(&app).await}
+pub async fn refresh_usages(app:AppHandle)->Result<crate::RefreshSummary,String>{crate::refresh_usages_and_emit(&app).await}
 #[tauri::command]
 pub async fn refresh_account(account_id:String,app:AppHandle)->Result<u64,String>{crate::AppState::refresh_account_now(&app,&account_id).await}
 #[tauri::command]
@@ -142,7 +142,9 @@ pub async fn delete_credential(account_id:String,state:State<'_,AppState>,app:Ap
     }}).await.map_err(|_|"凭据删除任务失败")??;
     *state.settings.lock().await=saved.clone();state.clear_config_error();
     state.bump_account_gen(&account_id).await;
-    state.schedule.lock().await.remove(&account_id);state.cached_usages.lock().await.retain(|r|r.account_id!=account_id);
+    state.schedule.lock().await.remove(&account_id);
+    let snapshot={let mut cached=state.cached_usages.lock().await;cached.retain(|r|r.account_id!=account_id);cached.clone()};
+    let _=app.emit("usages-updated",&snapshot);
     app.emit("settings-updated",&saved).map_err(|_|"窗口通知失败")?;Ok(())
 }
 #[tauri::command]
@@ -407,8 +409,17 @@ pub fn clear_profile_credentials()->Result<(),String>{
 }
 
 #[tauri::command]
-pub fn create_isolated_profile()->Result<String,String>{
-    crate::config::create_isolated_profile()
+pub async fn create_isolated_profile(state:State<'_,AppState>,app:AppHandle)->Result<String,String>{
+    let new_id=crate::config::create_isolated_profile()?;
+    // 身份切换事务化（A25）：清读数与调度、失效全部账号的在途请求（代际 bump），
+    // 广播清空后的读数——旧身份的结果不得在新身份下提交。
+    let snapshot={let mut cached=state.cached_usages.lock().await;cached.clear();cached.clone()};
+    state.schedule.lock().await.clear();
+    let ids:Vec<String>=state.settings.lock().await.providers.keys().cloned().collect();
+    for id in &ids{state.bump_account_gen(id).await;}
+    let _=app.emit("usages-updated",&snapshot);
+    if let Ok(s)=crate::config::load_settings(){let _=app.emit("settings-updated",&s);}
+    Ok(new_id)
 }
 
 #[cfg(test)]

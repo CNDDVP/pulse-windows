@@ -197,14 +197,19 @@ pub fn open_settings_window(app:&AppHandle){
         .build();
     }
 }
-pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,String>{
+/// 一次全量刷新的结果：读数快照 + 实际发起/被冷却跳过的账号数（A07，反馈用）。
+#[derive(serde::Serialize,Clone)]
+pub struct RefreshSummary{pub readings:Vec<ProviderUsage>,pub initiated:usize,pub skipped:usize}
+pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<RefreshSummary,String>{
     let state=app.state::<AppState>();
     let Ok(_gate)=state.refresh_gate.try_lock() else {
-        return Ok(state.cached_usages.lock().await.clone());
+        let readings=state.cached_usages.lock().await.clone();
+        return Ok(RefreshSummary{readings,initiated:0,skipped:0});
     };
     if let Some(e)=state.config_error(){return Err(e)}
     let settings=state.settings.lock().await.clone();
     let now=Instant::now();
+    let mut enabled_total=0usize;
     let mut due=settings.clone();
     let to_fetch:Vec<String>;
     {let schedule=state.schedule.lock().await;
@@ -214,6 +219,8 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
         if inflight.contains_key(id){cfg.enabled=false}
         else if schedule.get(id).is_some_and(|(at,_)|*at>now){cfg.enabled=false}
      }
+     // A07：反馈统计——enabled 总数与实际发起数的差即被冷却/在途跳过的账号。
+     enabled_total=settings.providers.values().filter(|c|c.enabled).count();
      // 本轮真正要发起的账号登记进 inflight（A02）：定时在途期间用户点手动刷新
      // 会合并到同一请求，而不是并发第二个连接造成旧响应覆盖新结果。
      to_fetch=due.providers.iter().filter(|(_,c)|c.enabled).map(|(id,_)|id.clone()).collect();
@@ -273,7 +280,7 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
     let final_cached=state.cached_usages.lock().await.clone();
     // This cache is sanitized and only used for --json, never for credentials or fallback across launches.
     if let Ok(bytes)=serde_json::to_vec(&final_cached){let path=config::get_config_dir().join("usage-cache.json");let _=tauri::async_runtime::spawn_blocking(move||config::atomic_write(&path,&bytes)).await;}
-    Ok(final_cached)
+    Ok(RefreshSummary{readings:final_cached,initiated:to_fetch.len(),skipped:enabled_total.saturating_sub(to_fetch.len())})
 }
 
 /// Apply one freshly fetched reading with the same reconcile/schedule/emit semantics as
@@ -281,6 +288,8 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
 async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderUsage)->Result<(),String>{
     let state=app.state::<AppState>();
     let current_settings=state.settings.lock().await.clone();
+    // 通知判断用 reconcile 前的原始读数（与定时轮 passed 语义一致，A10）。
+    let raw_for_alerts=fresh.clone();
     let mut cached=state.cached_usages.lock().await;
     let mut schedule=state.schedule.lock().await;
     let previous=cached.iter().find(|u|u.account_id==account_id);
@@ -300,6 +309,15 @@ async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderUsage
     let snapshot=cached.clone();
     drop(schedule);drop(cached);
     app.emit("usages-updated",&snapshot).map_err(|_|"无法通知窗口".to_string())?;
+    // 与定时轮同语义（A10）：手动结果同样走通知判断并落持久缓存。
+    let notices={
+        let mut mem=state.alerts.lock().await;
+        let (notices,next)=alerts::evaluate(std::slice::from_ref(&raw_for_alerts),&current_settings,mem.clone(),cache::now());
+        if next!=*mem{*mem=next;let path=config::get_config_dir().join("alerts.json");let snapshot=mem.clone();let _=tauri::async_runtime::spawn_blocking(move||alerts::save(&path,&snapshot)).await;}
+        notices
+    };
+    for n in &notices{let _=notify(app,&n.title,&n.body);}
+    if let Ok(bytes)=serde_json::to_vec(&snapshot){let path=config::get_config_dir().join("usage-cache.json");let _=tauri::async_runtime::spawn_blocking(move||config::atomic_write(&path,&bytes)).await;}
     Ok(())
 }
 

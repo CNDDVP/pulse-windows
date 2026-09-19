@@ -81,9 +81,17 @@ pub fn get_profile() -> AppProfile {
         let path = dir.join("profile.json");
         let mode = get_config_mode();
         if let Ok(bytes) = fs::read(&path) {
-            if let Ok(mut prof) = serde_json::from_slice::<AppProfile>(&bytes) {
-                prof.mode = mode;
-                return Mutex::new(prof);
+            match serde_json::from_slice::<AppProfile>(&bytes) {
+                Ok(mut prof) => { prof.mode = mode; return Mutex::new(prof); }
+                Err(e) => {
+                    // 损坏不静默：保留坏文件副本供诊断，写日志说明换发了新身份（A18）。
+                    let bad = dir.join(format!("profile.json.bad-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+                    if let Err(copy_err) = fs::copy(&path, &bad) {
+                        eprintln!("Pulse: profile.json 损坏且无法保留副本: {copy_err}");
+                    } else {
+                        eprintln!("Pulse: profile.json 解析失败（副本已存 {}），生成新身份: {e}", bad.display());
+                    }
+                }
             }
         }
         let profile_id = format!("p_{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
@@ -93,7 +101,10 @@ pub fn get_profile() -> AppProfile {
             mode,
         };
         if let Ok(bytes) = serde_json::to_vec_pretty(&prof) {
-            let _ = atomic_write(&path, &bytes);
+            // 写盘失败会让下次启动又换一个身份：至少留一条可诊断的日志。
+            if atomic_write(&path, &bytes).is_err() {
+                eprintln!("Pulse: 新 Profile 写盘失败——重启后身份可能再次变化");
+            }
         }
         Mutex::new(prof)
     });

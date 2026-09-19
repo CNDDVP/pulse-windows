@@ -61,7 +61,12 @@ fn parse(source:&str,v:&Value,state:&mut State,offset:u64)->Option<Event>{
 }
 fn discover(root:&Path,source:&str,out:&mut Vec<(String,PathBuf)>,depth:usize,truncated:&mut bool){
     if depth>18||out.len()>=10000{ *truncated = true; return; }
-    let Ok(entries)=fs::read_dir(root)else{ *truncated = true; return; };
+    // 目录不存在=该来源未安装（正常）；权限等其他错误才标扫描截断（A13）。
+    let entries=match fs::read_dir(root){
+        Ok(e)=>e,
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return,
+        Err(_)=>{ *truncated = true; return; }
+    };
     for entry in entries.flatten(){let Ok(kind)=entry.file_type()else{continue};if kind.is_symlink(){continue}let path=entry.path();
         if kind.is_dir(){discover(&path,source,out,depth+1,truncated)}else if path.extension().is_some_and(|e|e=="jsonl"||e=="json"){
             let name=path.file_name().and_then(|s|s.to_str()).unwrap_or("");
@@ -178,11 +183,13 @@ fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool)
     let rows:Vec<_>=buckets.into_values().collect();
     let mut total_cost = 0.0;
     let mut any_cost = false;
+    // A14：计价覆盖率——有 token 但落在未知定价表的模型明确告知"未计入"。
+    let mut priced=0usize;let mut unpriced=0usize;
     for row in &rows {
+        if row.input+row.output+row.cache_read+row.cache_write==0{continue}
         if let Some(c) = estimate_model_cost(&row.model, &[row.input, row.output, row.cache_read, row.cache_write]) {
-            total_cost += c;
-            any_cost = true;
-        }
+            total_cost += c; any_cost = true; priced += 1;
+        } else { unpriced += 1; }
     }
     let cost_estimate = if any_cost { Some((total_cost * 100.0).round() / 100.0) } else { None };
     let coverage_gap=truncated;
@@ -199,6 +206,9 @@ fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool)
     ];
     if coverage_gap{
         notes.push("目录扫描达到上限或受限，已保留既有历史记录，统计可能存在缺口。".into());
+    }
+    if unpriced>0{
+        notes.push(format!("有 {unpriced} 组记录来自未知定价的模型，未计入费用估算（已计价 {priced} 组）。"));
     }
     Ok(Summary{rows,scanned_files:scanned,skipped_files:skipped,changed_files:changed,days,partial,cost_estimate,notes,duration_ms,coverage_gap})
 }
@@ -221,11 +231,12 @@ fn estimate_model_cost(model: &str, counts: &[u64; 4]) -> Option<f64> {
         (1.10, 4.40, 0.55, 0.0)
     } else if m.contains("deepseek") {
         (0.14, 0.28, 0.014, 0.0)
-    } else if m.contains("gemini-1.5-flash") || m.contains("gemini-2.0-flash") || m.contains("flash") {
+    } else if m.contains("gemini-1.5-flash") || m.contains("gemini-2.0-flash") || m.contains("gemini-2.5-flash") {
         (0.075, 0.30, 0.01875, 0.0)
-    } else if m.contains("gemini-1.5-pro") || m.contains("gemini-2.5-pro") || m.contains("pro") {
+    } else if m.contains("gemini-1.5-pro") || m.contains("gemini-2.5-pro") {
         (1.25, 5.00, 0.3125, 0.0)
     } else {
+        // 未知模型不计价（A14）：裸 "flash"/"pro" 兜底会把其他厂商同名子串误套 gemini 价格。
         return None;
     };
     let cost = (counts[0] as f64 * in_p + counts[1] as f64 * out_p + counts[2] as f64 * cr_p + counts[3] as f64 * cw_p) / 1_000_000.0;

@@ -15,9 +15,13 @@ pub async fn fetch(key: &str, http: &reqwest::Client) -> Result<Value, ProviderU
     let credits_req = http.get(format!("{base}/alpha/billing/credits{org_query}")).bearer_auth(key);
     let credits = crate::providers::response("command-code", credits_req).await?;
 
-    // 3. subscriptions (optional)
+    // 3. subscriptions (optional) — 6s cap: two required calls can already eat most of the
+    // 25s outer budget; an optional decoration must not cause the main usage to be dropped.
     let sub_req = http.get(format!("{base}/alpha/billing/subscriptions{org_query}")).bearer_auth(key);
-    let subscription = crate::providers::response("command-code", sub_req).await.ok();
+    let subscription = match tokio::time::timeout(std::time::Duration::from_secs(6), crate::providers::response("command-code", sub_req)).await {
+        Ok(r) => r.ok(),
+        Err(_) => None,
+    };
 
     Ok(serde_json::json!({
         "whoami": whoami,
