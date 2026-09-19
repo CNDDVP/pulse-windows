@@ -1,4 +1,4 @@
-﻿# Release packaging: NSIS setup + portable ZIP + manifests + SHA256SUMS.
+# Release packaging: NSIS setup + portable ZIP + manifests + SHA256SUMS.
 # Builds from the CURRENT working tree; fails loudly on any inconsistency.
 param (
     [string]$Version = "",
@@ -89,8 +89,14 @@ New-Item -ItemType Directory -Force -Path $StagingDir | Out-Null
 
 $ReleaseExe = Join-Path $Root "src-tauri\target\release\pulse-windows.exe"
 if (-not (Test-Path $ReleaseExe)) { throw "Release executable not found: $ReleaseExe" }
+$exeSha = (Get-FileHash -Path $ReleaseExe -Algorithm SHA256).Hash.ToLower()
+Write-Host "  -> Release binary SHA256: $exeSha" -ForegroundColor Green
 
 Copy-Item $ReleaseExe -Destination (Join-Path $StagingDir "Pulse.exe") -Force
+$stagingSha = (Get-FileHash -Path (Join-Path $StagingDir "Pulse.exe") -Algorithm SHA256).Hash.ToLower()
+if ($exeSha -ne $stagingSha) { throw "便携版 Pulse.exe SHA256 与 release 二进制不一致: $stagingSha != $exeSha" }
+Write-Host "  -> Verified: Portable Pulse.exe matches release binary ($exeSha)" -ForegroundColor Green
+
 New-Item -ItemType File -Force -Path (Join-Path $StagingDir "portable.flag") | Out-Null
 Copy-Item (Join-Path $Root "README-portable.zh-CN.md") -Destination (Join-Path $StagingDir "README-portable.zh-CN.md") -Force
 Copy-Item (Join-Path $Root "LICENSE") -Destination (Join-Path $StagingDir "LICENSE") -Force
@@ -127,6 +133,7 @@ version: $Version
 commit: $commit
 built: $utc
 target: x86_64-pc-windows-msvc
+exe_sha256: $exeSha
 node: $nodeVer
 cargo: $cargoVer
 mode: release

@@ -44,6 +44,28 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
   const [screens, setScreens] = useState<MonitorOption[]>([]);
   const [toast, setToast] = useState<{ type: ToastKind; text: string } | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [importable, setImportable] = useState<{ account_count: number; provider_names: string[]; installed_path: string } | null>(null);
+  useEffect(() => {
+    invoke<{ account_count: number; provider_names: string[]; installed_path: string } | null>("check_importable_config")
+      .then(res => { if (res && res.account_count > 0) setImportable(res); })
+      .catch(() => {});
+  }, []);
+
+  const handleImportConfig = async () => {
+    try {
+      setBusy(true);
+      const imported = await invoke<AppSettings>("import_installed_config");
+      markApplied(imported);
+      setSettings(imported);
+      onSaved(imported);
+      setImportable(null);
+      showToast("success", `已成功从安装版导入 ${Object.keys(imported.providers).length} 个账号与凭据！`);
+    } catch (e) {
+      showToast("error", `导入失败: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
   // Pointer-based reorder: WebView2's OLE drag layer never starts an HTML5 drag here, and
   // pointer events also work for touch and pen.
   const [drag, setDrag] = useState<{ id: string; from: number; over: number } | null>(null);
@@ -267,6 +289,18 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
           <button onClick={() => setToast(null)} className="ml-2 text-zinc-400 hover:text-white" aria-label="关闭提示">✕</button>
         </div>
       )}
+      {importable && Object.keys(settings.providers).length === 0 && (
+        <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-2.5 bg-emerald-950/80 border-b border-emerald-800/60 text-xs text-emerald-200">
+          <div className="flex items-center gap-2">
+            <span className="text-sm">📦</span>
+            <span>检测到本机已安装版的 Pulse 配置（含 {importable.account_count} 个账号：{importable.provider_names.join("、")}）。是否一键导入配置与凭据？</span>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <button onClick={() => void handleImportConfig()} className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium cursor-pointer">立即导入</button>
+            <button onClick={() => setImportable(null)} className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer">暂不导入</button>
+          </div>
+        </div>
+      )}
       {pendingRemote && (
         <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-2 bg-amber-950/70 border-b border-amber-800/50 text-xs text-amber-200">
           <span>设置已在别处更新；当前有未保存的修改，已为你保留。</span>
@@ -438,6 +472,9 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
                   <Field label="主圆环显示的额度" hint={reading?.windows && reading.windows.length > 0 ? "圆环以该窗口的使用率与重置倒计时为准。" : "尚未获取该账号的额度数据；配置凭据并连接成功后，可在此下拉指定具体的额度窗口。"}>
                     <select className={selectCls} value={c.primary_window || ""} onChange={e => patch(id, { primary_window: e.target.value || null })}>
                       <option value="">自动选择最高使用率（默认）</option>
+                      {c.primary_window && !reading?.windows?.some(w => w.id === c.primary_window) && (
+                        <option value={c.primary_window}>{c.primary_window}（已配置 · 等待读数）</option>
+                      )}
                       {reading?.windows?.map(w => <option key={w.id} value={w.id}>{w.name} — 已使用 {w.used_percent.toFixed(1)}% ({resetText(w.resets_at)})</option>)}
                     </select>
                   </Field>
@@ -446,8 +483,11 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
                     : timedWindows.length === 0
                     ? "该账号的额度窗口未报告周期长度，外圈暂不可用。"
                     : settings.show_elapsed ? "外圈细线表示所选周期已流逝的比例；默认跟随倒计时最短的周期。" : "外圈已在通用设置中关闭。"}>
-                    <select className={selectCls} disabled={timedWindows.length === 0} value={c.elapsed_window || ""} onChange={e => patch(id, { elapsed_window: e.target.value || null })}>
+                    <select className={selectCls} disabled={timedWindows.length === 0 && !c.elapsed_window} value={c.elapsed_window || ""} onChange={e => patch(id, { elapsed_window: e.target.value || null })}>
                       <option value="">自动选择倒计时最短的周期（默认）</option>
+                      {c.elapsed_window && !timedWindows.some(w => w.id === c.elapsed_window) && (
+                        <option value={c.elapsed_window}>{c.elapsed_window}（已配置 · 等待读数）</option>
+                      )}
                       {timedWindows.map(w => <option key={w.id} value={w.id}>{w.name} — {resetText(w.resets_at)}</option>)}
                     </select>
                   </Field>
@@ -475,6 +515,9 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
                     : "在主环内侧用细环显示所选额度；选择“关闭”即完全清除内环。"}>
                     <select className={selectCls} value={c.secondary_window || ""} onChange={e => patch(id, { secondary_window: e.target.value || null })}>
                       <option value="">关闭</option>
+                      {c.secondary_window && !reading?.windows?.some(w => w.id === c.secondary_window) && (
+                        <option value={c.secondary_window}>{c.secondary_window}（已配置 · 等待读数）</option>
+                      )}
                       {reading?.windows?.map(w => <option key={w.id} value={w.id}>{w.name} — 已使用 {w.used_percent.toFixed(1)}%</option>)}
                     </select>
                   </Field>

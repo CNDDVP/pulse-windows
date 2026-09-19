@@ -227,6 +227,128 @@ pub fn atomic_write(path:&Path,bytes:&[u8])->Result<(),String>{
 pub fn refresh_credential_flags(settings:&mut AppSettings)->Result<(),String>{
     for (id,cfg) in settings.providers.iter_mut(){cfg.credential_configured=WindowsSecrets.get(id)?.is_some();} Ok(())
 }
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ImportableConfigSummary {
+    pub account_count: usize,
+    pub provider_names: Vec<String>,
+    pub installed_path: String,
+}
+
+pub fn get_installed_config_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("pulse-windows")
+}
+
+pub fn check_importable_config() -> Result<Option<ImportableConfigSummary>, String> {
+    if !is_portable() {
+        return Ok(None);
+    }
+    let installed_dir = get_installed_config_dir();
+    let installed_settings_path = installed_dir.join("settings.json");
+    if !installed_settings_path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&installed_settings_path).map_err(|e| format!("无法读取已安装版设置: {e}"))?;
+    let root: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("已安装版设置损坏: {e}"))?;
+    let providers = root.get("providers").and_then(|v| v.as_object());
+    let Some(providers) = providers else { return Ok(None); };
+    if providers.is_empty() { return Ok(None); }
+
+    let count = providers.len();
+    let mut names = Vec::new();
+    for (id, val) in providers {
+        let label = val.get("label").and_then(|v| v.as_str()).unwrap_or(id);
+        names.push(label.to_string());
+    }
+    Ok(Some(ImportableConfigSummary {
+        account_count: count,
+        provider_names: names,
+        installed_path: installed_settings_path.to_string_lossy().to_string(),
+    }))
+}
+
+pub fn import_installed_config() -> Result<AppSettings, String> {
+    if !is_portable() {
+        return Err("仅便携版支持从安装版导入配置".into());
+    }
+    let installed_dir = get_installed_config_dir();
+    let installed_settings_path = installed_dir.join("settings.json");
+    if !installed_settings_path.exists() {
+        return Err("未找到已安装版的 settings.json".into());
+    }
+
+    let installed_profile_path = installed_dir.join("profile.json");
+    let installed_profile_id = if let Ok(bytes) = fs::read(&installed_profile_path) {
+        serde_json::from_slice::<AppProfile>(&bytes).ok().map(|p| p.profile_id)
+    } else {
+        None
+    }.unwrap_or_else(|| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        use std::hash::{Hash, Hasher};
+        installed_dir.hash(&mut hasher);
+        format!("{:?}", ConfigMode::Installed).hash(&mut hasher);
+        format!("pr{:016x}", hasher.finish())
+    });
+
+    struct OldStore {
+        old_profile_id: String,
+        old_dir: PathBuf,
+    }
+    impl SecretStore for OldStore {
+        fn get(&self, id: &str) -> Result<Option<String>, String> {
+            #[cfg(windows)] {
+                use windows::{core::PCWSTR, Win32::Security::Credentials::*};
+                if !crate::types::valid_id(id) { return Err("账号标识无效".into()); }
+                let target: Vec<u16> = format!("PulseWindows/{}/{id}\0", &self.old_profile_id).encode_utf16().collect();
+                unsafe {
+                    let mut ptr = std::ptr::null_mut();
+                    if CredReadW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, 0, &mut ptr).is_ok() {
+                        let bytes = std::slice::from_raw_parts((*ptr).CredentialBlob, (*ptr).CredentialBlobSize as usize);
+                        let result = String::from_utf8(bytes.to_vec()).map_err(|_| "凭据编码无效".into());
+                        CredFree(ptr.cast());
+                        return result.map(Some);
+                    }
+                    use sha2::{Digest, Sha256};
+                    let scope = format!("{:x}", Sha256::digest(self.old_dir.to_string_lossy().as_bytes()));
+                    let leg: Vec<u16> = format!("PulseWindows/{}/{id}\0", &scope[..24]).encode_utf16().collect();
+                    let mut leg_ptr = std::ptr::null_mut();
+                    if CredReadW(PCWSTR(leg.as_ptr()), CRED_TYPE_GENERIC, 0, &mut leg_ptr).is_ok() {
+                        let bytes = std::slice::from_raw_parts((*leg_ptr).CredentialBlob, (*leg_ptr).CredentialBlobSize as usize);
+                        let secret = String::from_utf8(bytes.to_vec()).map_err(|_| "凭据编码无效".to_string())?;
+                        CredFree(leg_ptr.cast());
+                        return Ok(Some(secret));
+                    }
+                    Ok(None)
+                }
+            }
+            #[cfg(not(windows))] {
+                Ok(None)
+            }
+        }
+        fn put(&self, _: &str, _: &str) -> Result<(), String> { Ok(()) }
+        fn delete(&self, _: &str) -> Result<(), String> { Ok(()) }
+    }
+
+    let old_store = OldStore {
+        old_profile_id: installed_profile_id,
+        old_dir: installed_dir,
+    };
+
+    let mut imported = load_from(&installed_settings_path, &old_store)?;
+
+    for (id, cfg) in imported.providers.iter_mut() {
+        if let Ok(Some(secret)) = old_store.get(id) {
+            let _ = WindowsSecrets.put(id, &secret);
+        }
+        cfg.credential_configured = WindowsSecrets.get(id)?.is_some();
+    }
+
+    save_settings(&imported)?;
+
+    Ok(imported)
+}
 #[cfg(test)] mod tests {
     use super::*; use std::{cell::RefCell,collections::HashMap};
     #[derive(Default)] struct Memory(RefCell<HashMap<String,String>>,bool);

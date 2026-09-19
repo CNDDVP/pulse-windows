@@ -1,6 +1,6 @@
 [package]
 name = "pulse-windows"
-version = "0.3.15"
+version = "0.3.16"
 description = "A floating Windows monitor for AI coding allowances"
 authors = ["CNDDVP"]
 license = "Apache-2.0"
@@ -12,10 +12,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dependencies]
 tauri = { version = "2.11.3", features = ["tray-icon", "image-ico", "image-png"] }
-tauri-plugin-single-instance = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1.0", features = ["derive"] }
@@ -40,6 +40,8 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Gdi",
     "Win32_Devices_Display",
     "Win32_System_Threading",
+    "Win32_System_LibraryLoader",
+    "Win32_System_DataExchange",
     "Win32_Security",
     "Win32_Security_Credentials",
     "Win32_Storage_FileSystem",
