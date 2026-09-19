@@ -23,6 +23,7 @@ pub struct AppState {
     pub ledger_gate:Mutex<()>,
     pub alerts:Mutex<alerts::Memory>,
     pub detail_account:std::sync::Mutex<Option<String>>,
+    pub settings_io:tokio::sync::Mutex<()>,
     pub account_generations:Mutex<HashMap<String,u64>>,
     pub refresh_slots:Arc<Semaphore>,
     pub inflight:Mutex<HashMap<String,u64>>,
@@ -352,6 +353,26 @@ fn poll_activity(app:&AppHandle){
     if !updated.is_empty(){let _=app.emit("usages-updated",&updated);}
 }
 
+/// A19：独立推进缓存过期。长刷新间隔/退避期间，过期状态原来只能等下一次请求
+/// 结果才被 reconcile 掩盖成 stale——这里由 5 秒活动轮驱动（每 6 轮 ≈30s），
+/// 让超过有效期/重置点的读数及时在 UI 转为过期，无需刷新成功。
+fn expire_tick(app:&AppHandle){
+    let state=app.state::<AppState>();
+    let Ok(mut cached)=state.cached_usages.try_lock()else{return};
+    let Ok(settings)=state.settings.try_lock()else{return};
+    let now=cache::now();
+    let mut changed=false;
+    for u in cached.iter_mut(){
+        let pin=settings.providers.get(&u.account_id).and_then(|c|c.primary_window.as_deref());
+        let before=serde_json::to_string(u).ok();
+        let expired=cache::expire_with_pin(u.clone(),pin,now);
+        let after=serde_json::to_string(&expired).ok();
+        if before!=after{*u=expired;changed=true;u.is_active=state.activity_flag(&u.account_id);}
+    }
+    drop(settings);
+    if changed{let snapshot=cached.clone();drop(cached);let _=app.emit("usages-updated",&snapshot);}
+}
+
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
 pub fn run(){
     if !crate::platform::is_webview2_available() {
@@ -386,7 +407,7 @@ pub fn run(){
     let (settings,error)=match config::load_settings(){Ok(s)=>(s,None),Err(e)=>(AppSettings::default(),Some(e))};
     let http=providers::client().expect("HTTP client initialization failed");
     let settings_start_hidden=settings.start_behavior=="tray";
-    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),ledger_gate:Mutex::new(()),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None),account_generations:Mutex::new(HashMap::new()),refresh_slots:Arc::new(Semaphore::new(4)),inflight:Mutex::new(HashMap::new()),request_counter:AtomicU64::new(0),activity:std::sync::Mutex::new(HashMap::new()),activity_watcher:std::sync::Mutex::new(activity::Watcher::new(activity::Watcher::system_roots())),app_handle:std::sync::OnceLock::new(),dragging:AtomicBool::new(false),drag_grab:std::sync::Mutex::new((0,0)),drag_side:std::sync::Mutex::new("free".into()),drag_ratio:std::sync::Mutex::new((0.5,0.5)),drag_monitors:std::sync::Mutex::new(Vec::new())};
+    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),ledger_gate:Mutex::new(()),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None),settings_io:tokio::sync::Mutex::new(()),account_generations:Mutex::new(HashMap::new()),refresh_slots:Arc::new(Semaphore::new(4)),inflight:Mutex::new(HashMap::new()),request_counter:AtomicU64::new(0),activity:std::sync::Mutex::new(HashMap::new()),activity_watcher:std::sync::Mutex::new(activity::Watcher::new(activity::Watcher::system_roots())),app_handle:std::sync::OnceLock::new(),dragging:AtomicBool::new(false),drag_grab:std::sync::Mutex::new((0,0)),drag_side:std::sync::Mutex::new("free".into()),drag_ratio:std::sync::Mutex::new((0.5,0.5)),drag_monitors:std::sync::Mutex::new(Vec::new())};
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app,_,_|open_settings_window(app)))
         .plugin(tauri_plugin_notification::init())
@@ -401,11 +422,14 @@ pub fn run(){
             let window_handle=app_handle.clone();
             install_rail_context_menu_subclass(&app_handle);
             tauri::async_runtime::spawn(async move{
+                let mut tick_no=0u32;
                 loop{
                     let state=window_handle.state::<AppState>();
                     let settings=state.settings.lock().await.clone();
                     let mode=state.window_mode.lock().await.clone();
                     let user_hidden=state.user_hidden.load(Ordering::Relaxed);
+                    tick_no=tick_no.wrapping_add(1);
+                    let tick_no=tick_no;
                     // A drag owns placement. Monitor enumeration and the foreground probe are
                     // synchronous Win32 calls; keep them off the async workers that serve IPC.
                     let tick_handle=window_handle.clone();
@@ -427,6 +451,24 @@ pub fn run(){
                             }
                             if mode != "expanded" && settings.dock_side != "free" {
                                 window::position(&tick_handle,&settings,&mode);
+                            } else if settings.dock_side == "free" && tick_no % 5 == 0 {
+                                // A15 断屏恢复（每 ~5s 查一次）：自由模式窗口落在任何已知
+                                // 显示器之外（屏被拔/显示配置切换）时，按 free_x/free_y 比例
+                                // 重挂主屏工作区，避免悬浮栏不可达。吸附模式由 position() 兜底。
+                                if let (Ok(pos),Ok(monitors),Some(primary))=(w.outer_position(),w.available_monitors(),w.primary_monitor().ok().flatten()){
+                                    let on_screen=monitors.iter().any(|m|{
+                                        let b=m.position();let s=m.size();
+                                        pos.x>=b.x&&pos.x<b.x+s.width as i32&&pos.y>=b.y&&pos.y<b.y+s.height as i32
+                                    });
+                                    if !on_screen{
+                                        let area=primary.work_area();
+                                        let count=settings.providers.values().filter(|c|c.enabled).count();
+                                        let rect=crate::window::geometry(
+                                            crate::window::Rect{x:area.position.x,y:area.position.y,w:area.size.width,h:area.size.height},
+                                            primary.scale_factor(),"free","rail",count,settings.free_x,settings.free_y);
+                                        crate::window::place_at(&w,rect.x,rect.y,rect.w,rect.h);
+                                    }
+                                }
                             }
                         }
                     }).await;
@@ -457,7 +499,16 @@ pub fn run(){
             });
             tauri::async_runtime::spawn(async move{
                 let poll_handle=app_handle.clone();
-                    loop{tokio::time::sleep(Duration::from_secs(5)).await;poll_activity(&poll_handle);}
+                let expire_handle=app_handle.clone();
+                tauri::async_runtime::spawn_blocking(move||{
+                    let mut tick=0u32;
+                    loop{
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                        poll_activity(&poll_handle);
+                        tick+=1;
+                        if tick%6==0{expire_tick(&expire_handle);} // ≈30s 独立推进过期（A19）
+                    }
+                });
             });
             Ok(())
         })

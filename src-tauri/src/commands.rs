@@ -31,6 +31,9 @@ pub async fn get_settings(state:State<'_,AppState>)->Result<AppSettings,String>{
 #[tauri::command]
 pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppState>,app:AppHandle)->Result<AppSettings,String>{
     new_settings.validate()?;
+    // 事务化（A03）：从读快照到写盘、写回内存全程持 settings_io 锁，串行化所有
+    // 设置写路径——并发保存/拖拽/凭据操作交错时不再互相覆盖。
+    let _io=state.settings_io.lock().await;
     let old=state.settings.lock().await.clone();
     if new_settings.generation!=0 && new_settings.generation!=old.generation{
         // 代际不一致几乎总是拖拽/托盘写入的位置字段：把后端的位置口径合并进本次提交，
@@ -115,6 +118,7 @@ pub fn close_settings_window(app:AppHandle){
 }
 #[tauri::command]
 pub async fn set_credential(account_id:String,secret:String,state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
+    let _io=state.settings_io.lock().await;
     let mut settings=state.settings.lock().await.clone();
     settings.providers.get_mut(&account_id).ok_or("账号不存在")?.credential_configured=true;
     settings.generation=settings.generation.wrapping_add(1);
@@ -131,6 +135,7 @@ pub async fn set_credential(account_id:String,secret:String,state:State<'_,AppSt
 }
 #[tauri::command]
 pub async fn delete_credential(account_id:String,state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
+    let _io=state.settings_io.lock().await;
     let mut settings=state.settings.lock().await.clone();
     settings.providers.get_mut(&account_id).ok_or("账号不存在")?.credential_configured=false;
     settings.generation=settings.generation.wrapping_add(1);
@@ -149,6 +154,7 @@ pub async fn delete_credential(account_id:String,state:State<'_,AppState>,app:Ap
 }
 #[tauri::command]
 pub async fn delete_account(account_id:String,state:State<'_,AppState>,app:AppHandle)->Result<AppSettings,String>{
+    let _io=state.settings_io.lock().await;
     let mut settings=state.settings.lock().await.clone();
     if !settings.providers.contains_key(&account_id){return Err("账号不存在".into());}
     settings.providers.remove(&account_id);
@@ -525,6 +531,8 @@ pub async fn drag_end(app:AppHandle)->Result<(),String>{
     let mut changed=false;
     // Patch ONLY the position fields into the CURRENT settings: a save from the settings
     // window that lands mid-drag must not be clobbered by the drag (and vice versa).
+    // 拖拽保存同样串行（A03）：patch 基于最新的已提交设置，写盘期间不会被并发保存覆盖。
+    let _io=state.settings_io.lock().await;
     let mut settings=state.settings.lock().await.clone();
     if settings.dock_side!=side{settings.dock_side=side.clone();changed=true;}
     // 跨屏拖动即使比例不变也要落盘 monitor_name，否则重启后 position() 找错屏。
