@@ -39,11 +39,17 @@ pub fn classify_line(source:&str,v:&Value)->Option<Event>{
         },
         // Kimi Code IDE：~/.kimi-code/server/events/session_*.jsonl，事件在 envelope.type。
         // turn.step.completed 不熄灯（一个 turn 含多步，step 间会闪烁）；turn.ended/prompt.completed 才熄。
+        // 增加 turn.failed/turn.cancelled 等异常事件以及 event.session.work_changed(busy: false) 双重保底。
         "kimi"=>{
             let t=v["envelope"]["type"].as_str()?;
             match t{
                 "turn.started"|"prompt.started"|"prompt.submitted"|"turn.step.started"|"tool.call.started"=>Some(Event::Working),
-                "turn.ended"|"prompt.completed"=>Some(Event::Idle),
+                "turn.ended"|"prompt.completed"|"turn.failed"|"turn.cancelled"|"turn.interrupted"|"prompt.failed"|"prompt.cancelled"=>Some(Event::Idle),
+                "event.session.work_changed"=>match v.pointer("/payload/busy").and_then(|b|b.as_bool()){
+                    Some(true)=>Some(Event::Working),
+                    Some(false)=>Some(Event::Idle),
+                    None=>None,
+                },
                 _=>None,
             }
         },
@@ -124,9 +130,10 @@ fn scan_appended(path:&PathBuf,offset:u64,budget:u64,source:&str)->Option<(Optio
 }
 
 /// Incremental watcher: first sight of a file starts at its end (history is not activity);
-/// truncation restarts from zero; a working verdict decays after 3 quiet minutes.
-/// 每文件=一个会话；3 分钟无事件衰减；每轮/每文件读取预算防大积压阻塞。
-const SESSION_DECAY_SECS:i64=180;
+/// truncation restarts from zero; a working verdict decays after 30 quiet minutes.
+/// 每文件=一个会话；30 分钟无事件兜底衰减（长思考模型如 K2.8 High 思考单步可达 5~15 分钟）；
+/// 正常结束由 turn.ended/prompt.completed/task_complete/end_turn 0 延迟即时熄灯；每轮/每文件读取预算防大积压阻塞。
+const SESSION_DECAY_SECS:i64=1800;
 const READ_BUDGET_BYTES:u64=1024*1024;
 const POLL_TOTAL_BUDGET_BYTES:u64=8*1024*1024;
 #[derive(Default)]
@@ -324,6 +331,10 @@ mod tests{
         assert_eq!(classify_line("kimi",&ev("tool.call.started")),Some(Event::Working));
         assert_eq!(classify_line("kimi",&ev("turn.ended")),Some(Event::Idle));
         assert_eq!(classify_line("kimi",&ev("prompt.completed")),Some(Event::Idle));
+        assert_eq!(classify_line("kimi",&ev("turn.failed")),Some(Event::Idle));
+        assert_eq!(classify_line("kimi",&ev("turn.cancelled")),Some(Event::Idle));
+        assert_eq!(classify_line("kimi",&json!({"kind":"event","envelope":{"type":"event.session.work_changed"},"payload":{"busy":false}})),Some(Event::Idle));
+        assert_eq!(classify_line("kimi",&json!({"kind":"event","envelope":{"type":"event.session.work_changed"},"payload":{"busy":true}})),Some(Event::Working));
         assert_eq!(classify_line("kimi",&ev("context.spliced")),None,"元事件不点亮");
         assert_eq!(classify_line("kimi",&json!({"kind":"journal_header"})),None);
     }

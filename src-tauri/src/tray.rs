@@ -54,7 +54,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     crate::open_settings_window(app);
                 }
                 "quit" => {
-                    std::process::exit(0);
+                    app.exit(0);
                 }
                 _ => {}
             }

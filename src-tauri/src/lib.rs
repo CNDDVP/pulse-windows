@@ -427,8 +427,7 @@ fn poll_activity(app:&AppHandle){
             let newv=(single&&active,if single{"measured".to_string()}else{"unknown".to_string()});
             if map.get(&id)!=Some(&newv){
                 // 诊断轨迹（外部建议）：只记状态与触发原因，便于验收"结束后正常熄灯"。
-                let line=format!("{} codex {id} -> {} ({})
-",
+                let line=format!("{} {source} {id} -> {} ({})\n",
                     chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
                     if newv.0 {"working"}else{"idle"}, newv.1);
                 let path=config::get_config_dir().join("activity-trace.log");
