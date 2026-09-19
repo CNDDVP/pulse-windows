@@ -299,6 +299,9 @@ pub async fn show_detail(
     state:State<'_,AppState>,
 )->Result<(),String>{
     use tauri::Manager;
+    // 拖动中一律拒绝弹出：drag_begin 已 hide，但拖动里窗口跟随光标的相对抖动会
+    // 重新触发图标的 mouseenter——没有这道闸详情面板会残留在屏幕上。
+    if state.dragging.load(Ordering::Relaxed){return Ok(())}
     let rail=app.get_webview_window("main").ok_or("窗口不存在")?;
     let (pos,size)=match (rail.outer_position(),rail.outer_size()){(Ok(p),Ok(s))=>(p,s),_=>return Err("无法读取悬浮栏位置".into())};
     let monitor=rail.current_monitor().ok().flatten().or_else(||rail.primary_monitor().ok().flatten()).ok_or("无法确定显示器")?;

@@ -255,7 +255,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     >
       <div className={`flex ${top ? "flex-row space-x-2" : "flex-col space-y-1.5"} overflow-y-auto max-h-full scrollbar-none`}>
         {slots.map(s => (
-          <UsageRing key={s.key} dataKey={s.key} usage={s.usage} settings={settings} onHover={() => setHovered(s.key)}
+          <UsageRing key={s.key} dataKey={s.key} usage={s.usage} settings={settings} onHover={() => { if(!draggingRef.current) setHovered(s.key); }}
             refreshing={!!refreshing[s.account]} onClick={() => refreshAccount(s.account)} lookX={lookX} />
         ))}
         {!slots.length && (
