@@ -454,7 +454,11 @@ pub fn drag_move(app:AppHandle)->Result<(),String>{
         .or_else(||win.current_monitor().ok().flatten())
         .or_else(||win.primary_monitor().ok().flatten()).ok_or("无法确定显示器")?;
     let m=&m_owned;
+    let prev_side=state.drag_side.lock().unwrap().clone();
     let (side,fx,fy)=classify_drag(&state,m,px,py);
+    // 预览停靠边变化时通知前端切换布局：窗口在 free 分支已按竖排 rail 尺寸 resize，
+    // 布局若仍按旧 dock_side 渲染，横排内容会被裁成"只剩一个图标"的窄条。
+    if side!=prev_side{use tauri::Emitter;let _=app.emit("drag-side",&side);}
     if side=="free"{
         let (gx,gy)=*state.drag_grab.lock().unwrap();
         // A docked preview may have resized the window: restore rail size for this monitor.

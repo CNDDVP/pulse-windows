@@ -5,7 +5,11 @@ import {UsageRing} from "./UsageRing";
 import {orderedIds} from "../ordering";
 import type {AppSettings,ProviderUsage} from "../types";
 export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:AppSettings}){
-  const free=settings.dock_side==="free";
+  // 拖动中的停靠边预览：Rust 在光标进出吸附带时已同步 resize 窗口，布局必须同时切换，
+  // 否则横排内容被塞进竖排窄窗只露出一个图标。settings-updated 到达后清掉回真实值。
+  const [dragSide,setDragSide]=useState<string|null>(null);
+  const effSide=(dragSide??settings.dock_side) as AppSettings["dock_side"];
+  const free=effSide==="free";
   const [hovered,setHovered]=useState<string|null>(null),[inside,setInside]=useState(false),[collapsed,setCollapsed]=useState(false),[pinned,setPinned]=useState(false);
   const detailPointer=useRef(false);const leave=useRef<ReturnType<typeof setTimeout>|null>(null);
   const railRef=useRef<HTMLDivElement>(null);
@@ -149,11 +153,19 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       }
     };
     const up=()=>{
-      if(dragging){dragging=false;draggingRef.current=false;setDraggingUI(false);void invoke("drag_end");}
+      if(dragging){
+        dragging=false;draggingRef.current=false;setDraggingUI(false);
+        void invoke("drag_end");
+        // settings-updated 通常先到（drag_end 同步保存）；超时兜底防 cancel 路径卡住预览态。
+        setTimeout(()=>setDragSide(null),400);
+      }
       arm=null;
     };
     const cancel=()=>{
-      if(dragging){dragging=false;draggingRef.current=false;setDraggingUI(false);void invoke("drag_cancel");}
+      if(dragging){
+        dragging=false;draggingRef.current=false;setDraggingUI(false);void invoke("drag_cancel");
+        setTimeout(()=>setDragSide(null),400);
+      }
       arm=null;
     };
     window.addEventListener("pointerdown",down);
@@ -165,8 +177,14 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       window.removeEventListener("pointerup",up);window.removeEventListener("pointercancel",cancel);
     };
   },[]);
+  useEffect(()=>{
+    let alive=true;
+    const stop=listen<string>("drag-side",e=>{if(alive)setDragSide(e.payload)});
+    const stop2=listen("settings-updated",()=>{if(alive)setDragSide(null)});
+    return()=>{alive=false;void stop.then(f=>f());void stop2.then(f=>f())};
+  },[]);
   useEffect(()=>()=>{if(leave.current)clearTimeout(leave.current)},[]);
-  const top=settings.dock_side==="top",left=settings.dock_side==="left";
+  const top=effSide==="top",left=effSide==="left";
   const dark=settings.theme==="obsidian";
   const enter = () => {
     if (leave.current) clearTimeout(leave.current);
