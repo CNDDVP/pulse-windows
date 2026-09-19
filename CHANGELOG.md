@@ -2,6 +2,18 @@
 
 所有针对 Pulse for Windows 的重要版本更新都将记录在此文件中。
 
+## [0.3.14] - 2026-09-19
+
+### 修复与优化
+
+- **Kimi Code 活动灯深度思考超时与状态机加固**：
+  - 会话衰减超时由 3 分钟调整为 30 分钟（`SESSION_DECAY_SECS = 1800`）：解决 K2.8 High 等深度推理模型在单步长思考（5~15 分钟）期间无磁盘写入时小白点提前熄灭的问题；思考期小白点保持持续旋转，直到生成结束。
+  - 增加对用户主动打断与失败事件（`turn.failed`、`turn.cancelled`、`turn.interrupted`、`prompt.failed`、`prompt.cancelled`）的捕获，确保异常中断 0 延迟即时熄灭。
+  - 接入 `event.session.work_changed`（`busy: true` / `busy: false`）作为双重状态保底。
+- **活动指示器追踪日志硬编码修复**：`activity-trace.log` 中记录的来源不再硬编码为 `codex`，而是根据实际活动提供方动态记录真实 `{source}`（如 `kimi`、`claude`、`zhipu`、`antigravity`）。
+- **前端 React 渲染纯度优化**：`UsageRing.tsx` 中的旋转相位与刷新彩弧延迟计算改为 `useState(() => ...)` 惰性初始化，消除 5 处 Oxlint 渲染纯度与 Ref 警告，符合 React 19 编译器纯函数规范。
+- **托盘右键退出一致性**：托盘右键退出统一为 `app.exit(0)`，与悬浮栏右键退出保持一致，确保生命周期与资源释放正常完成。
+
 ## [0.3.13] - 2026-09-19
 
 ### 修复
