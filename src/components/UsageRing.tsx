@@ -16,10 +16,13 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,lookX=0,dat
   // The warning threshold only moves the amber→red step; a provider-reported exhaustion is always red,
   // and a per-account custom colour applies to the calm range only.
   const red=settings.warning_threshold,amber=red-15,custom=settings.providers[usage.account_id]?.ring_color??null;
-  const exhausted=usage.windows.some(w=>w.exhausted);
+  const cfg=settings.providers[usage.account_id];
+  // 主环颜色只由主窗口的耗尽驱动：pin 了主窗口就看它；未 pin 时与后端 primary_percent
+  // 的 max 语义一致取任一耗尽。此前 some() 会被未选中的次窗口绑架（主额度 0% 也全环变红）。
+  const primaryWin=cfg?.primary_window?usage.windows.find(w=>w.id===cfg.primary_window):null;
+  const exhausted=primaryWin?primaryWin.exhausted:usage.windows.some(w=>w.exhausted);
   const color=!valid?"#71717a":usage.state==="stale"?"#a1a1aa":(exhausted||used>=red)?"#ef4444":used>=amber?"#f97316":custom??(used>=50?"#eab308":"#10b981");
   // The outer time ring follows the account's own pick (or the soonest reset), independent of the inner quota ring.
-  const cfg=settings.providers[usage.account_id];
   const timed=valid?pickElapsedWindow(usage.windows,cfg?.elapsed_window??null):null;
   const clock=settings.show_elapsed&&timed?elapsed(timed):null;
   const dark = settings.theme === "obsidian";

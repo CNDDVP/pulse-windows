@@ -68,6 +68,19 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
     setToast({ type, text });
     toastTimerRef.current = setTimeout(() => setToast(null), 3500);
   };
+  // 破坏性操作的非阻塞确认（替代 window.confirm——WebView2 的模态对话框会挂起渲染线程）：
+  // 第一次点击进入 armed 态（按钮变确认文案），3 秒未确认自动解除。
+  const [confirmArmed, setConfirmArmed] = useState<string | null>(null);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armConfirm = (key: string) => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmArmed(key);
+    confirmTimerRef.current = setTimeout(() => setConfirmArmed(null), 3000);
+  };
+  const disarmConfirm = () => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmArmed(null);
+  };
   const locked = busy || testingId !== null;
 
   useEffect(() => { void invoke<MonitorOption[]>("monitors").then(setScreens).catch(() => setScreens([])); }, []);
@@ -145,7 +158,9 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
   };
   const remove = (id: string) => {
     const label = settings.providers[id]?.label || "该账号";
-    if (!window.confirm(`删除「${label}」？其凭据会一并从 Windows 凭据管理器移除。`)) return;
+    const key = `del:${id}`;
+    if (confirmArmed !== key) { armConfirm(key); showToast("info", `再次点击删除以确认移除「${label}」`); return; }
+    disarmConfirm();
     setBusy(true);
     void (async () => {
       try {
@@ -172,7 +187,9 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
     } catch (e) { showToast("error", `凭据保存失败: ${String(e)}`); } finally { setBusy(false); }
   };
   const handleDeleteCredential = async (id: string) => {
-    if (!window.confirm("移除已保存的凭据？")) return;
+    const key = `cred:${id}`;
+    if (confirmArmed !== key) { armConfirm(key); showToast("info", "再次点击以确认移除凭据"); return; }
+    disarmConfirm();
     setBusy(true);
     try { await invoke("delete_credential", { accountId: id }); showToast("info", "凭据已从 Windows 凭据管理器移除"); }
     catch (e) { showToast("error", `凭据删除失败: ${String(e)}`); } finally { setBusy(false); }
@@ -188,7 +205,8 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
   const refreshAll = async () => { await invoke("refresh_usages"); };
 
   const closeWindow = async () => {
-    if (anyDirty && !window.confirm("有未保存的账号更改，放弃并关闭？")) return;
+    if (anyDirty && confirmArmed !== "close") { armConfirm("close"); showToast("info", "有未保存的更改——再次点击关闭将放弃它们"); return; }
+    disarmConfirm();
     if (anyDirty) { setSettings(appliedRef.current); }
     setSecrets({});
     setShowSecrets({});
@@ -254,7 +272,9 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
               <button className={btnPrimary} disabled={locked} onClick={() => void saveAccounts()}>{busy ? "正在保存…" : "保存"}</button>
             </>
           )}
-          <button onClick={() => void closeWindow()} className={`${btnGhost} flex items-center gap-1.5`} title="关闭设置窗口 (Esc)"><span>✕</span><span>关闭</span><kbd className="text-[10px] text-zinc-500 border border-zinc-700 rounded px-1">Esc</kbd></button>
+          {confirmArmed === "close"
+          ? <button onClick={() => void closeWindow()} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-950/40 text-red-300 border border-red-900/60 text-sm font-medium"><span>✕</span><span>放弃更改并关闭</span></button>
+          : <button onClick={() => void closeWindow()} className={`${btnGhost} flex items-center gap-1.5`} title="关闭设置窗口 (Esc)"><span>✕</span><span>关闭</span><kbd className="text-[10px] text-zinc-500 border border-zinc-700 rounded px-1">Esc</kbd></button>}
         </div>
       </header>
 
@@ -354,7 +374,7 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
                   </div>
                   <div className="flex items-center gap-4 shrink-0">
                     <label className="flex items-center gap-2 text-xs text-zinc-400"><span>显示在悬浮栏</span><Switch checked={c.enabled} onChange={v => patch(id, { enabled: v })} label="显示在悬浮栏" /></label>
-                    <button className="text-zinc-500 hover:text-red-400 hover:bg-red-950/30 p-1.5 rounded-lg transition-colors cursor-pointer" onClick={() => remove(id)} title="删除此账号" aria-label="删除此账号">
+                    <button className={confirmArmed === `del:${id}` ? "text-red-300 bg-red-950/50 p-1.5 rounded-lg transition-colors cursor-pointer" : "text-zinc-500 hover:text-red-400 hover:bg-red-950/30 p-1.5 rounded-lg transition-colors cursor-pointer"} onClick={() => remove(id)} title={confirmArmed === `del:${id}` ? "再次点击确认删除" : "删除此账号"} aria-label="删除此账号">
                       <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                     </button>
                   </div>
@@ -384,7 +404,7 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
                           <button type="button" onClick={() => setShowSecrets(s => ({ ...s, [id]: !s[id] }))} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 text-xs cursor-pointer" aria-label={showSecrets[id] ? "隐藏凭据" : "显示凭据"}>{showSecrets[id] ? "隐藏" : "显示"}</button>
                         </div>
                         <button disabled={locked || !secrets[id]} onClick={() => void handleSaveCredential(id)} className={btnPrimary}>保存凭据</button>
-                        {c.credential_configured && <button disabled={locked} onClick={() => void handleDeleteCredential(id)} className="px-3 py-1.5 bg-zinc-900 hover:bg-red-950/40 text-red-400 border border-zinc-800 hover:border-red-900/60 rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer">删除凭据</button>}
+                        {c.credential_configured && <button disabled={locked} onClick={() => void handleDeleteCredential(id)} className={confirmArmed === `cred:${id}` ? "px-3 py-1.5 bg-red-950/50 text-red-300 border border-red-900/60 rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer" : "px-3 py-1.5 bg-zinc-900 hover:bg-red-950/40 text-red-400 border border-zinc-800 hover:border-red-900/60 rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer"}>{confirmArmed === `cred:${id}` ? "确认移除？" : "删除凭据"}</button>}
                       </div>
                     </div>
                   )}

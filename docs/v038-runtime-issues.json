@@ -1,0 +1,286 @@
+{
+  "baseline": "2eff0a5a72507bff8d0d87fbf45e69e64a245202",
+  "audit_status": "in_progress",
+  "issues": [
+    {
+      "id": "A01",
+      "severity": "P1",
+      "title": "活动停止后仍显示工作中",
+      "location": "src-tauri/src/activity.rs:148; src-tauri/src/lib.rs:301",
+      "evidence": "合成日志复现",
+      "root_cause": "Watcher 仅返回 true 来源；poll_activity 仅遍历返回项，停止和 180 秒衰减不会清除上层 true。当前未提交改动后再次复现。",
+      "acceptance": "所有已配置来源每轮返回明确状态；任务结束和衰减后两个轮询内 UI 复位。",
+      "status": "open"
+    },
+    {
+      "id": "A02",
+      "severity": "P1",
+      "title": "手动与定时刷新非对称去重",
+      "location": "src-tauri/src/lib.rs:50; src-tauri/src/lib.rs:200",
+      "evidence": "静态调用链",
+      "root_cause": "定时轮检查手动 inflight，却不登记自己的在途请求；同账号可出现两请求，generation 相同时都能写回。",
+      "acceptance": "所有入口使用同一按账号协调器；可控延迟测试证明单请求及旧结果不覆盖新结果。",
+      "status": "open"
+    },
+    {
+      "id": "A03",
+      "severity": "P1",
+      "title": "设置事务存在丢更新风险",
+      "location": "src-tauri/src/commands.rs:31; src/pages/SettingsWindow.tsx:91",
+      "evidence": "静态调用链",
+      "root_cause": "读取旧设置后释放锁，异步落盘后重新覆盖；滑块和普通设置可连续提交。代际冲突合并只保护四个位置字段。",
+      "acceptance": "串行事务或原子比较版本加字段补丁；并发保存、拖动、凭据变更不丢字段。",
+      "status": "open"
+    },
+    {
+      "id": "A04",
+      "severity": "P1",
+      "title": "清理凭据可能假成功",
+      "location": "src-tauri/src/secrets.rs:68; src-tauri/src/commands.rs:405",
+      "evidence": "静态调用链",
+      "root_cause": "逐项删除错误被忽略并返回 Ok；内存 credential_configured、读数及在途 generation 均未同步。",
+      "acceptance": "错误逐项反馈；清理成功后各窗口同步；过期请求不能重新写入。",
+      "status": "open"
+    },
+    {
+      "id": "A05",
+      "severity": "P1",
+      "title": "打包目录保护仍可删除源码或相邻目录",
+      "location": "scripts/build-dist.ps1:32",
+      "evidence": "非破坏性条件复现",
+      "root_cause": "StartsWith 缺少目录分隔符边界；保护只检查目标是否为源码祖先，未禁止源码后代。.git、docs、src/components、../pulse-windows-other 均被当前条件放行。未执行删除。",
+      "acceptance": "限定专用输出目录并校验真实路径及重解析点；危险参数全部在任何删除前拒绝。",
+      "status": "open"
+    },
+    {
+      "id": "A06",
+      "severity": "P2",
+      "title": "凭据修改后悬浮栏残留旧读数",
+      "location": "src-tauri/src/commands.rs:117; src-tauri/src/commands.rs:133",
+      "evidence": "静态调用链",
+      "root_cause": "清除后端缓存后只发 settings-updated，不发 usages-updated；前端仍持旧数组。",
+      "acceptance": "凭据更换或删除立即清空相关读数并呈现等待/未配置状态。",
+      "status": "open"
+    },
+    {
+      "id": "A07",
+      "severity": "P2",
+      "title": "立即刷新全部可能无请求却报成功",
+      "location": "src-tauri/src/lib.rs:214; src/pages/settings/GeneralPage.tsx:94",
+      "evidence": "静态调用链",
+      "root_cause": "手动全量入口复用 due 调度，正常冷却期内全部被跳过；界面仍提示已刷新全部。",
+      "acceptance": "区分手动刷新与周期调度，保留服务限流；返回实际刷新、跳过和失败数量。",
+      "status": "open"
+    },
+    {
+      "id": "A08",
+      "severity": "P2",
+      "title": "长拖动后的点击抑制提前过期",
+      "location": "src/components/FloatingRail.tsx:143",
+      "evidence": "静态代码",
+      "root_cause": "抑制到期时间在拖动开始设置，pointerup 未续期。超过 400ms 的拖动松手点击可进入刷新。",
+      "acceptance": "抑制拖动产生的 click；覆盖长拖动、短拖动和正常点击。",
+      "status": "open"
+    },
+    {
+      "id": "A09",
+      "severity": "P2",
+      "title": "跨屏拖动保存遗漏显示器和代际",
+      "location": "src-tauri/src/commands.rs:501",
+      "evidence": "静态代码",
+      "root_cause": "monitor_name 赋值不标 changed；相同比例换屏可不落盘；drag_end 保存不递增 generation。",
+      "acceptance": "跨屏即使比例一致也保存，且与其他设置修改遵循同一事务。",
+      "status": "open"
+    },
+    {
+      "id": "A10",
+      "severity": "P2",
+      "title": "手动刷新遗漏通知及持久缓存",
+      "location": "src-tauri/src/lib.rs:274",
+      "evidence": "静态调用链",
+      "root_cause": "apply_single_reading 不执行 alerts::evaluate 和 usage-cache 写入，定时入口才执行。",
+      "acceptance": "统一结果提交步骤；两入口同样触发适用通知与 --json 更新。",
+      "status": "open"
+    },
+    {
+      "id": "A11",
+      "severity": "P2",
+      "title": "旧请求定时器关闭新刷新动画",
+      "location": "src/components/FloatingRail.tsx:80",
+      "evidence": "静态代码",
+      "root_cause": "finished 处理时检查 request_id，但延时回调删除状态时不再次检查。",
+      "acceptance": "延时回调核对请求编号；A 完成后 B 开始仍保留 B 动画。",
+      "status": "open"
+    },
+    {
+      "id": "A12",
+      "severity": "P2",
+      "title": "剩余模式详情条形图语义不一致",
+      "location": "src/components/UsageDetailCard.tsx:28",
+      "evidence": "静态代码",
+      "root_cause": "数字转为剩余，条宽仍用 used_percent。",
+      "acceptance": "统一剩余/已用表达，或对固定显示已用的条形图明确标注。",
+      "status": "open"
+    },
+    {
+      "id": "A13",
+      "severity": "P2",
+      "title": "缺失工具目录被误判统计缺口",
+      "location": "src-tauri/src/ledger.rs:62",
+      "evidence": "静态代码",
+      "root_cause": "任何 read_dir 失败均 truncated=true，包括未安装工具的根目录；还导致历史清理被长期跳过。",
+      "acceptance": "缺失来源单独标未发现，权限失败和扫描截断才标缺口；维护删除文件策略。",
+      "status": "open"
+    },
+    {
+      "id": "A14",
+      "severity": "P2",
+      "title": "费用覆盖不透明且模型匹配过宽",
+      "location": "src-tauri/src/ledger.rs:180; src-tauri/src/ledger.rs:226",
+      "evidence": "静态代码",
+      "root_cause": "存在一个已知价格即返回部分费用总数；未知模型未反映计价覆盖率；任意含 pro/flash 名称可被套价。未核验外部最新价格。",
+      "acceptance": "精确模型映射、价格版本及来源；同时呈现已计价与未计价 token 数。",
+      "status": "open"
+    },
+    {
+      "id": "A15",
+      "severity": "P2",
+      "title": "自由窗口缺少持续显示器恢复",
+      "location": "src-tauri/src/lib.rs:399",
+      "evidence": "静态代码，实机待验证",
+      "root_cause": "每秒定位分支排除 free，且没有发现显示器变化的专门恢复入口。跟随活动屏开关在自由模式缺少持续执行。",
+      "acceptance": "实机断屏与主屏切换后窗口可见；明确自由模式跟随策略。",
+      "status": "open"
+    },
+    {
+      "id": "A16",
+      "severity": "P2",
+      "title": "隐藏主栏未统一隐藏详情",
+      "location": "src-tauri/src/lib.rs:393; src-tauri/src/tray.rs",
+      "evidence": "静态代码，实机待验证",
+      "root_cause": "托盘、全屏避让和 show_rail 隐藏路径只处理 main，detail 独立置顶。",
+      "acceptance": "统一可见性状态，隐藏主栏时 detail 同步关闭。",
+      "status": "open"
+    },
+    {
+      "id": "A17",
+      "severity": "P2",
+      "title": "原生关闭设置绕过清理流程",
+      "location": "src-tauri/src/lib.rs:445; src/pages/SettingsWindow.tsx:190",
+      "evidence": "静态调用链",
+      "root_cause": "原生 X/Alt+F4 被 Rust 改为 hide，绕过 React 未保存确认和 secrets 清空；窗口不卸载。",
+      "acceptance": "所有关闭入口统一处理未保存编辑并清理暂存 secret。",
+      "status": "open"
+    },
+    {
+      "id": "A18",
+      "severity": "P2",
+      "title": "配置身份文件损坏时静默换身份",
+      "location": "src-tauri/src/config.rs:78",
+      "evidence": "静态代码",
+      "root_cause": "profile.json 解析失败就生成新 ID；写入错误被忽略。旧凭据可能变得不可达，写入失败后重启继续换身份。",
+      "acceptance": "损坏文件保留并显式报错，持久化成功后才启用新身份。",
+      "status": "open"
+    },
+    {
+      "id": "A19",
+      "severity": "P2",
+      "title": "缓存过期缺少独立时钟驱动",
+      "location": "src-tauri/src/cache.rs:32; src-tauri/src/lib.rs:200; src/App.tsx",
+      "evidence": "静态调用链",
+      "root_cause": "expire 只在请求结果/get_usages 等路径执行；无新结果时 UI 可超过 600 秒仍显示 live，刷新间隔允许 1800 秒以上。",
+      "acceptance": "独立过期状态推进；跨重置、退避和长周期状态及时变化。",
+      "status": "open"
+    },
+    {
+      "id": "A20",
+      "severity": "P2",
+      "title": "Token 日期分组顺序不稳定",
+      "location": "src/pages/TokenSpend.tsx:10; src-tauri/src/ledger.rs:175",
+      "evidence": "静态代码",
+      "root_cause": "后端按 source/model/day/hour 排序，前端 Map 按首次遇见顺序展示，跨来源合并后日期不一定顺序排列。",
+      "acceptance": "日期/小时显式排序；模型顺序有明确规则。",
+      "status": "open"
+    },
+    {
+      "id": "A21",
+      "severity": "P2",
+      "title": "统计错误信息不能跨扫描保留",
+      "location": "src-tauri/src/ledger.rs:142; src-tauri/src/ledger.rs:173",
+      "evidence": "静态代码",
+      "root_cause": "坏行只增加当轮 skipped；下轮未变文件被跳过，不再保留坏行标记；query_map 的错误经 flatten 丢弃。",
+      "acceptance": "文件级不完整标记持久化；SQL 行错误明确报告；连续扫描不把残缺数据标完整。",
+      "status": "open"
+    },
+    {
+      "id": "A22",
+      "severity": "P2",
+      "title": "Provider 可选请求吞错与总超时冲突",
+      "location": "src-tauri/src/providers/xiaomi.rs:45; src-tauri/src/providers/command_code.rs; src-tauri/src/providers/volcengine.rs",
+      "evidence": "静态调用链",
+      "root_cause": "多串行请求各有 12 秒超时，外层总限 25 秒；可选请求可导致有效主额度也被总超时丢弃。可选错误被 ok() 或分支吞掉。",
+      "acceptance": "主额度不被可选信息超时拖垮；部分数据状态可见，统一总预算。",
+      "status": "open"
+    },
+    {
+      "id": "A23",
+      "severity": "P2",
+      "title": "Windsurf 记录新鲜度判定过宽",
+      "location": "src-tauri/src/providers/devin.rs:53",
+      "evidence": "静态代码",
+      "root_cause": "按整个数据库 mtime 判定 7 天，缺元数据也视为非旧；非额度数据写入可让旧额度被标实时。",
+      "acceptance": "以额度记录自身时间/可信重置证据判断，不可证实的新鲜度标未验证。",
+      "status": "open"
+    },
+    {
+      "id": "A24",
+      "severity": "P2",
+      "title": "活动扫描长行卡住及文件表不清理",
+      "location": "src-tauri/src/activity.rs:72; src-tauri/src/activity.rs:116",
+      "evidence": "静态代码",
+      "root_cause": "一行超过单次预算且预算中没有换行时 offset 永远不前进；files 映射不移除消失路径。",
+      "acceptance": "超长记录可跳过并恢复后续解析；消失会话按规则回收。",
+      "status": "open"
+    },
+    {
+      "id": "A25",
+      "severity": "P2",
+      "title": "更换独立 Profile 未同步运行状态",
+      "location": "src-tauri/src/commands.rs:410; src-tauri/src/config.rs:107",
+      "evidence": "静态调用链",
+      "root_cause": "只替换身份文件和身份缓存，没有清理额度、更新凭据 flags、取消旧身份请求。",
+      "acceptance": "身份切换作为事务，旧身份结果无法提交，所有窗口同步新状态。",
+      "status": "open"
+    },
+    {
+      "id": "A26",
+      "severity": "P2",
+      "title": "普通设置自动保存会一并保存账号草稿",
+      "location": "src/pages/SettingsWindow.tsx:91",
+      "evidence": "静态调用链",
+      "root_cause": "账号声明显式保存，但普通设置 persist(next) 携带全量 providers，包括账号页未保存编辑。",
+      "acceptance": "普通设置只提交自己的字段；账号草稿需显式保存。",
+      "status": "open"
+    },
+    {
+      "id": "A27",
+      "severity": "P3",
+      "title": "减少动态未统一覆盖动画",
+      "location": "src/components/UsageRing.tsx; src/components/BotMark.tsx; src/index.css",
+      "evidence": "静态代码",
+      "root_cause": "减少动态只传给 BotMark；刷新旋转、活动点和详情进入动画仍运行。",
+      "acceptance": "全局开关和系统偏好统一控制连续装饰动画。",
+      "status": "open"
+    },
+    {
+      "id": "A28",
+      "severity": "P2",
+      "title": "运行包与当前源码版本未对应",
+      "location": "package.json; src-tauri/target/release/pulse-windows.exe",
+      "evidence": "实机元数据",
+      "root_cause": "源码 0.3.8，运行 EXE 文件版本 0.3.7；仅版本资源不足以证明完整代码来源。",
+      "acceptance": "构建信息绑定 SHA、工作区状态和 EXE 哈希，明确实机验收对象。",
+      "status": "open"
+    }
+  ]
+}

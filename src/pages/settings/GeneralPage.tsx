@@ -19,7 +19,7 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
     <div className="space-y-5 max-w-2xl">
       <Section title="悬浮栏" icon="🖥️" subtitle="修改即保存，立即生效。">
         <Row title="显示悬浮栏" subtitle="关闭后 Pulse 仍在托盘运行并继续刷新。">
-          <Switch checked={settings.show_rail} onChange={v => update({ show_rail: v })} label="���示悬浮栏" />
+          <Switch checked={settings.show_rail} onChange={v => update({ show_rail: v })} label="显示悬浮栏" />
         </Row>
         <Row title="跟随当前活动显示器" subtitle="鼠标在哪块屏，悬浮栏就贴到哪块屏。">
           <Switch checked={settings.follow_active_display} onChange={v => update({ follow_active_display: v, ...(v ? { monitor_name: null } : {}) })} label="跟随当前活动显示器" />
