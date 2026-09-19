@@ -77,7 +77,11 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
         setRefreshing(r=>{
           if(r[account_id]!==undefined&&r[account_id]!==e.payload.request_id)return r;
           const wait=Math.max(0,(refreshShownUntil.current[account_id]??0)-Date.now());
-          if(wait>0){window.setTimeout(()=>setRefreshing(cur=>{const {[account_id]:_,...rest}=cur;return rest;}),wait);return r;}
+          if(wait>0){window.setTimeout(()=>setRefreshing(cur=>{
+            // A 完成安排的延时回调不得关闭 B 已接管的动画：条目仍是完成事件的 request_id 才清。
+            if(cur[account_id]!==undefined&&cur[account_id]!==e.payload.request_id)return cur;
+            const {[account_id]:_,...rest}=cur;return rest;
+          }),wait);return r;}
           const {[account_id]:_,...rest}=r;return rest;
         });
       }
@@ -108,13 +112,14 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
 
   useEffect(()=>{
     if(!hovered)return;
-    const account=hovered.split("::")[0];
+    // hovered 是完整 slot key："account" 或拆分组时的 "account::组名"。
+    // 原样传给后端透传，详情卡按组过滤窗口（App.tsx DetailOverlay）。
     const el=document.querySelector(`[data-account="${hovered}"]`);
     const rect=el?.getBoundingClientRect();
     const ratio=rect?(rect.top+rect.height/2)/(window.innerHeight||1):0.5;
     const horizontalRatio=rect?(rect.left+rect.width/2)/(window.innerWidth||1):0.5;
     void invoke("show_detail",{
-      accountId:account,
+      accountId:hovered,
       centerRatio:Math.min(1,Math.max(0,ratio)),
       horizontalRatio:Math.min(1,Math.max(0,horizontalRatio))
     });
@@ -140,7 +145,6 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       if(!arm)return;
       if(!dragging&&Math.hypot(e.clientX-arm.x,e.clientY-arm.y)>6){
         dragging=true;draggingRef.current=true;setDraggingUI(true);
-        suppressClickUntil.current=Date.now()+400;
         setHovered(null);void invoke("hide_detail");
         void invoke("drag_begin").catch(err=>{document.title="BEGERR "+String(err).slice(0,70)});
         document.title="DRAG-ON";
@@ -152,9 +156,12 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
         }
       }
     };
-    const up=()=>{
+    const up=(e:PointerEvent)=>{
       if(dragging){
         dragging=false;draggingRef.current=false;setDraggingUI(false);
+        // 只有真正拖动了 rail（≥12 逻辑px）才抑制后续 click：6-12dip 的手抖"微拖"
+        // 视为点击意图，不吞刷新（drag_end 照常执行，位移极小、保存的位置无害）。
+        if(arm&&Math.hypot(e.clientX-arm.x,e.clientY-arm.y)>=12)suppressClickUntil.current=Date.now()+400;
         void invoke("drag_end");
         // settings-updated 通常先到（drag_end 同步保存）；超时兜底防 cancel 路径卡住预览态。
         setTimeout(()=>setDragSide(null),400);

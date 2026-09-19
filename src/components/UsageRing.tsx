@@ -6,15 +6,23 @@ import type {AppSettings,ProviderUsage} from "../types";
 export function UsageRing({usage,settings,onHover,refreshing,onClick,lookX=0,dataKey}:
   {usage:ProviderUsage;settings:AppSettings;onHover:()=>void;refreshing?:boolean;onClick?:()=>void;lookX?:number;dataKey?:string}){
   const ref=useRef<HTMLButtonElement>(null);
+  // 旋转灯的相位对齐：CSS animate-spin 的相位取决于元素挂载时刻，各账号挂载时间不同
+  // 导致卫星灯各转各的。用负 animation-delay 把相位锚到全局时钟（挂载时算一次，
+  // 重渲染不变），所有灯任意时刻处于同一角度。刷新彩弧（1s）同理对齐到秒相位。
+  const spinDelay=useRef(`-${Date.now()%3000}ms`);
+  const arcDelay=useRef(`-${Date.now()%1000}ms`);
   const valid=["live","stale"].includes(usage.state)&&usage.primary_percent!==null;
   const used=usage.primary_percent??0,pct=valid?Math.min(100,settings.display_mode==="remaining"?Math.max(0,100-used):used):0;
   // The warning threshold only moves the amber→red step; a provider-reported exhaustion is always red,
   // and a per-account custom colour applies to the calm range only.
   const red=settings.warning_threshold,amber=red-15,custom=settings.providers[usage.account_id]?.ring_color??null;
-  const exhausted=usage.windows.some(w=>w.exhausted);
+  const cfg=settings.providers[usage.account_id];
+  // 主环颜色只由主窗口的耗尽驱动：pin 了主窗口就看它；未 pin 时与后端 primary_percent
+  // 的 max 语义一致取任一耗尽。此前 some() 会被未选中的次窗口绑架（主额度 0% 也全环变红）。
+  const primaryWin=cfg?.primary_window?usage.windows.find(w=>w.id===cfg.primary_window):null;
+  const exhausted=primaryWin?primaryWin.exhausted:usage.windows.some(w=>w.exhausted);
   const color=!valid?"#71717a":usage.state==="stale"?"#a1a1aa":(exhausted||used>=red)?"#ef4444":used>=amber?"#f97316":custom??(used>=50?"#eab308":"#10b981");
   // The outer time ring follows the account's own pick (or the soonest reset), independent of the inner quota ring.
-  const cfg=settings.providers[usage.account_id];
   const timed=valid?pickElapsedWindow(usage.windows,cfg?.elapsed_window??null):null;
   const clock=settings.show_elapsed&&timed?elapsed(timed):null;
   const dark = settings.theme === "obsidian";
@@ -37,7 +45,7 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,lookX=0,dat
       <svg viewBox="0 0 44 44" className="w-11 h-11 -rotate-90">
         <circle cx="22" cy="22" r="18" fill="none" stroke={dark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.08)"} strokeWidth="2.8"/>
         <circle cx="22" cy="22" r="18" fill="none" stroke={color} strokeWidth="2.8" strokeLinecap="round" opacity={refreshing?0.35:1} strokeDasharray={`${pct/100*113.097} 113.097`} className="transition-all duration-500 ease-out"/>
-        {refreshing&&<g className="animate-spin" style={{animationDuration:"1s",transformOrigin:"22px 22px"}}><circle cx="22" cy="22" r="18" fill="none" stroke={color} strokeWidth="2.8" strokeLinecap="round" strokeDasharray="22 91"/></g>}
+        {refreshing&&<g className="animate-spin" style={{animationDuration:"1s",animationDelay:arcDelay.current,transformOrigin:"22px 22px"}}><circle cx="22" cy="22" r="18" fill="none" stroke={color} strokeWidth="2.8" strokeLinecap="round" strokeDasharray="22 91"/></g>}
         {secLive&&sec&&<circle cx="22" cy="22" r="11" fill="none" stroke={dark?"rgba(255,255,255,0.1)":"rgba(0,0,0,0.07)"} strokeWidth="2.2"/>}
         {secLive&&sec&&<circle cx="22" cy="22" r="11" fill="none" stroke={secColor} strokeWidth="2.2" strokeLinecap="round" strokeDasharray={`${Math.min(100,Math.max(0,secPct))/100*69.12} 69.12`} className="transition-all duration-500 ease-out"/>}
         {clock!==null&&<circle cx="22" cy="22" r="21" fill="none" stroke="#ffffff" strokeWidth="1.5" strokeLinecap="round" opacity="0.95" strokeDasharray={`${(clock>0?Math.max(clock,0.025):0)*131.95} 131.95`}/>}
@@ -49,7 +57,7 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,lookX=0,dat
           <ProviderIcon id={usage.provider_id} size={18}/>}
       </span>
       {usage.is_active && !useBot && (
-        <div className="absolute inset-0 animate-spin pointer-events-none" style={{ animationDuration: '3s' }}>
+        <div className="absolute inset-0 animate-spin pointer-events-none" style={{ animationDuration: '3s', animationDelay: spinDelay.current }}>
           <div className="w-1.5 h-1.5 rounded-full bg-white shadow-[0_0_6px_#ffffff]" style={{ position: 'absolute', top: '1px', left: 'calc(50% - 3px)' }} />
         </div>
       )}

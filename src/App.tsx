@@ -38,11 +38,18 @@ function DetailOverlay() {
     })();
     return()=>{alive=false;stops.forEach(f=>f())};
   },[]);
-  const usage=usages?.find(u=>u.account_id===accountId);
+  const usage0=usages?.find(u=>u.account_id===accountId?.split("::")[0]);
+  // 拆分模型组的 slot key 形如 "account::组名"：详情卡只显示该组的窗口，
+  // 否则滑过 Gemini 圆环弹出的卡片会混杂 Claude/GPT 的额度（P2-06）。
+  const groupId=accountId?.includes("::")?accountId.split("::")[1]:null;
+  const usage=usage0&&groupId?{...usage0,windows:usage0.windows.filter(w=>w.name.split(" · ")[0]===groupId),display_name:`${usage0.display_name} · ${groupId}`}:usage0;
+  // 窗口在 rail 侧方时卡片要贴向 rail 那一侧（否则留出 34-50px 透明断层，箭头悬空）；
+  // 正下/正上时水平居中对准图标。
+  const justifyClass=placement==="left"?"justify-end":placement==="right"?"justify-start":"justify-center";
   // 窗口在 rail 正下/正上时内容贴边渲染，否则卡片矮时垂直居中会在窗口顶留出大片透明，
   // 视觉上像"详情卡离悬浮栏很远"。
-  const alignClass = placement==="top" ? "items-start" : placement==="bottom" ? "items-end" : "items-center";
-  return <div className={`w-full h-full p-2 flex ${alignClass}`}
+  const alignClass=placement==="top"?"items-start":placement==="bottom"?"items-end":"items-center";
+  return <div className={`w-full h-full p-2 flex ${justifyClass} ${alignClass}`}
     onMouseEnter={()=>void invoke("set_detail_hover",{hovered:true})}
     onMouseLeave={()=>void invoke("set_detail_hover",{hovered:false})}
     onContextMenu={e=>e.preventDefault()}>
@@ -74,6 +81,8 @@ function MainApp({label}:{label:string}){
       }catch{/* 读数加载失败不阻塞界面；下一次刷新事件会补上 */}
     })();return()=>{alive=false;stops.forEach(f=>f())};
   },[]);
+  // 减少动态效果：应用内开关挂到根元素，CSS 一处覆盖所有动画（A27）。
+  useEffect(()=>{document.documentElement.classList.toggle("reduce-motion",!!settings?.reduce_motion);},[settings?.reduce_motion]);
   if(error)return <div className="p-4 bg-zinc-900 text-amber-300 text-sm">{error}</div>;
   if(!settings)return <div className="p-3 bg-zinc-900 text-zinc-400 text-xs">正在加载…</div>;
   return label==="settings"?<SettingsWindow initialSettings={settings} usages={usages} onSaved={setSettings}/>:<FloatingRail usages={usages} settings={settings}/>;

@@ -23,17 +23,24 @@ Write-Host "=========================================" -ForegroundColor Cyan
 Write-Host " Building Pulse for Windows v$Version" -ForegroundColor Cyan
 Write-Host "=========================================" -ForegroundColor Cyan
 
-# 1. OutputDir：只允许在构建根目录内，且不得命中源码/配置所在路径。
-$ArtifactsDir = [System.IO.Path]::GetFullPath((Join-Path $Root $OutputDir))
-$allowedRoot = [System.IO.Path]::GetFullPath($Root)
+# 1. OutputDir：只允许在构建根目录内，且双向不得命中源码/配置/git 路径。
+#    StartsWith 必须带目录分隔符边界：否则 "D:\repo\src-other" 会被 "D:\repo\src" 误判。
+#    PS5.1 的 Join-Path 遇绝对路径会返回 null：rooted 输入直接取自身，同样过下面的保护判定。
+if ([System.IO.Path]::IsPathRooted($OutputDir)) { $ArtifactsDir = $OutputDir }
+else { $ArtifactsDir = Join-Path $Root $OutputDir }
+$ArtifactsDir = ([System.IO.Path]::GetFullPath($ArtifactsDir)).TrimEnd('\') + '\'
+$allowedRoot = ([System.IO.Path]::GetFullPath($Root)).TrimEnd('\') + '\'
 if (-not $ArtifactsDir.StartsWith($allowedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "OutputDir 必须位于构建根目录内: $ArtifactsDir"
 }
 if ($ArtifactsDir -eq $allowedRoot) { throw "OutputDir 不得就是构建根目录本身" }
-foreach ($protected in @("$Root\src", "$Root\src-tauri\src")) {
-    $pp = (Resolve-Path $protected).Path
-    if ($pp.StartsWith($ArtifactsDir, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "OutputDir 不得覆盖源码目录: $ArtifactsDir 包含 $pp"
+foreach ($protected in @("$Root\src", "$Root\src-tauri", "$Root\.git", "$Root\docs", "$Root\scripts", "$Root\dist")) {
+    $pp = ((Resolve-Path $protected -ErrorAction SilentlyContinue).ProviderPath).TrimEnd('\') + '\'
+    if (-not $pp -or $pp.Length -le 1) { continue }
+    # 双向检查：受保护目录在 OutputDir 内（会被删），或 OutputDir 在受保护目录内（会在源码里建产物）。
+    if ($pp.StartsWith($ArtifactsDir, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $ArtifactsDir.StartsWith($pp, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "OutputDir 不得命中受保护路径: $ArtifactsDir 与 $pp 冲突"
     }
 }
 if (Test-Path $ArtifactsDir) { Remove-Item -Recurse -Force $ArtifactsDir }

@@ -37,7 +37,9 @@ export function UsageDetailCard({usage,settings,placement}:{usage:ProviderUsage;
           <div className="h-1.5 bg-zinc-500/20 rounded my-1">
             <div
               className="h-full rounded transition-all duration-300"
-              style={{width:`${Math.min(100,w.used_percent)}%`,backgroundColor:barColor}}
+              // 条形跟随数字语义：剩余模式下显示剩余比例（颜色仍按已用量判危险等级），
+              // 否则数字"76% 剩余"配 76% 宽的条会读成"只剩 24%"。
+              style={{width:`${Math.min(100,Math.max(0,pct))}%`,backgroundColor:barColor}}
             />
           </div>
           <p className="text-zinc-500">{resetText(w.resets_at,now)}</p>

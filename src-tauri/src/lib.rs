@@ -206,13 +206,19 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
     let settings=state.settings.lock().await.clone();
     let now=Instant::now();
     let mut due=settings.clone();
+    let to_fetch:Vec<String>;
     {let schedule=state.schedule.lock().await;
-     let inflight=state.inflight.lock().await;
+     let mut inflight=state.inflight.lock().await;
      for (id,cfg) in due.providers.iter_mut(){
         // 手动刷新在途的账号由该请求负责写回，定时轮不再重复发起。
         if inflight.contains_key(id){cfg.enabled=false}
         else if schedule.get(id).is_some_and(|(at,_)|*at>now){cfg.enabled=false}
-     }}
+     }
+     // 本轮真正要发起的账号登记进 inflight（A02）：定时在途期间用户点手动刷新
+     // 会合并到同一请求，而不是并发第二个连接造成旧响应覆盖新结果。
+     to_fetch=due.providers.iter().filter(|(_,c)|c.enabled).map(|(id,_)|id.clone()).collect();
+     for id in &to_fetch{inflight.entry(id.clone()).or_insert_with(||state.next_request_id());}
+    }
     let start_gens=state.account_generations.lock().await.clone();
     let mut rx=providers::fetch_all_stream(&due,&state.http,state.refresh_slots.clone());
     let mut incoming=vec![];
@@ -222,6 +228,7 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<Vec<ProviderUsage>,
         incoming.push(fresh.clone());
         let current_settings=state.settings.lock().await.clone();
         let id=fresh.account_id.clone();
+        state.inflight.lock().await.remove(&id); // 本轮发起的请求已落地，放行后续手动刷新
         // Drop late response if account was deleted or modified during fetch
         if !current_settings.providers.contains_key(&id) { continue; }
         {
@@ -391,6 +398,10 @@ pub fn run(){
                         let hide=user_hidden || !settings.show_rail || (settings.hide_fullscreen && window::fullscreen_other(&tick_handle));
                         if hide {
                             if w.is_visible().unwrap_or(false){let _=w.hide();}
+                            // 主栏隐藏（托盘/全屏避让）时同步收起详情卡，避免置顶卡片残留屏幕。
+                            if let Some(d)=tick_handle.get_webview_window("detail"){
+                                if d.is_visible().unwrap_or(false){let _=d.hide();}
+                            }
                         } else {
                             if !w.is_visible().unwrap_or(false) {
                                 let _=w.show();
@@ -444,8 +455,11 @@ pub fn run(){
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "settings" {
+                    // 原生 X / Alt+F4 也要过前端的未保存确认：转交给 React 的 closeWindow
+                    // 流程（它确认后再调 close_settings_window 真正隐藏），不直接 hide。
                     api.prevent_close();
-                    let _ = window.hide();
+                    use tauri::Emitter;
+                    let _ = window.emit("settings-close-requested", ());
                 }
             }
         })
