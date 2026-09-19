@@ -67,10 +67,12 @@ impl SecretStore for WindowsSecrets {
 }
 pub fn clear_profile_credentials()->Result<(),String> {
     let settings=crate::config::load_settings()?;
+    // 逐项删除失败不能静默吞掉：用户会以为凭据已清除而实际仍在凭据管理器里。
+    let mut failed:Vec<String>=vec![];
     for id in settings.providers.keys() {
-        let _ = WindowsSecrets.delete(id);
+        if let Err(e)=WindowsSecrets.delete(id){failed.push(format!("{id}: {e}"));}
     }
-    Ok(())
+    if failed.is_empty(){Ok(())}else{Err(format!("{} 项凭据删除失败——{}",failed.len(),failed.join("；")))}
 }
 #[cfg(not(windows))]
 impl SecretStore for WindowsSecrets {

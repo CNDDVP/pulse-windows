@@ -79,7 +79,9 @@ fn scan_appended(path:&PathBuf,offset:u64,budget:u64,source:&str)->Option<(Optio
     let take=((len-offset) as u64).min(budget) as usize;
     let mut buf=vec![0u8;take];
     f.read_exact(&mut buf).ok()?;
-    let complete_end=match buf.iter().rposition(|&b|b==b'\n'){Some(i)=>i+1,None=>return None};
+    // 预算内没有换行：超长行（或极宽的 torn tail）。推进偏移丢弃这段，避免每轮
+    // 重读同一段卡死整个源；正常 JSONL 单行远小于预算，真实 torn tail 只损失几字节。
+    let complete_end=match buf.iter().rposition(|&b|b==b'\n'){Some(i)=>i+1,None=>{return Some((None,offset+take as u64))}};
     let mut last=None;
     for line in buf[..complete_end].split(|&b|b==b'\n'){
         if line.is_empty(){continue}
@@ -117,9 +119,11 @@ impl Watcher{
     pub fn poll(&mut self,now:i64)->HashMap<&'static str,bool>{
         // 每轮总读取预算：超大积压分多轮消化，不阻塞扫描。
         let mut budget=POLL_TOTAL_BUDGET_BYTES;
+        let mut seen:std::collections::HashSet<PathBuf>=std::collections::HashSet::new();
         for (source,root) in self.roots.clone(){
             let mut files=vec![];discover(&root,&mut files,0);
             for path in files{
+                seen.insert(path.clone());
                 let len=fs::metadata(&path).map(|m|m.len()).unwrap_or(0);
                 let offset=match self.files.get(&path){
                     Some(&o)=>if o<=len{o}else{self.files.insert(path.clone(),0);0},
@@ -143,6 +147,9 @@ impl Watcher{
                 }
             }
         }
+        // 回收已消失/轮转走的文件（日志清理、重命名），防长期运行内存缓涨。
+        self.files.retain(|k,_|seen.contains(k));
+        self.sessions.retain(|k,_|seen.contains(k));
         // 会话级衰减：每个文件独立 3 分钟无事件即转空闲；任一会话工作即源工作。
         self.sessions.retain(|_,(_,last)|now-*last<=SESSION_DECAY_SECS);
         // 对称报告：每个受监控源都必须出现——空闲源显式报 false，让 poll_activity

@@ -516,7 +516,8 @@ pub async fn drag_end(app:AppHandle)->Result<(),String>{
     // window that lands mid-drag must not be clobbered by the drag (and vice versa).
     let mut settings=state.settings.lock().await.clone();
     if settings.dock_side!=side{settings.dock_side=side.clone();changed=true;}
-    settings.monitor_name=m.name().cloned();
+    // 跨屏拖动即使比例不变也要落盘 monitor_name，否则重启后 position() 找错屏。
+    if settings.monitor_name.as_ref()!=m.name(){settings.monitor_name=m.name().cloned();changed=true;}
     if side=="free"{
         let pos=win.outer_position().map_err(|e|e.to_string())?;
         // Save and restore share one denominator: the MOVABLE range (work area minus window).

@@ -77,7 +77,11 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
         setRefreshing(r=>{
           if(r[account_id]!==undefined&&r[account_id]!==e.payload.request_id)return r;
           const wait=Math.max(0,(refreshShownUntil.current[account_id]??0)-Date.now());
-          if(wait>0){window.setTimeout(()=>setRefreshing(cur=>{const {[account_id]:_,...rest}=cur;return rest;}),wait);return r;}
+          if(wait>0){window.setTimeout(()=>setRefreshing(cur=>{
+            // A 完成安排的延时回调不得关闭 B 已接管的动画：条目仍是完成事件的 request_id 才清。
+            if(cur[account_id]!==undefined&&cur[account_id]!==e.payload.request_id)return cur;
+            const {[account_id]:_,...rest}=cur;return rest;
+          }),wait);return r;}
           const {[account_id]:_,...rest}=r;return rest;
         });
       }

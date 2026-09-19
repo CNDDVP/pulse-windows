@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { AppSettings, HotkeySettings, MonitorOption, ProviderConfig, ProviderUsage } from "../types";
 import { ProviderIcon } from "../components/icons/ProviderIcons";
@@ -221,6 +222,13 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !(e.target instanceof HTMLInputElement)) void closeWindow(); };
     window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
+  });
+  // 原生 X / Alt+F4：后端拦下 CloseRequested 转发此事件，走与按钮/Esc 相同的
+  // closeWindow 流程（未保存更改需二次确认），不再直接 hide 绕过确认。
+  useEffect(() => {
+    let alive = true;
+    const stop = listen("settings-close-requested", () => { if (alive) void closeWindow(); });
+    return () => { alive = false; void stop.then(f => f()); };
   });
 
   // Search covers pages (title + keywords) and accounts (label + provider name/id).
