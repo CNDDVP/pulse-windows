@@ -92,6 +92,27 @@ pub fn dock_rect(settings:&AppSettings,m:&tauri::Monitor,side:&str,ratio:(f64,f6
         .sum();
     geometry(Rect{x:area.position.x,y:area.position.y,w:area.size.width,h:area.size.height},m.scale_factor(),side,"rail",count,ratio.0,ratio.1)
 }
+/// Cross-DPI-safe placement: moving a window to a monitor with a different DPI fires
+/// WM_DPICHANGED, and the framework's keep-visual-size handler rescales the rect we just
+/// set (measured 72×476 → 48×317 when restoring onto a 100% screen from the 150% primary).
+/// Re-apply once when the landed rect drifted: the window is now in the target DPI context,
+/// so the second SetWindowPos lands exactly and triggers no further rescale.
+#[cfg(windows)]
+unsafe fn set_window_pos_dpi_stable(
+    hwnd: windows::Win32::Foundation::HWND,
+    x: i32, y: i32, w: i32, h: i32,
+    flags: windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS,
+) {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, SetWindowPos};
+    let _ = SetWindowPos(hwnd, windows::Win32::Foundation::HWND::default(), x, y, w, h, flags);
+    let mut cur = RECT::default();
+    if GetWindowRect(hwnd, &mut cur).is_ok()
+        && (cur.left != x || cur.top != y || cur.right - cur.left != w || cur.bottom - cur.top != h) {
+        let _ = SetWindowPos(hwnd, windows::Win32::Foundation::HWND::default(), x, y, w, h, flags);
+    }
+}
+
 /// Atomic size+position for drag following: separate set_size/set_position calls let the
 /// WebView resize land between them and the window visibly oscillates.
 pub fn place_at(window:&tauri::WebviewWindow,x:i32,y:i32,w:u32,h:u32){
@@ -103,9 +124,8 @@ pub fn place_at(window:&tauri::WebviewWindow,x:i32,y:i32,w:u32,h:u32){
         };
         if let Ok(hwnd) = window.hwnd() {
             unsafe {
-                let _ = SetWindowPos(
-                    HWND(hwnd.0), HWND(std::ptr::null_mut()),
-                    x, y, w as i32, h as i32,
+                set_window_pos_dpi_stable(
+                    HWND(hwnd.0), x, y, w as i32, h as i32,
                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOCOPYBITS,
                 );
             }
@@ -133,9 +153,8 @@ pub fn place(window:&tauri::WebviewWindow,rect:&Rect){
                         return;
                     }
                 }
-                let _ = SetWindowPos(
-                    HWND(hwnd.0), HWND(std::ptr::null_mut()),
-                    rect.x, rect.y, rect.w as i32, rect.h as i32,
+                set_window_pos_dpi_stable(
+                    HWND(hwnd.0), rect.x, rect.y, rect.w as i32, rect.h as i32,
                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOCOPYBITS,
                 );
             }
@@ -187,9 +206,8 @@ pub fn position(app:&AppHandle,settings:&AppSettings,state:&str){
                         return;
                     }
                 }
-                let _ = SetWindowPos(
+                set_window_pos_dpi_stable(
                     HWND(hwnd.0),
-                    HWND(std::ptr::null_mut()),
                     rect.x,
                     rect.y,
                     rect.w as i32,
