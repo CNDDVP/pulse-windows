@@ -83,13 +83,16 @@ pub fn geometry(area:Rect,scale:f64,side:&str,state:&str,count:usize,fx:f64,fy:f
     let y=if horizontal{area.y}else{area.y+((area.h-h) as f64*fy.clamp(0.0,1.0)).round() as i32};
     Rect{x,y,w,h}
 }
+pub fn item_count(settings:&AppSettings)->usize{
+    settings.providers.values()
+        .filter(|c|c.enabled)
+        .map(|c|1+usize::from(c.split_model_groups&&c.provider_id=="antigravity"))
+        .sum()
+}
 /// Docked rail rect on a specific monitor at a ratio along the edge.
 pub fn dock_rect(settings:&AppSettings,m:&tauri::Monitor,side:&str,ratio:(f64,f64))->Rect{
     let area=m.work_area();
-    let count=settings.providers.values()
-        .filter(|c|c.enabled)
-        .map(|c|1+usize::from(c.split_model_groups&&c.provider_id=="antigravity"))
-        .sum();
+    let count=item_count(settings);
     geometry(Rect{x:area.position.x,y:area.position.y,w:area.size.width,h:area.size.height},m.scale_factor(),side,"rail",count,ratio.0,ratio.1)
 }
 /// Cross-DPI-safe placement: moving a window to a monitor with a different DPI fires
@@ -120,7 +123,7 @@ pub fn place_at(window:&tauri::WebviewWindow,x:i32,y:i32,w:u32,h:u32){
     {
         use windows::Win32::Foundation::HWND;
         use windows::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, SWP_NOZORDER,
+            SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, SWP_NOZORDER,
         };
         if let Ok(hwnd) = window.hwnd() {
             unsafe {
@@ -141,7 +144,7 @@ pub fn place(window:&tauri::WebviewWindow,rect:&Rect){
     {
         use windows::Win32::Foundation::{HWND, RECT};
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, SWP_NOZORDER,
+            GetWindowRect, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, SWP_NOZORDER,
         };
         if let Ok(hwnd) = window.hwnd() {
             unsafe {
@@ -187,12 +190,12 @@ pub fn position(app:&AppHandle,settings:&AppSettings,state:&str){
     .or_else(|| window.current_monitor().ok().flatten())
     .or_else(|| window.primary_monitor().ok().flatten());
     let Some(m)=monitor else{return};let area=m.work_area();
-    let rect=geometry(Rect{x:area.position.x,y:area.position.y,w:area.size.width,h:area.size.height},m.scale_factor(),&settings.dock_side,state,settings.providers.values().filter(|c|c.enabled).count(),settings.free_x,settings.free_y);
+    let rect=geometry(Rect{x:area.position.x,y:area.position.y,w:area.size.width,h:area.size.height},m.scale_factor(),&settings.dock_side,state,item_count(settings),settings.free_x,settings.free_y);
     #[cfg(windows)]
     {
         use windows::Win32::Foundation::{HWND, RECT};
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
+            GetWindowRect, SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
         };
         if let Ok(hwnd) = window.hwnd() {
             unsafe {
