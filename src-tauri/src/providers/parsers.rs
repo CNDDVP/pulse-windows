@@ -21,6 +21,7 @@ fn infer_window_seconds(name:&str)->Option<i64>{
     else if name.contains("每周")||name.contains("7天")||lower.contains("weekly"){Some(604_800)}
     else if name.contains("5小时")||name.contains("五小时")||lower.contains("5 hour"){Some(18_000)}
     else if name.contains("每日")||name.contains("每天")||lower.contains("daily"){Some(86_400)}
+    else if name.contains("每月")||name.contains("月度")||lower.contains("monthly"){Some(2_592_000)}
     else{None}
 }
 pub fn window(id:&str,name:&str,pct:f64,reset:&Value,seconds:Option<i64>)->Option<UsageWindow>{
@@ -334,6 +335,12 @@ fn count_window(id:&str,name:&str,v:&Value,seconds:Option<i64>)->Option<UsageWin
         assert_eq!(live.windows[0].name,"MCP 每月额度");assert_eq!(live.windows[0].window_seconds,Some(2592000));
     }
     #[test]fn minimax_remaining_count(){let r=parse("minimax",&json!({"model_remains":[{"current_weekly_total_count":"100","current_weekly_usage_count":"96"}]}),0);assert_eq!(r.primary_percent,Some(4.0));}
+    #[test]fn opencode_monthly_infers_window_length(){
+        let r=parse("opencode",&json!({"usage":{"rolling":{"percent":0,"resetsAt":"2026-09-19T07:00:00Z"},"weekly":{"percent":0,"resetsAt":"2026-09-21T00:00:00Z"},"monthly":{"percent":42,"resetsAt":"2026-09-21T16:14:37Z"}}}),0);
+        let m=r.windows.iter().find(|w|w.id=="monthly").expect("monthly window");
+        assert_eq!(m.window_seconds,Some(2_592_000),"名称含“每月”应推断 30 天周期");
+        assert!(m.resets_at.is_some());
+    }
     #[test]fn volcengine_coding_and_afp(){let r=parse("volcengine",&json!({"coding":{"Result":{"QuotaUsage":[{"Level":"5h","Percent":12.5,"ResetTimestamp":1788780000}]}},"afp":{"Result":{"AFPWeekly":{"Quota":1000,"Used":300,"ResetTime":1789085506}}}}),0);assert_eq!(r.windows.len(),2);assert_eq!(r.windows[0].used_percent,12.5);assert_eq!(r.windows[1].used_percent,30.0);assert_eq!(r.primary_percent,Some(30.0));}
     #[test]fn command_code_credits_and_limits(){let r=parse("command-code",&json!({"credits":{"credits":{"monthlyCredits":10,"purchasedCredits":5,"planId":"pro"},"windowLimits":{"fiveHour":{"used":2,"cap":10,"resetAt":1788780000000i64}}}}),0);assert_eq!(r.windows.len(),1);assert_eq!(r.windows[0].used_percent,20.0);assert_eq!(r.balances[0].amount,15.0);assert_eq!(r.plan_name,Some("Pro".into()));}
     #[test]fn devin_pro_and_endpoint(){assert_eq!(parse("devin",&json!({"daily_percentage":5,"weekly_percentage":10}),0).windows.len(),2);assert_eq!(parse("devin",&json!({"dailyRemainingPercent":95,"weeklyRemainingPercent":90,"planName":"Pro"}),0).windows[0].used_percent,5.0);}
@@ -343,7 +350,7 @@ fn count_window(id:&str,name:&str,v:&Value,seconds:Option<i64>)->Option<UsageWin
         let w=window("a","Gemini 模型 · 每周限额",10.0,&serde_json::json!("2030-01-01T00:00:00Z"),None).unwrap();
         assert_eq!(w.window_seconds,Some(604800));
         let w=window("a","每月限额",10.0,&serde_json::json!("2030-01-01T00:00:00Z"),None).unwrap();
-        assert_eq!(w.window_seconds,None,"monthly without explicit duration stays None without fake 30-day assumption");
+        assert_eq!(w.window_seconds,Some(2_592_000),"provider-labelled monthly bucket adopts a 30-day cycle (±1/30 error, verdict-robust)");
         let w=window("a","Cursor 专属模型",10.0,&serde_json::json!("2030-01-01T00:00:00Z"),None).unwrap();
         assert_eq!(w.window_seconds,None,"unnameable windows stay period-less");
     }
