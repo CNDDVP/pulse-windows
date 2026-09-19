@@ -37,6 +37,16 @@ pub fn classify_line(source:&str,v:&Value)->Option<Event>{
                 _=>None,
             }
         },
+        // Kimi Code IDE：~/.kimi-code/server/events/session_*.jsonl，事件在 envelope.type。
+        // turn.step.completed 不熄灯（一个 turn 含多步，step 间会闪烁）；turn.ended/prompt.completed 才熄。
+        "kimi"=>{
+            let t=v["envelope"]["type"].as_str()?;
+            match t{
+                "turn.started"|"prompt.started"|"prompt.submitted"|"turn.step.started"|"tool.call.started"=>Some(Event::Working),
+                "turn.ended"|"prompt.completed"=>Some(Event::Idle),
+                _=>None,
+            }
+        },
         "zhipu"=>{
             let ev=v["event"].as_str()?;
             match ev{
@@ -57,6 +67,10 @@ fn roots()->Vec<(&'static str,PathBuf)>{
     // 包含 turn.started/model.request.started/tool.call.started 与 turn.completed/turn.failed 事件。
     if let Some(p)=crate::providers::credentials::home_path("ZCODE_HOME",".zcode"){
         out.push(("zhipu",p.join("cli").join("log")));
+    }
+    // Kimi Code IDE：server/events 的会话事件流（envelope.type 结构化事件）。
+    if let Some(p)=crate::providers::credentials::home_path("KIMI_CODE_HOME",".kimi-code"){
+        out.push(("kimi",p.join("server").join("events")));
     }
     #[cfg(windows)]
     {
@@ -302,6 +316,16 @@ mod tests{
         assert_eq!(classify_line("zhipu",&json!({"event":"turn.completed"})),Some(Event::Idle));
         assert_eq!(classify_line("zhipu",&json!({"event":"turn.failed"})),Some(Event::Idle));
         assert_eq!(classify_line("zhipu",&json!({"event":"zcode_protocol.process.memory_sample"})),None);
+    }
+    #[test]fn kimi_events(){
+        let ev=|t:&str|json!({"kind":"event","envelope":{"type":t}});
+        assert_eq!(classify_line("kimi",&ev("turn.started")),Some(Event::Working));
+        assert_eq!(classify_line("kimi",&ev("turn.step.started")),Some(Event::Working));
+        assert_eq!(classify_line("kimi",&ev("tool.call.started")),Some(Event::Working));
+        assert_eq!(classify_line("kimi",&ev("turn.ended")),Some(Event::Idle));
+        assert_eq!(classify_line("kimi",&ev("prompt.completed")),Some(Event::Idle));
+        assert_eq!(classify_line("kimi",&ev("context.spliced")),None,"元事件不点亮");
+        assert_eq!(classify_line("kimi",&json!({"kind":"journal_header"})),None);
     }
     #[test]fn zhipu_turn_lifecycle(){
         let d=tempfile::tempdir().unwrap();let p=d.path().join("zcode-2026-09-19.jsonl");
