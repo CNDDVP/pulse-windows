@@ -145,7 +145,11 @@ impl Watcher{
         }
         // 会话级衰减：每个文件独立 3 分钟无事件即转空闲；任一会话工作即源工作。
         self.sessions.retain(|_,(_,last)|now-*last<=SESSION_DECAY_SECS);
+        // 对称报告：每个受监控源都必须出现——空闲源显式报 false，让 poll_activity
+        // 能把 is_active 复位。只报 true 会让熄灯路径失联（v0.3.6 回归：灯亮后
+        // 永不复位，除非重启）。
         let mut states:HashMap<&'static str,bool>=HashMap::new();
+        for (source,_) in &self.roots{states.insert(source,false);}
         for path in self.files.keys(){
             if self.sessions.get(path).is_some_and(|(w,_)|*w){
                 if let Some(src)=self.source_of(path){states.insert(src,true);}
@@ -194,7 +198,7 @@ mod tests{
         fs::write(&p,format!("{}\n",json!({"type":"user"}))).unwrap();
         let mut w=Watcher::new(vec![("claude",d.path().to_path_buf())]);
         let states=w.poll(1_000);
-        assert_eq!(states.get("claude"),None,"historical lines must not mark activity");
+        assert_eq!(states.get("claude"),Some(&false),"historical lines must not mark activity");
         let first_off=*w.files.get(&p).unwrap();
         assert_eq!(first_off as usize,format!("{}\n",json!({"type":"user"})).len(),"first sight starts at file end");
         fs::write(&p,format!("{}\n{}\n",json!({"type":"user"}),json!({"type":"user"}))).unwrap();
@@ -203,17 +207,35 @@ mod tests{
         assert_eq!(states.get("claude"),Some(&true),"appended user event means working");
         assert_eq!(*w.files.get(&p).unwrap(),total,"offset advances past consumed lines");
     }
+    #[test]fn idle_source_reports_false_after_completion(){
+        // v0.3.6 回归测试：工作结束后 poll 必须显式报 false（否则 poll_activity
+        // 收不到复位信号，is_active 永久 true，卫星灯不熄灭）。
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("s.jsonl");
+        let mut f=std::fs::OpenOptions::new().create(true).append(true).open(&p).unwrap();
+        let line=|v:serde_json::Value|format!("{}\n",v);
+        use std::io::Write;
+        f.write_all(line(json!({"type":"event_msg","payload":{"type":"task_started"}})).as_bytes()).unwrap();drop(f);
+        let mut w=Watcher::new(vec![("codex",d.path().to_path_buf())]);
+        w.poll(1_000); // 首见跳过
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(line(json!({"type":"event_msg","payload":{"type":"token_count"}})).as_bytes()).unwrap();drop(f);
+        assert_eq!(w.poll(2_000).get("codex"),Some(&true),"工作中");
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(line(json!({"type":"event_msg","payload":{"type":"task_complete"}})).as_bytes()).unwrap();drop(f);
+        assert_eq!(w.poll(3_000).get("codex"),Some(&false),"任务完成后必须显式报 false 熄灯");
+        assert_eq!(w.poll(3_000+200).get("codex"),Some(&false),"衰减期内保持 false 且不丢 key");
+    }
     #[test]fn zhipu_any_append_is_working(){
         let d=tempfile::tempdir().unwrap();let p=d.path().join("tasks-index.sqlite-wal");
         fs::write(&p,vec![0u8;512]).unwrap();
         let mut w=Watcher::new(vec![("zhipu",d.path().to_path_buf())]);
-        assert_eq!(w.poll(1_000).get("zhipu"),None,"首见跳历史");
+        assert_eq!(w.poll(1_000).get("zhipu"),Some(&false),"首见跳历史");
         // 二进制追加（sqlite-wal 写事务）——不做 JSON 解析，任何增长即工作。
         use std::io::Write;let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         f.write_all(&[1,2,3,4]).unwrap();drop(f);
         assert_eq!(w.poll(2_000).get("zhipu"),Some(&true),"会话存储被写入 = 工作中");
         // 3 分钟无写入 → 衰减熄灭。
-        assert_eq!(w.poll(2_000+181).get("zhipu"),None,"衰减后熄灭");
+        assert_eq!(w.poll(2_000+181).get("zhipu"),Some(&false),"衰减后熄灭");
     }
     #[test]fn antigravity_rate_gate(){
         let d=tempfile::tempdir().unwrap();let p=d.path().join("language_server.log");
@@ -224,7 +246,7 @@ mod tests{
         // 心跳（<2KB/轮）：不点亮。
         let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         f.write_all(&[b'x';400]).unwrap();drop(f);
-        assert_eq!(w.poll(2_000).get("antigravity"),None,"空闲心跳不应点亮");
+        assert_eq!(w.poll(2_000).get("antigravity"),Some(&false),"空闲心跳不应点亮");
         // 任务流式日志（≥2KB/轮）：点亮。
         let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         f.write_all(&[b'x';AGENT_RATE_BYTES as usize]).unwrap();drop(f);
