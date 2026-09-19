@@ -30,13 +30,21 @@ pub fn classify_line(source:&str,v:&Value)->Option<Event>{
             let pt=v.pointer("/payload/type").and_then(|x|x.as_str())?;
             match pt{
                 // token_count 是用量遥测，不是活动信号（Codex 会在 task_complete 同秒补发统计，
-            // 字节边界切批时会被当成"最后一个事件"把刚熄的灯重新点亮）——任务执行期的
-            // 点亮由 task_started/agent_reasoning/exec_command_begin/turn_started 覆盖。
-            "task_started"|"agent_reasoning"|"exec_command_begin"|"turn_started"=>Some(Event::Working),
+                // 字节边界切批时会被当成"最后一个事件"把刚熄的灯重新点亮）——任务执行期的
+                // 点亮由 task_started/agent_reasoning/exec_command_begin/turn_started 覆盖。
+                "task_started"|"agent_reasoning"|"exec_command_begin"|"turn_started"=>Some(Event::Working),
                 "task_complete"|"turn_aborted"|"task_interrupted"|"shutdown_complete"=>Some(Event::Idle),
                 _=>None,
             }
-        }
+        },
+        "zhipu"=>{
+            let ev=v["event"].as_str()?;
+            match ev{
+                "turn.started"|"model.request.started"|"tool.call.started"=>Some(Event::Working),
+                "turn.completed"|"turn.failed"=>Some(Event::Idle),
+                _=>None,
+            }
+        },
         _=>None,
     }
 }
@@ -45,13 +53,10 @@ fn roots()->Vec<(&'static str,PathBuf)>{
     let mut out=vec![];
     if let Some(p)=crate::providers::credentials::home_path("CLAUDE_CONFIG_DIR",".claude"){out.push(("claude",p.join("projects")))}
     if let Some(p)=crate::providers::credentials::home_path("CODEX_HOME",".codex"){out.push(("codex",p.join("sessions")))}
-    // ZCode（zhipu 账号的 CLI）：只监控任务执行日志（cli/exec/*.log）——agent 跑命令
-    // 时持续追加，语义=「正在执行任务」。不再监控 v2 的 tasks-index.sqlite-wal
-    // （实测误亮：后台索引/checkpoint 写入与对话无关，会把空闲点亮成工作中）。
-    // Antigravity：language server 日志按速率判定（空闲心跳 ~280B/5s，agent 任务时
-    // 流式日志远超阈值）。
+    // ZCode（zhipu 账号的 CLI）：监控 cli/log 目录下的 zcode-*.jsonl
+    // 包含 turn.started/model.request.started/tool.call.started 与 turn.completed/turn.failed 事件。
     if let Some(p)=crate::providers::credentials::home_path("ZCODE_HOME",".zcode"){
-        out.push(("zhipu",p.join("cli").join("exec")));
+        out.push(("zhipu",p.join("cli").join("log")));
     }
     #[cfg(windows)]
     {
@@ -110,9 +115,6 @@ fn scan_appended(path:&PathBuf,offset:u64,budget:u64,source:&str)->Option<(Optio
 const SESSION_DECAY_SECS:i64=180;
 const READ_BUDGET_BYTES:u64=1024*1024;
 const POLL_TOTAL_BUDGET_BYTES:u64=8*1024*1024;
-/// Antigravity 的 language server 空闲时也匀速写日志（实测 ~280B/5s 心跳），
-/// agent 任务则是流式日志（每轮几十 KB）。按每轮增长量区分，低于阈值不算工作。
-const AGENT_RATE_BYTES:u64=2048;
 #[derive(Default)]
 pub struct Watcher{
     roots:Vec<(&'static str,PathBuf)>,
@@ -145,10 +147,19 @@ impl Watcher{
                 let take=((len-offset) as u64).min(READ_BUDGET_BYTES).min(budget);
                 if take==0{continue}
                 budget-=take;
-                // 字节级源（会话存储 / agent 日志）：不做 JSON 解析，按增长量判定。
+                // 字节级源（语言服务器日志等非 JSONL 格式）：按特定标志或增量判定。
                 let (ev,new_off)=match source{
-                    "zhipu"=>(Some(Event::Working),offset+take),
-                    "antigravity"=>(if take>=AGENT_RATE_BYTES{Some(Event::Working)}else{None},offset+take),
+                    "antigravity"=>{
+                        let mut f=fs::File::open(&path).ok();
+                        let is_working=if let Some(ref mut file)=f{
+                            use std::io::{Seek,SeekFrom,Read};
+                            let mut buf=vec![0u8;take as usize];
+                            if file.seek(SeekFrom::Start(offset)).is_ok() && file.read_exact(&mut buf).is_ok(){
+                                buf.windows(b"streamGenerateContent".len()).any(|w|w==b"streamGenerateContent")
+                            }else{false}
+                        }else{false};
+                        (if is_working{Some(Event::Working)}else{None},offset+take)
+                    },
                     _=>match scan_appended(&path,offset,take,source){Some((e,o))=>(e,o),None=>continue},
                 };
                 self.files.insert(path.clone(),new_off);
@@ -162,8 +173,13 @@ impl Watcher{
         // 回收已消失/轮转走的文件（日志清理、重命名），防长期运行内存缓涨。
         self.files.retain(|k,_|seen.contains(k));
         self.sessions.retain(|k,_|seen.contains(k));
-        // 会话级衰减：每个文件独立 3 分钟无事件即转空闲；任一会话工作即源工作。
-        self.sessions.retain(|_,(_,last)|now-*last<=SESSION_DECAY_SECS);
+        // 会话级衰减：antigravity 无明确结束事件，20s 无请求即转空闲；其余 3 分钟衰减。
+        let roots=&self.roots;
+        self.sessions.retain(|p,(_,last)|{
+            let is_antigravity=roots.iter().find(|(_,root)|p.starts_with(root)).map(|(s,_)|*s)==Some("antigravity");
+            let limit=if is_antigravity{20}else{SESSION_DECAY_SECS};
+            now-*last<=limit
+        });
         // 对称报告：每个受监控源都必须出现——空闲源显式报 false，让 poll_activity
         // 能把 is_active 复位。只报 true 会让熄灯路径失联（v0.3.6 回归：灯亮后
         // 永不复位，除非重启）。
@@ -279,32 +295,42 @@ mod tests{
         use std::io::Write;f.write_all(format!("\n{}\n",json!({"type":"user"})).as_bytes()).unwrap();drop(f);
         assert_eq!(w.poll(3_000).get("claude"),Some(&true));
     }
-    #[test]fn zhipu_any_append_is_working(){
-        // 实测误亮后 zhipu 只监控 exec 任务日志；追加即工作中。
-        let d=tempfile::tempdir().unwrap();let p=d.path().join("call_test-stdout.log");
-        fs::write(&p,vec![0u8;512]).unwrap();
+    #[test]fn zhipu_events(){
+        assert_eq!(classify_line("zhipu",&json!({"event":"turn.started"})),Some(Event::Working));
+        assert_eq!(classify_line("zhipu",&json!({"event":"model.request.started"})),Some(Event::Working));
+        assert_eq!(classify_line("zhipu",&json!({"event":"tool.call.started"})),Some(Event::Working));
+        assert_eq!(classify_line("zhipu",&json!({"event":"turn.completed"})),Some(Event::Idle));
+        assert_eq!(classify_line("zhipu",&json!({"event":"turn.failed"})),Some(Event::Idle));
+        assert_eq!(classify_line("zhipu",&json!({"event":"zcode_protocol.process.memory_sample"})),None);
+    }
+    #[test]fn zhipu_turn_lifecycle(){
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("zcode-2026-09-19.jsonl");
+        fs::write(&p,format!("{}\n",json!({"event":"turn.started"}))).unwrap();
         let mut w=Watcher::new(vec![("zhipu",d.path().to_path_buf())]);
         assert_eq!(w.poll(1_000).get("zhipu"),Some(&false),"首见跳历史");
-        // 二进制追加（任务日志写命令输出）——不做 JSON 解析，任何增长即工作。
-        use std::io::Write;let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
-        f.write_all(&[1,2,3,4]).unwrap();drop(f);
-        assert_eq!(w.poll(2_000).get("zhipu"),Some(&true),"会话存储被写入 = 工作中");
-        // 3 分钟无写入 → 衰减熄灭。
-        assert_eq!(w.poll(2_000+181).get("zhipu"),Some(&false),"衰减后熄灭");
+        use std::io::Write;
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(format!("{}\n",json!({"event":"turn.started"})).as_bytes()).unwrap();drop(f);
+        assert_eq!(w.poll(2_000).get("zhipu"),Some(&true),"turn.started = 工作中");
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(format!("{}\n",json!({"event":"turn.completed"})).as_bytes()).unwrap();drop(f);
+        assert_eq!(w.poll(3_000).get("zhipu"),Some(&false),"turn.completed = 空闲");
     }
     #[test]fn antigravity_rate_gate(){
         let d=tempfile::tempdir().unwrap();let p=d.path().join("language_server.log");
         fs::write(&p,"seed\n").unwrap();
         let mut w=Watcher::new(vec![("antigravity",d.path().to_path_buf())]);
-        w.poll(1_000);
+        assert_eq!(w.poll(1_000).get("antigravity"),Some(&false),"首见跳历史");
         use std::io::Write;
-        // 心跳（<2KB/轮）：不点亮。
+        // 空闲心跳（loadCodeAssist / fetchAvailableModels）：不点亮。
         let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
-        f.write_all(&[b'x';400]).unwrap();drop(f);
+        f.write_all(b"URL: https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\n").unwrap();drop(f);
         assert_eq!(w.poll(2_000).get("antigravity"),Some(&false),"空闲心跳不应点亮");
-        // 任务流式日志（≥2KB/轮）：点亮。
+        // 任务流式请求（streamGenerateContent）：点亮。
         let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
-        f.write_all(&[b'x';AGENT_RATE_BYTES as usize]).unwrap();drop(f);
-        assert_eq!(w.poll(3_000).get("antigravity"),Some(&true),"高速日志 = agent 任务");
+        f.write_all(b"URL: https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse\n").unwrap();drop(f);
+        assert_eq!(w.poll(3_000).get("antigravity"),Some(&true),"streamGenerateContent = 工作中");
+        // 20 秒无请求 → 衰减熄灭。
+        assert_eq!(w.poll(3_000+21).get("antigravity"),Some(&false),"20s 无请求自动熄灯");
     }
 }

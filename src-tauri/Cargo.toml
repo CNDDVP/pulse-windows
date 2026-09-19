@@ -1,6 +1,6 @@
 [package]
 name = "pulse-windows"
-version = "0.3.11"
+version = "0.3.12"
 description = "A floating Windows monitor for AI coding allowances"
 authors = ["CNDDVP"]
 license = "Apache-2.0"
