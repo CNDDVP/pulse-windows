@@ -626,6 +626,7 @@ pub fn run(){
                     // 流程（它确认后再调 close_settings_window 真正隐藏），不直接 hide。
                     api.prevent_close();
                     use tauri::Emitter;
+                    let _ = window.app_handle().emit("settings-close-requested", ());
                     let _ = window.emit("settings-close-requested", ());
                 }
             }

@@ -225,6 +225,8 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
     setShowSecrets({});
     try { await invoke("close_settings_window"); } catch { try { await getCurrentWebviewWindow().hide(); } catch { /* nothing left to do */ } }
   };
+  const closeWindowRef = useRef(closeWindow);
+  useEffect(() => { closeWindowRef.current = closeWindow; });
   useEffect(() => {
     return () => {
       setSecrets({});
@@ -239,9 +241,10 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
   // closeWindow 流程（未保存更改需二次确认），不再直接 hide 绕过确认。
   useEffect(() => {
     let alive = true;
-    const stop = listen("settings-close-requested", () => { if (alive) void closeWindow(); });
-    return () => { alive = false; void stop.then(f => f()); };
-  });
+    const p1 = listen("settings-close-requested", () => { if (alive) void closeWindowRef.current(); });
+    const p2 = getCurrentWebviewWindow().listen("settings-close-requested", () => { if (alive) void closeWindowRef.current(); });
+    return () => { alive = false; void p1.then(f => f()); void p2.then(f => f()); };
+  }, []);
 
   // Search covers pages (title + keywords) and accounts (label + provider name/id).
   const q = search.trim().toLowerCase();
@@ -432,24 +435,22 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
                 </Section>
 
                 <Section title="悬浮栏" icon="◎" subtitle="保存后即刻生效。">
-                  {reading?.windows && reading.windows.length > 0 && (
-                    <Field label="主圆环显示的额度" hint="圆环以该窗口的使用率与重置倒计时为准。">
-                      <select className={selectCls} value={c.primary_window || ""} onChange={e => patch(id, { primary_window: e.target.value || null })}>
-                        <option value="">自动选择最高使用率（默认）</option>
-                        {reading.windows.map(w => <option key={w.id} value={w.id}>{w.name} — 已使用 {w.used_percent.toFixed(1)}% ({resetText(w.resets_at)})</option>)}
-                      </select>
-                    </Field>
-                  )}
-                  {(
-                    <Field label="外圈时间环跟随的周期" hint={timedWindows.length === 0
-                      ? "该账号的额度窗口未报告周期长度，外圈暂不可用。"
-                      : settings.show_elapsed ? "外圈细线表示所选周期已流逝的比例；默认跟随倒计时最短的周期。" : "外圈已在通用设置中关闭。"}>
-                      <select className={selectCls} disabled={timedWindows.length === 0} value={c.elapsed_window || ""} onChange={e => patch(id, { elapsed_window: e.target.value || null })}>
-                        <option value="">自动选择倒计时最短的周期（默认）</option>
-                        {timedWindows.map(w => <option key={w.id} value={w.id}>{w.name} — {resetText(w.resets_at)}</option>)}
-                      </select>
-                    </Field>
-                  )}
+                  <Field label="主圆环显示的额度" hint={reading?.windows && reading.windows.length > 0 ? "圆环以该窗口的使用率与重置倒计时为准。" : "尚未获取该账号的额度数据；配置凭据并连接成功后，可在此下拉指定具体的额度窗口。"}>
+                    <select className={selectCls} value={c.primary_window || ""} onChange={e => patch(id, { primary_window: e.target.value || null })}>
+                      <option value="">自动选择最高使用率（默认）</option>
+                      {reading?.windows?.map(w => <option key={w.id} value={w.id}>{w.name} — 已使用 {w.used_percent.toFixed(1)}% ({resetText(w.resets_at)})</option>)}
+                    </select>
+                  </Field>
+                  <Field label="外圈时间环跟随的周期" hint={!reading || !reading.windows || reading.windows.length === 0
+                    ? "尚未获取该账号的额度数据；连接成功后将自动识别周期长度。"
+                    : timedWindows.length === 0
+                    ? "该账号的额度窗口未报告周期长度，外圈暂不可用。"
+                    : settings.show_elapsed ? "外圈细线表示所选周期已流逝的比例；默认跟随倒计时最短的周期。" : "外圈已在通用设置中关闭。"}>
+                    <select className={selectCls} disabled={timedWindows.length === 0} value={c.elapsed_window || ""} onChange={e => patch(id, { elapsed_window: e.target.value || null })}>
+                      <option value="">自动选择倒计时最短的周期（默认）</option>
+                      {timedWindows.map(w => <option key={w.id} value={w.id}>{w.name} — {resetText(w.resets_at)}</option>)}
+                    </select>
+                  </Field>
                   <Row title="圆环颜色" subtitle="自定义颜色用于正常区间；达到琥珀/红色阈值或服务商报告耗尽时仍按预警色显示。">
                     <div className="flex items-center gap-2">
                       <select className={selectCls} value={c.ring_color ? "custom" : "auto"} onChange={e => patch(id, { ring_color: e.target.value === "custom" ? (c.ring_color ?? "#10b981") : null })} aria-label="圆环颜色模式"><option value="auto">自动（按用量压力）</option><option value="custom">自定义</option></select>
@@ -469,14 +470,14 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
                       </div></Field>
                     </div>
                   )}
-                  {reading?.windows && reading.windows.length > 1 && (
-                    <Field label="第二额度内环（可选）" hint="在主环内侧用细环显示所选额度；选择“关闭”即完全清除内环。">
-                      <select className={selectCls} value={c.secondary_window || ""} onChange={e => patch(id, { secondary_window: e.target.value || null })}>
-                        <option value="">关闭</option>
-                        {reading.windows.map(w => <option key={w.id} value={w.id}>{w.name} — 已使用 {w.used_percent.toFixed(1)}%</option>)}
-                      </select>
-                    </Field>
-                  )}
+                  <Field label="第二额度内环（可选）" hint={!reading || !reading.windows || reading.windows.length <= 1
+                    ? "在主环内侧用细环显示所选额度；连接成功并获取多项额度后可在此开启双环显示。"
+                    : "在主环内侧用细环显示所选额度；选择“关闭”即完全清除内环。"}>
+                    <select className={selectCls} value={c.secondary_window || ""} onChange={e => patch(id, { secondary_window: e.target.value || null })}>
+                      <option value="">关闭</option>
+                      {reading?.windows?.map(w => <option key={w.id} value={w.id}>{w.name} — 已使用 {w.used_percent.toFixed(1)}%</option>)}
+                    </select>
+                  </Field>
                   {c.provider_id === "antigravity" && (
                     <Row title="按模型组拆分展示" subtitle="Gemini 与 Claude/GPT 各占一个悬浮栏位置；点击任一项仍刷新同一账号。">
                       <Switch checked={c.split_model_groups} onChange={v => patch(id, { split_model_groups: v })} label="按模型组拆分展示" />
