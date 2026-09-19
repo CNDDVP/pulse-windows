@@ -79,9 +79,17 @@ fn scan_appended(path:&PathBuf,offset:u64,budget:u64,source:&str)->Option<(Optio
     let take=((len-offset) as u64).min(budget) as usize;
     let mut buf=vec![0u8;take];
     f.read_exact(&mut buf).ok()?;
-    // 预算内没有换行：超长行（或极宽的 torn tail）。推进偏移丢弃这段，避免每轮
-    // 重读同一段卡死整个源；正常 JSONL 单行远小于预算，真实 torn tail 只损失几字节。
-    let complete_end=match buf.iter().rposition(|&b|b==b'\n'){Some(i)=>i+1,None=>{return Some((None,offset+take as u64))}};
+    // 预算内没有换行分两种（B07）：读满文件预算仍无换行=真正的超长行，丢弃推进防卡死；
+    // 否则是正常 torn tail（事件分两次写入/全局预算截断），保留偏移等待补全，不丢事件。
+    let complete_end=match buf.iter().rposition(|&b|b==b'\n'){
+        Some(i)=>i+1,
+        None=>{
+            if take==READ_BUDGET_BYTES as usize && (len-offset)>READ_BUDGET_BYTES{
+                return Some((None,offset+take as u64));
+            }
+            return None;
+        }
+    };
     let mut last=None;
     for line in buf[..complete_end].split(|&b|b==b'\n'){
         if line.is_empty(){continue}
@@ -231,6 +239,41 @@ mod tests{
         f.write_all(line(json!({"type":"event_msg","payload":{"type":"task_complete"}})).as_bytes()).unwrap();drop(f);
         assert_eq!(w.poll(3_000).get("codex"),Some(&false),"任务完成后必须显式报 false 熄灯");
         assert_eq!(w.poll(3_000+200).get("codex"),Some(&false),"衰减期内保持 false 且不丢 key");
+    }
+    #[test]fn torn_tail_survives_and_completes(){
+        // B07 回归：事件分两次追加写入。torn tail 阶段偏移必须停在完整行末尾
+        // （=半行开头），补全后从那里重读，事件不丢。
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("s.jsonl");
+        fs::write(&p,"").unwrap();
+        let mut w=Watcher::new(vec![("claude",d.path().to_path_buf())]);
+        assert_eq!(w.poll(1_000).get("claude"),Some(&false),"空文件不点亮");
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(b"{\"type\":\"user\",\"x\":0}\n").unwrap();drop(f);
+        assert_eq!(w.poll(1_100).get("claude"),Some(&true),"首条完整事件点亮");        let done_len=*w.files.get(&p).unwrap();
+        // 追加半行（无换行）：torn tail——偏移不推进。
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        use std::io::Write;f.write_all(b"{\"type\":\"user\",").unwrap();drop(f);
+        assert_eq!(w.poll(1_200).get("claude"),Some(&true),"半行期间保持此前状态");
+        assert_eq!(*w.files.get(&p).unwrap(),done_len,"torn tail 不推进偏移");
+        // 补齐后半段：从半行开头重读，完整事件可解析。
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(b"\"y\":2}\n").unwrap();drop(f);
+        assert_eq!(w.poll(1_300).get("claude"),Some(&true),"补全后事件不丢");
+    }
+    #[test]fn oversize_line_is_dropped_not_stuck(){
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("big.jsonl");
+        fs::write(&p,"seed\n").unwrap();
+        let mut w=Watcher::new(vec![("claude",d.path().to_path_buf())]);
+        w.poll(1_000); // 首见跳历史
+        fs::write(&p,vec![b'x';(READ_BUDGET_BYTES+4096) as usize]).unwrap();
+        w.poll(2_000);
+        // 超长行读满预算仍无换行：偏移推进预算长度（不卡死），不产生事件。
+        assert_eq!(*w.files.get(&p).unwrap(),"seed
+".len() as u64+READ_BUDGET_BYTES);
+        // 追加正常事件后可继续解析（未被超长行卡死）。
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        use std::io::Write;f.write_all(format!("\n{}\n",json!({"type":"user"})).as_bytes()).unwrap();drop(f);
+        assert_eq!(w.poll(3_000).get("claude"),Some(&true));
     }
     #[test]fn zhipu_any_append_is_working(){
         let d=tempfile::tempdir().unwrap();let p=d.path().join("tasks-index.sqlite-wal");

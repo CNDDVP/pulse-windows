@@ -94,16 +94,24 @@ pub fn get_profile() -> AppProfile {
                 }
             }
         }
-        let profile_id = format!("p_{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
+        // 写盘失败的兜底（B03）：凭据键含 profile_id，随机新 ID 一次漂移就让已存
+        // 凭据不可达，重启再漂移一次。改用目录路径的稳定散列派生 ID——同一台机器
+        // 反复失败时身份保持一致，凭据仍可达；写盘成功则用正式随机 ID。
+        let mut hasher=std::collections::hash_map::DefaultHasher::new();
+        use std::hash::{Hash,Hasher};
+        dir.hash(&mut hasher);format!("{:?}",mode).hash(&mut hasher);
+        let recovered_id=format!("pr{:016x}",hasher.finish());
         let prof = AppProfile {
-            profile_id,
+            profile_id: recovered_id,
             created_at: chrono::Utc::now().to_rfc3339(),
             mode,
         };
         if let Ok(bytes) = serde_json::to_vec_pretty(&prof) {
-            // 写盘失败会让下次启动又换一个身份：至少留一条可诊断的日志。
-            if atomic_write(&path, &bytes).is_err() {
-                eprintln!("Pulse: 新 Profile 写盘失败——重启后身份可能再次变化");
+            match atomic_write(&path, &bytes) {
+                Ok(()) => {}
+                Err(write_err)=>{
+                    eprintln!("Pulse: 新 Profile 写盘失败——使用内容派生的稳定回退身份，凭据保持可达；写盘错误: {write_err}");
+                }
             }
         }
         Mutex::new(prof)

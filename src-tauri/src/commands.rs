@@ -35,13 +35,14 @@ pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppStat
     // 设置写路径——并发保存/拖拽/凭据操作交错时不再互相覆盖。
     let _io=state.settings_io.lock().await;
     let old=state.settings.lock().await.clone();
+    // 位置口径无条件以后端为准（B01）：位置的唯一写方是拖拽/窗口路径，设置表单
+    // 不编辑位置——表单快照里的旧位置不得把刚拖好的位置改回去。
+    new_settings.dock_side=old.dock_side.clone();
+    new_settings.monitor_name=old.monitor_name.clone();
+    new_settings.free_x=old.free_x;
+    new_settings.free_y=old.free_y;
     if new_settings.generation!=0 && new_settings.generation!=old.generation{
-        // 代际不一致几乎总是拖拽/托盘写入的位置字段：把后端的位置口径合并进本次提交，
-        // 其余（账号、凭据、颜色、内环）仍以用户表单为准——不再硬拒绝把用户卡死。
-        new_settings.dock_side=old.dock_side.clone();
-        new_settings.monitor_name=old.monitor_name.clone();
-        new_settings.free_x=old.free_x;
-        new_settings.free_y=old.free_y;
+        // 其余字段仍以用户表单为准；代际差保留给在途结果失效判定。
         new_settings.generation=old.generation;
     }
     // An existing account cannot silently change the provider that receives its credential.
@@ -50,7 +51,8 @@ pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppStat
         if let Err(e)=crate::apply_hotkeys(&app,&new_settings.hotkeys){let _=crate::apply_hotkeys(&app,&old.hotkeys);return Err(e)}
     }
     for (id,cfg) in &new_settings.providers{
-        if old.providers.get(id).map(|c|(c.order,c.enabled,&c.label))!=Some((cfg.order,cfg.enabled,&cfg.label)){
+        // 凭据来源（use_local）也是结果有效性的边界（B19）：变化即失效在途请求。
+        if old.providers.get(id).map(|c|(c.order,c.enabled,&c.label,c.use_local))!=Some((cfg.order,cfg.enabled,&cfg.label,cfg.use_local)){
             state.bump_account_gen(id).await;
         }
     }
@@ -123,14 +125,23 @@ pub async fn set_credential(account_id:String,secret:String,state:State<'_,AppSt
     settings.providers.get_mut(&account_id).ok_or("账号不存在")?.credential_configured=true;
     settings.generation=settings.generation.wrapping_add(1);
     let had_error=state.config_error().is_some();
+    let had_cred=WindowsSecrets.get(&account_id).unwrap_or(None);
     let saved=tauri::async_runtime::spawn_blocking({let account_id=account_id.clone();move||{
-        WindowsSecrets.put(&account_id,secret.trim())?;
+        let put=WindowsSecrets.put(&account_id,secret.trim());
+        if let Err(put_err)=put{
+            // 凭据已改、设置未落盘（B14）：回滚旧凭据，不留半套状态。
+            if let Some(sec)=had_cred{let _=WindowsSecrets.put(&account_id,&sec);}
+            return Err(put_err);
+        }
         if had_error{crate::config::backup_settings()?;}
         crate::config::save_settings(&settings)?;Ok::<_,String>(settings)
     }}).await.map_err(|_|"凭据保存任务失败")??;
     *state.settings.lock().await=saved.clone();state.clear_config_error();
     state.bump_account_gen(&account_id).await;
-    state.schedule.lock().await.remove(&account_id);state.cached_usages.lock().await.retain(|r|r.account_id!=account_id);
+    state.schedule.lock().await.remove(&account_id);
+    // 清读数并广播（B05/B06 同语义）：悬浮栏立即摆脱旧凭据下的旧额度。
+    let snapshot={let mut cached=state.cached_usages.lock().await;cached.retain(|r|r.account_id!=account_id);cached.clone()};
+    let _=app.emit("usages-updated",&snapshot);
     app.emit("settings-updated",&saved).map_err(|_|"凭据已保存但窗口通知失败")?;Ok(())
 }
 #[tauri::command]
@@ -410,8 +421,18 @@ pub fn get_profile_info()->crate::config::AppProfile{
 }
 
 #[tauri::command]
-pub fn clear_profile_credentials()->Result<(),String>{
-    crate::secrets::clear_profile_credentials()
+pub async fn clear_profile_credentials(state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
+    let _io=state.settings_io.lock().await;
+    crate::secrets::clear_profile_credentials()?;
+    // 全量清理同步（B02）：全部账号读数清空、在途请求失效、凭据标志由下次写盘重核，
+    // 广播清空快照——不再出现"提示成功但旧额度仍在、旧请求回写"。
+    let snapshot={let mut cached=state.cached_usages.lock().await;cached.clear();cached.clone()};
+    state.schedule.lock().await.clear();
+    let ids:Vec<String>=state.settings.lock().await.providers.keys().cloned().collect();
+    for id in &ids{state.bump_account_gen(id).await;}
+    let _=app.emit("usages-updated",&snapshot);
+    if let Ok(s)=crate::config::load_settings(){let _=app.emit("settings-updated",&s);}
+    Ok(())
 }
 
 #[tauri::command]
@@ -424,7 +445,8 @@ pub async fn create_isolated_profile(state:State<'_,AppState>,app:AppHandle)->Re
     let ids:Vec<String>=state.settings.lock().await.providers.keys().cloned().collect();
     for id in &ids{state.bump_account_gen(id).await;}
     let _=app.emit("usages-updated",&snapshot);
-    if let Ok(s)=crate::config::load_settings(){let _=app.emit("settings-updated",&s);}
+    // 写回内存（B06）：重载的设置同时进 state.settings，查询接口与界面一致。
+    if let Ok(s)=crate::config::load_settings(){*state.settings.lock().await=s.clone();let _=app.emit("settings-updated",&s);}
     Ok(new_id)
 }
 
@@ -556,6 +578,9 @@ pub async fn drag_end(app:AppHandle)->Result<(),String>{
         crate::window::position(&app,&settings,"rail");
     }
     if changed{
+        // 位置变化递增 generation（B01）：A03 串行化后表单保存不再因代际差误拒
+        // （位置已无条件后端为准），而代际推进让在途刷新结果按新位置口径失效。
+        settings.generation=settings.generation.wrapping_add(1);
         crate::config::save_settings(&settings)?;
         *state.settings.lock().await=settings.clone();
         let _=app.emit("settings-updated",&settings);

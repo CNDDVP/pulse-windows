@@ -35,8 +35,10 @@ if (-not $ArtifactsDir.StartsWith($allowedRoot, [System.StringComparison]::Ordin
 }
 if ($ArtifactsDir -eq $allowedRoot) { throw "OutputDir 不得就是构建根目录本身" }
 foreach ($protected in @("$Root\src", "$Root\src-tauri", "$Root\.git", "$Root\docs", "$Root\scripts", "$Root\dist")) {
-    $pp = ((Resolve-Path $protected -ErrorAction SilentlyContinue).ProviderPath).TrimEnd('\') + '\'
-    if (-not $pp -or $pp.Length -le 1) { continue }
+    # 全新 checkout 常缺 dist 等目录：Resolve-Path 失败时跳过该条，不得对 null 调方法（B16）。
+    $presolved = Resolve-Path $protected -ErrorAction SilentlyContinue
+    if (-not $presolved) { continue }
+    $pp = $presolved.ProviderPath.TrimEnd('\') + '\'
     # 双向检查：受保护目录在 OutputDir 内（会被删），或 OutputDir 在受保护目录内（会在源码里建产物）。
     if ($pp.StartsWith($ArtifactsDir, [System.StringComparison]::OrdinalIgnoreCase) -or
         $ArtifactsDir.StartsWith($pp, [System.StringComparison]::OrdinalIgnoreCase)) {

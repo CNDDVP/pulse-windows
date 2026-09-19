@@ -1,0 +1,378 @@
+{
+  "baseline": "5ce147d88abf15361509ed115630a96da774b65a",
+  "issues": [
+    {
+      "id": "B01",
+      "severity": "P1",
+      "title": "设置串行锁仍不能防止旧表单覆盖新设置",
+      "location": "commands.rs:36; commands.rs:535; SettingsWindow.tsx:108",
+      "previous": "A03/A09",
+      "evidence": "代码确认",
+      "cause": "settings_io 只串行执行，new_settings 仍是锁外生成的完整旧快照。generation 冲突只保护位置字段；drag_end 不递增 generation，使旧表单仍可覆盖刚保存的位置。",
+      "acceptance": "先编辑账号不保存→拖动悬浮栏→保存账号，检查位置；快速交错提交两个不同设置。应采用字段补丁或可靠冲突处理，所有写入口共享协议。",
+      "status": "open"
+    },
+    {
+      "id": "B02",
+      "severity": "P1",
+      "title": "清理全部凭据仍未同步缓存和在途请求",
+      "location": "commands.rs:413; secrets.rs:68",
+      "previous": "A04",
+      "evidence": "代码确认",
+      "cause": "现在会报告删除失败，但命令仍不接收 AppState，不清 usages、不更新 credential_configured、不 bump generation，也未取得 settings_io。",
+      "acceptance": "模拟全部成功及部分失败；成功删除项立即清除旧读数和状态；旧请求不得回写。",
+      "status": "open"
+    },
+    {
+      "id": "B03",
+      "severity": "P1",
+      "title": "Profile 持久化失败后仍启用临时新身份",
+      "location": "config.rs:78; main.rs:2",
+      "previous": "A18",
+      "evidence": "代码确认",
+      "cause": "损坏文件增加备份和 eprintln，但写盘失败仍把新身份放进 OnceLock；发布 GUI 没有默认控制台，且没有建立用户可见错误通道。重启可能再次换身份，使凭据不可达。",
+      "acceptance": "模拟 profile 损坏、只读目录、写入失败；持久化失败必须阻止启用新身份并显示可恢复错误。",
+      "status": "open"
+    },
+    {
+      "id": "B04",
+      "severity": "P1",
+      "title": "请求有效性校验与写回不是原子提交",
+      "location": "lib.rs:86; lib.rs:239; lib.rs:289",
+      "previous": "A02/A25",
+      "evidence": "代码确认",
+      "cause": "generation 检查后释放锁，再 await 清 inflight、获取缓存等；这期间凭据/Profile 可变化，旧结果仍能提交。inflight 在提交前移除，也提前放行新请求。",
+      "acceptance": "在校验通过与实际写回之间注入凭据切换；旧结果不能回写。request_id、generation、profile_id 在同一提交边界复核。",
+      "status": "open"
+    },
+    {
+      "id": "B05",
+      "severity": "P2",
+      "title": "保存新凭据仍保留前端旧额度",
+      "location": "commands.rs:120",
+      "previous": "A06",
+      "evidence": "代码确认",
+      "cause": "delete_credential 已补 usages-updated，set_credential 仍只有 settings-updated。",
+      "acceptance": "替换凭据后，各窗口立即删除旧读数，显示待刷新状态。",
+      "status": "open"
+    },
+    {
+      "id": "B06",
+      "severity": "P2",
+      "title": "切换 Profile 后只广播新设置而未更新内存设置",
+      "location": "commands.rs:418",
+      "previous": "A25",
+      "evidence": "代码确认",
+      "cause": "load_settings 的结果仅 emit，没有赋给 state.settings；未取得 settings_io。前端显示的凭据 flags 与 get_settings 返回值可能不同，且可与凭据保存交错。",
+      "acceptance": "切换后 get_settings、事件、磁盘状态一致；与凭据保存互斥。",
+      "status": "open"
+    },
+    {
+      "id": "B07",
+      "severity": "P2",
+      "title": "长行修复引入普通半行日志丢失",
+      "location": "activity.rs:84",
+      "previous": "A24 新回归",
+      "evidence": "隔离复现",
+      "cause": "预算内找不到换行就推进 offset，即使只有几十字节的未完成尾行也丢弃。补齐 JSON 后只能读到后半段，任务开始/结束事件均可漏读。",
+      "acceptance": "分别追加一条 JSON 的前半段和后半段，中间各轮询一次；完整行最终必须只解析一次。仅在明确超过长行上限时进入丢弃至换行的状态。",
+      "status": "open"
+    },
+    {
+      "id": "B08",
+      "severity": "P2",
+      "title": "Token 坏行缺口在第二次扫描消失",
+      "location": "ledger.rs:120; ledger.rs:147; ledger.rs:178",
+      "previous": "A21",
+      "evidence": "隔离复现",
+      "cause": "未修改文件直接跳过，坏行计数只存本轮局部变量；数据库读取仍 result.flatten()。",
+      "acceptance": "同一坏行文件连续扫描，两次均 partial=true；SQL 行转换失败也需保持错误证据。",
+      "status": "open"
+    },
+    {
+      "id": "B09",
+      "severity": "P2",
+      "title": "拖动后是否抑制点击仍依赖移动窗口内的 client 坐标",
+      "location": "FloatingRail.tsx:159",
+      "previous": "A08",
+      "evidence": "代码确认，实机待验",
+      "cause": "窗口跟随光标时 clientX/clientY 可能基本不变；用松手与按下 client 距离判断 >=12，不等于真实屏幕拖动距离。",
+      "acceptance": "长距离平移时保持光标相对窗口位置不变，松手不得刷新；使用真实拖动态或稳定屏幕坐标。",
+      "status": "open"
+    },
+    {
+      "id": "B10",
+      "severity": "P2",
+      "title": "自由模式恢复只判断左上角，不保证窗口完整可见",
+      "location": "lib.rs:459; window.rs:171",
+      "previous": "A15",
+      "evidence": "代码确认，实机待验",
+      "cause": "左上角在显示器矩形内即认为正常，不检查窗口右下边界和工作区；分辨率减小可留下大部分窗口在屏外。自由模式持续跟随鼠标屏仍未实现。",
+      "acceptance": "分辨率下降、任务栏变化、负坐标和断屏后整个可交互窗口在工作区；明确跟随策略。",
+      "status": "open"
+    },
+    {
+      "id": "B11",
+      "severity": "P2",
+      "title": "Command Code 的可选请求仍可耗尽总预算",
+      "location": "providers/command_code.rs:18; providers/mod.rs",
+      "previous": "A22",
+      "evidence": "代码确认",
+      "cause": "两个必需请求各 12 秒，再追加 6 秒可选请求，总计可达 30 秒，外层仍 25 秒。附加错误仍被转 None。",
+      "acceptance": "可控服务令两个必需请求各 10 秒、可选请求 6 秒；主读数应保留。使用剩余总预算或解耦附加请求。",
+      "status": "open"
+    },
+    {
+      "id": "B12",
+      "severity": "P2",
+      "title": "Windsurf 新鲜度核心依据仍是数据库 mtime",
+      "location": "providers/devin.rs:54",
+      "previous": "A23",
+      "evidence": "代码确认",
+      "cause": "修复仅将元数据失败变成不可信；数据库其他写入仍可使旧额度看起来新鲜，仍按 7 天判断。",
+      "acceptance": "额度缺独立可信时间时不能宣称实时；用更新无关 DB 行的样本验证。",
+      "status": "open"
+    },
+    {
+      "id": "B13",
+      "severity": "P2",
+      "title": "删除账号后 React 脏状态基线可能不更新",
+      "location": "SettingsWindow.tsx:173",
+      "previous": "新增发现",
+      "evidence": "代码确认",
+      "cause": "删除成功只写 appliedRef.current，未调用 markApplied 更新 applied state；事件若晚于响应到达，会因 ref 相同提前返回，anyDirty 仍看到旧账号。",
+      "acceptance": "控制 IPC 响应先于 settings-updated，删除后不应一直提示未保存。统一维护基线状态。",
+      "status": "open"
+    },
+    {
+      "id": "B14",
+      "severity": "P2",
+      "title": "设置保存失败后快捷键和凭据副作用未回滚",
+      "location": "commands.rs:49; commands.rs:120; commands.rs:138",
+      "previous": "新增发现",
+      "evidence": "代码确认",
+      "cause": "先更换系统快捷键/写入或删除凭据，再保存 JSON；后者失败时只返回错误，已有系统变化未恢复，内存继续旧状态。",
+      "acceptance": "模拟写盘失败，确认真实快捷键、凭据、内存与用户提示一致；记录部分提交并可恢复，不能仅报保存失败。",
+      "status": "open"
+    },
+    {
+      "id": "B15",
+      "severity": "P3",
+      "title": "应用内减少动态未应用到独立详情窗口",
+      "location": "App.tsx:81; App.tsx:DetailOverlay; index.css",
+      "previous": "A27",
+      "evidence": "代码确认",
+      "cause": "html.reduce-motion 仅在 MainApp 设置，detail 分支直接返回 DetailOverlay，不执行该 effect；系统媒体查询有效，但应用内开关未完整传播。",
+      "acceptance": "仅开启应用内开关时，详情窗口动画也停止。",
+      "status": "open"
+    },
+    {
+      "id": "B16",
+      "severity": "P2",
+      "title": "全新源码环境打包可能在构建前报 Null 错误",
+      "location": "scripts/build-dist.ps1:38",
+      "previous": "A05 新回归",
+      "evidence": "非破坏性表达式复现",
+      "cause": "对不存在的受保护目录先 Resolve-Path，再直接调用 ProviderPath.TrimEnd；例如全新 checkout 没有 dist，空值保护发生在方法调用之后。",
+      "acceptance": "未有 dist 的全新临时项目可通过路径验证并进入构建；先处理解析失败，不执行删除测试。",
+      "status": "open"
+    },
+    {
+      "id": "B17",
+      "severity": "P2",
+      "title": "手动总超时结果缺少 scope 和采集时间",
+      "location": "lib.rs:99; providers/mod.rs:fetch_all_stream",
+      "previous": "新增发现",
+      "evidence": "代码确认",
+      "cause": "手动超时构造 problem 只补 account/label；定时超时则补 scope/checked_at。缓存回退要求同 scope，导致手动超时与自动超时表现不一致。",
+      "acceptance": "同账号同作用域有有效旧读数时，两入口超时回退行为一致且显示采集时间。",
+      "status": "open"
+    },
+    {
+      "id": "B18",
+      "severity": "P2",
+      "title": "多个结果并行落盘可能把 usage-cache 回滚",
+      "location": "lib.rs:281; lib.rs:321",
+      "previous": "A10 后续缺口",
+      "evidence": "代码确认",
+      "cause": "每个手动刷新分别截取快照再 spawn_blocking 原子写同一文件；原子替换防文件损坏但不保证版本顺序。较旧快照最后写入可使 --json 落后于 UI。",
+      "acceptance": "两账号并发完成并反转写盘顺序，最终文件必须对应最新全局 revision。",
+      "status": "open"
+    },
+    {
+      "id": "B19",
+      "severity": "P2",
+      "title": "改变本地凭据来源不使旧请求失效",
+      "location": "commands.rs:52",
+      "previous": "新增发现",
+      "evidence": "代码确认",
+      "cause": "update_settings 的账号 generation 比较只含 order/enabled/label，不含 use_local；切换来源时旧请求仍可能被当作有效结果。",
+      "acceptance": "use_local 变更纳入请求身份；旧来源响应不能重新显示为当前结果。",
+      "status": "open"
+    },
+    {
+      "id": "B20",
+      "severity": "P2",
+      "title": "点击刷新遇到退避时没有用户反馈",
+      "location": "FloatingRail.tsx:94; lib.rs:59",
+      "previous": "新增发现",
+      "evidence": "代码确认",
+      "cause": "refresh_account 在退避中直接返回 Err，前端 catch 空处理；无 started 事件，也无错误提示，用户只看到点击无反应。",
+      "acceptance": "返回并显示冷却倒计时/原因，不能提示已刷新，也不绕过服务限流。",
+      "status": "open"
+    },
+    {
+      "id": "B21",
+      "severity": "P2",
+      "title": "调整账号顺序仍会顺带保存其他账号草稿",
+      "location": "SettingsWindow.tsx:128",
+      "previous": "A26 后续缺口",
+      "evidence": "代码确认",
+      "cause": "普通设置已改用 providers 基线，但 commitOrder 仍把整个当前 providers 草稿持久化；账号页明确保存的语义仍有旁路。",
+      "acceptance": "有未保存账号编辑时调整顺序，只保存顺序或显式提示将保存草稿。",
+      "status": "open"
+    }
+  ],
+  "previous_status": [
+    [
+      "A01",
+      "代码与现有回归通过",
+      "停止状态显式 false；另有 B07 半行回归"
+    ],
+    [
+      "A02",
+      "部分修复",
+      "对称登记 inflight 已补；B04 提交竞态仍在"
+    ],
+    [
+      "A03",
+      "未完整修复",
+      "B01 旧快照覆盖并未由锁解决"
+    ],
+    [
+      "A04",
+      "部分修复",
+      "报告删除失败已补；B02 状态清理缺失"
+    ],
+    [
+      "A05",
+      "部分修复",
+      "原危险字符串路径被挡；B16 缺目录回归，重解析点未验"
+    ],
+    [
+      "A06",
+      "部分修复",
+      "删除广播已补，保存缺失 B05"
+    ],
+    [
+      "A07",
+      "主要代码缺陷已处理",
+      "反馈 initiated/skipped；未验证真实点击与服务结果"
+    ],
+    [
+      "A08",
+      "未完整修复",
+      "B09 相对坐标判定"
+    ],
+    [
+      "A09",
+      "部分修复",
+      "跨屏标 changed 已补；B01 位置版本问题仍在"
+    ],
+    [
+      "A10",
+      "主要分支已补，存在后续风险",
+      "通知/落盘已补；B18 写盘顺序待改"
+    ],
+    [
+      "A11",
+      "代码修复成立",
+      "延时回调核对 request_id"
+    ],
+    [
+      "A12",
+      "代码修复成立",
+      "条形宽度使用 pct"
+    ],
+    [
+      "A13",
+      "代码修复成立",
+      "NotFound 与其他目录错误区分"
+    ],
+    [
+      "A14",
+      "部分修复",
+      "已移除裸 pro/flash 并提示未知组；非精确型号映射/价格来源未完成，本轮未查实时价格"
+    ],
+    [
+      "A15",
+      "部分修复",
+      "B10 可见区域和自由跟随"
+    ],
+    [
+      "A16",
+      "代码修复成立，实机待验",
+      "周期隐藏同时隐藏详情"
+    ],
+    [
+      "A17",
+      "代码路径已补，实机待验",
+      "原生关闭转交前端；监听每次渲染重订阅需耐久验证"
+    ],
+    [
+      "A18",
+      "未完整修复",
+      "B03 写失败仍启用新身份"
+    ],
+    [
+      "A19",
+      "代码路径已补，长测待验",
+      "约 30 秒推进过期"
+    ],
+    [
+      "A20",
+      "代码修复成立",
+      "显式日期字符串排序"
+    ],
+    [
+      "A21",
+      "未修复且复现",
+      "B08"
+    ],
+    [
+      "A22",
+      "部分修复",
+      "B11 总预算与附加错误"
+    ],
+    [
+      "A23",
+      "未完整修复",
+      "B12 仍按数据库时间"
+    ],
+    [
+      "A24",
+      "部分修复但有回归",
+      "回收映射已补，B07 半行事件丢失"
+    ],
+    [
+      "A25",
+      "部分修复",
+      "B04/B06"
+    ],
+    [
+      "A26",
+      "部分修复",
+      "普通设置隔离草稿已补；B21 排序旁路"
+    ],
+    [
+      "A27",
+      "部分修复",
+      "B15 详情窗口"
+    ],
+    [
+      "A28",
+      "仍未验证通过",
+      "源码 0.3.10，运行文件资源 0.3.9"
+    ]
+  ]
+}

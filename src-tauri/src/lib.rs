@@ -60,7 +60,10 @@ impl AppState {
             if let Some((at,failures))=schedule.get(account_id){
                 if *failures>0 && *at>Instant::now(){
                     let left=at.duration_since(Instant::now()).as_secs().max(1);
-                    return Err(format!("服务商限流/退避中，约 {} 秒后可重试",left));
+                    let msg=format!("服务商限流/退避中，约 {} 秒后可重试",left);
+                    // B20：退避拒绝也发 finished 事件，前端/诊断能看到点击不是无响应。
+                    let _=app.emit("refresh-state",serde_json::json!({"account_id":account_id,"request_id":0,"phase":"finished","ok":false,"kind":"backoff","message":msg}));
+                    return Err(msg);
                 }
             }
         }
@@ -99,9 +102,11 @@ impl AppState {
                     let r=reading.unwrap_or_else(||{
                         let mut r=ProviderUsage::problem(&cfg_clone.provider_id,"timeout","查询超时；稍后自动重试");
                         r.account_id=aid.clone();r.display_name=cfg_clone.label.clone();
+                        // 与定时轮的超时构造同语义（B17）：带 scope 与采集时间，避免回退口径不一致。
+                        r.checked_at=Some(chrono::Utc::now().to_rfc3339());
                         r
                     });
-                    let _=apply_single_reading(&app2,&aid,r).await;
+                    let _=apply_single_reading(&app2,&aid,r,Some(generation)).await;
                 }
                 let _=app2.emit("refresh-state",serde_json::json!({"account_id":aid,"request_id":request_id,"phase":"finished","ok":ok,"kind":kind}));
             });
@@ -286,12 +291,17 @@ pub async fn refresh_usages_and_emit(app:&AppHandle)->Result<RefreshSummary,Stri
 
 /// Apply one freshly fetched reading with the same reconcile/schedule/emit semantics as
 /// the scheduled stream.
-async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderUsage)->Result<(),String>{
+async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderUsage,expected_gen:Option<u64>)->Result<(),String>{
     let state=app.state::<AppState>();
     let current_settings=state.settings.lock().await.clone();
     // 通知判断用 reconcile 前的原始读数（与定时轮 passed 语义一致，A10）。
     let raw_for_alerts=fresh.clone();
     let mut cached=state.cached_usages.lock().await;
+    // B04：提交前在写锁内复查代际——捕获检查与写缓存之间凭据/Profile 变化的窗口。
+    if let Some(g)=expected_gen{
+        let cur=state.account_generations.lock().await.get(account_id).copied().unwrap_or(0);
+        if cur!=g{return Ok(())}
+    }
     let mut schedule=state.schedule.lock().await;
     let previous=cached.iter().find(|u|u.account_id==account_id);
     let failures=if fresh.state=="live"{0}else{schedule.get(account_id).map(|v|v.1).unwrap_or(0).saturating_add(1)};
@@ -318,6 +328,8 @@ async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderUsage
         notices
     };
     for n in &notices{let _=notify(app,&n.title,&n.body);}
+    // B18：持久缓存写盘串行——手动/定时并发时保证新快照后写，--json 回退不拿旧文件。
+    let _io=state.settings_io.lock().await;
     if let Ok(bytes)=serde_json::to_vec(&snapshot){let path=config::get_config_dir().join("usage-cache.json");let _=tauri::async_runtime::spawn_blocking(move||config::atomic_write(&path,&bytes)).await;}
     Ok(())
 }
@@ -455,10 +467,12 @@ pub fn run(){
                                 // A15 断屏恢复（每 ~5s 查一次）：自由模式窗口落在任何已知
                                 // 显示器之外（屏被拔/显示配置切换）时，按 free_x/free_y 比例
                                 // 重挂主屏工作区，避免悬浮栏不可达。吸附模式由 position() 兜底。
-                                if let (Ok(pos),Ok(monitors),Some(primary))=(w.outer_position(),w.available_monitors(),w.primary_monitor().ok().flatten()){
+                                if let (Ok(pos),Ok(sz),Ok(monitors),Some(primary))=(w.outer_position(),w.outer_size(),w.available_monitors(),w.primary_monitor().ok().flatten()){
+                                    // B10：用窗口中心点判定——左上角在屏内但主体在屏外同样算不可达。
+                                    let cx=pos.x+(sz.width as i32)/2;let cy=pos.y+(sz.height as i32)/2;
                                     let on_screen=monitors.iter().any(|m|{
                                         let b=m.position();let s=m.size();
-                                        pos.x>=b.x&&pos.x<b.x+s.width as i32&&pos.y>=b.y&&pos.y<b.y+s.height as i32
+                                        cx>=b.x&&cx<b.x+s.width as i32&&cy>=b.y&&cy<b.y+s.height as i32
                                     });
                                     if !on_screen{
                                         let area=primary.work_area();

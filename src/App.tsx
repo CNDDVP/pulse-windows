@@ -45,6 +45,8 @@ function DetailOverlay() {
   const usage=usage0&&groupId?{...usage0,windows:usage0.windows.filter(w=>w.name.split(" · ")[0]===groupId),display_name:`${usage0.display_name} · ${groupId}`}:usage0;
   // 窗口在 rail 侧方时卡片要贴向 rail 那一侧（否则留出 34-50px 透明断层，箭头悬空）；
   // 正下/正上时水平居中对准图标。
+  // B15：独立窗口同样执行减少动态设置（根元素标记只在 MainApp 挂，detail 窗口拿不到）。
+  useEffect(()=>{document.documentElement.classList.toggle("reduce-motion",!!settings?.reduce_motion);},[settings?.reduce_motion]);
   const justifyClass=placement==="left"?"justify-end":placement==="right"?"justify-start":"justify-center";
   // 窗口在 rail 正下/正上时内容贴边渲染，否则卡片矮时垂直居中会在窗口顶留出大片透明，
   // 视觉上像"详情卡离悬浮栏很远"。
