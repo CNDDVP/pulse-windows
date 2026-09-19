@@ -45,12 +45,13 @@ fn roots()->Vec<(&'static str,PathBuf)>{
     let mut out=vec![];
     if let Some(p)=crate::providers::credentials::home_path("CLAUDE_CONFIG_DIR",".claude"){out.push(("claude",p.join("projects")))}
     if let Some(p)=crate::providers::credentials::home_path("CODEX_HOME",".codex"){out.push(("codex",p.join("sessions")))}
-    // ZCode（zhipu 账号的 CLI）：会话任务日志（exec/*）与消息存储（v2 的 sqlite-wal）
-    // 都按追加写；写入即在使用。Antigravity：language server 日志按速率判定（空闲心跳
-    // ~280B/5s，agent 任务时流式日志远超阈值）。
+    // ZCode（zhipu 账号的 CLI）：只监控任务执行日志（cli/exec/*.log）——agent 跑命令
+    // 时持续追加，语义=「正在执行任务」。不再监控 v2 的 tasks-index.sqlite-wal
+    // （实测误亮：后台索引/checkpoint 写入与对话无关，会把空闲点亮成工作中）。
+    // Antigravity：language server 日志按速率判定（空闲心跳 ~280B/5s，agent 任务时
+    // 流式日志远超阈值）。
     if let Some(p)=crate::providers::credentials::home_path("ZCODE_HOME",".zcode"){
         out.push(("zhipu",p.join("cli").join("exec")));
-        out.push(("zhipu",p.join("v2")));
     }
     #[cfg(windows)]
     {
@@ -279,11 +280,12 @@ mod tests{
         assert_eq!(w.poll(3_000).get("claude"),Some(&true));
     }
     #[test]fn zhipu_any_append_is_working(){
-        let d=tempfile::tempdir().unwrap();let p=d.path().join("tasks-index.sqlite-wal");
+        // 实测误亮后 zhipu 只监控 exec 任务日志；追加即工作中。
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("call_test-stdout.log");
         fs::write(&p,vec![0u8;512]).unwrap();
         let mut w=Watcher::new(vec![("zhipu",d.path().to_path_buf())]);
         assert_eq!(w.poll(1_000).get("zhipu"),Some(&false),"首见跳历史");
-        // 二进制追加（sqlite-wal 写事务）——不做 JSON 解析，任何增长即工作。
+        // 二进制追加（任务日志写命令输出）——不做 JSON 解析，任何增长即工作。
         use std::io::Write;let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         f.write_all(&[1,2,3,4]).unwrap();drop(f);
         assert_eq!(w.poll(2_000).get("zhipu"),Some(&true),"会话存储被写入 = 工作中");

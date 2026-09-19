@@ -91,7 +91,7 @@ pub async fn get_usages(state:State<'_,AppState>)->Result<Vec<ProviderUsage>,Str
     }).collect())
 }
 #[tauri::command]
-pub async fn refresh_usages(app:AppHandle)->Result<crate::RefreshSummary,String>{crate::refresh_usages_and_emit(&app).await}
+pub async fn refresh_usages(app:AppHandle)->Result<crate::RefreshSummary,String>{crate::refresh_usages_and_emit(&app, true).await}
 #[tauri::command]
 pub async fn refresh_account(account_id:String,app:AppHandle)->Result<u64,String>{crate::AppState::refresh_account_now(&app,&account_id).await}
 #[tauri::command]

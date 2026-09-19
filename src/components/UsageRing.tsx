@@ -3,8 +3,8 @@ import {ProviderIcon} from "./icons/ProviderIcons";
 import {BotMark} from "./BotMark";
 import {percentText,elapsed,pickElapsedWindow} from "../presentation";
 import type {AppSettings,ProviderUsage} from "../types";
-export function UsageRing({usage,settings,onHover,refreshing,onClick,lookX=0,dataKey}:
-  {usage:ProviderUsage;settings:AppSettings;onHover:()=>void;refreshing?:boolean;onClick?:()=>void;lookX?:number;dataKey?:string}){
+export function UsageRing({usage,settings,onHover,refreshing,onClick,onDoubleClick,lookX=0,dataKey}:
+  {usage:ProviderUsage;settings:AppSettings;onHover:()=>void;refreshing?:boolean;onClick?:()=>void;onDoubleClick?:()=>void;lookX?:number;dataKey?:string}){
   const ref=useRef<HTMLButtonElement>(null);
   // 旋转灯的相位对齐：CSS animate-spin 的相位取决于元素挂载时刻，各账号挂载时间不同
   // 导致卫星灯各转各的。用负 animation-delay 把相位锚到全局时钟（挂载时算一次，
@@ -40,7 +40,7 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,lookX=0,dat
   const secLive=sec&&["live","stale"].includes(usage.state)&&sec.id!==cfg?.primary_window;
   const secPct=sec?(settings.display_mode==="remaining"?Math.max(0,100-sec.used_percent):sec.used_percent):0;
   const secColor=sec?(sec.exhausted||sec.used_percent>=red?"#ef4444":sec.used_percent>=amber?"#f97316":"#10b981"):"#71717a";
-  return <button ref={ref} data-account={dataKey??usage.account_id} onClick={onClick} onMouseEnter={onHover} onFocus={onHover} title={`${usage.display_name} ${percentText(usage,settings.display_mode)}`} className="shrink-0 flex flex-col items-center p-1 text-xs rounded-lg focus:outline-2 focus:outline-emerald-500 hover:scale-105 transition-transform duration-150">
+  return <button ref={ref} data-account={dataKey??usage.account_id} onClick={onClick} onDoubleClick={onDoubleClick} onMouseEnter={onHover} onFocus={onHover} title={`${usage.display_name} ${percentText(usage,settings.display_mode)}`} className="shrink-0 flex flex-col items-center p-1 text-xs rounded-lg focus:outline-none hover:scale-105 transition-transform duration-150">
     <div className="relative w-11 h-11 flex items-center justify-center">
       <svg viewBox="0 0 44 44" className="w-11 h-11 -rotate-90">
         <circle cx="22" cy="22" r="18" fill="none" stroke={dark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.08)"} strokeWidth="2.8"/>

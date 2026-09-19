@@ -47,7 +47,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 "refresh" => {
                     let app_clone = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        let _ = crate::refresh_usages_and_emit(&app_clone).await;
+                        let _ = crate::refresh_usages_and_emit(&app_clone, true).await;
                     });
                 }
                 "settings" => {
