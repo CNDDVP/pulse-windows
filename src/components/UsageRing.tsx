@@ -32,7 +32,7 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,onDoubleCli
   const mood:Parameters<typeof BotMark>[0]["mood"]=
     usage.is_active?"working":refreshing?"fetching":
     (exhausted||used>=100)?"spent":
-    !["live","stale"].includes(usage.state)?"asleep":"idle";
+    !["live","stale"].includes(usage.state)?"unavailable":"idle";
   // Second ring: only when the account explicitly picks a window; 关闭 means closed —
   // no auto-picked residue.
   const secCfg=cfg?.secondary_window??null;
@@ -52,7 +52,7 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,onDoubleCli
       </svg>
       <span className={`absolute inset-1.5 rounded-full flex items-center justify-center ${dark ? "bg-zinc-800/40 text-zinc-200" : "bg-black/5 text-zinc-700"}`}>
         {useBot?
-          <BotMark shape={cfg?.bot_shape??"blob"} persona={cfg?.bot_persona??"calm"} color={cfg?.bot_color??undefined}
+          <BotMark shape={cfg?.bot_shape??"blob"} persona={cfg?.bot_persona??"calm"} color={cfg?.bot_color??(usage.provider_id==="kimi"?"#7AA5FF":undefined)}
             mood={mood} size={20} reduceMotion={settings.reduce_motion||(typeof window<"u"&&window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches===true)} lookX={lookX}/>:
           <ProviderIcon id={usage.provider_id} size={18}/>}
       </span>

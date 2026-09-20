@@ -3,8 +3,25 @@ use crate::{types::{AppSettings,ProviderUsage},secrets::{SecretStore,WindowsSecr
 use tauri::{AppHandle,Emitter,State,Manager};
 #[tauri::command]
 pub async fn token_spend(days:u32,state:State<'_,AppState>)->Result<crate::ledger::Summary,String>{
+    {
+        let s = state.settings.lock().await;
+        if !s.token_spend_enabled {
+            return Err("Token 消耗统计未启用；请在常规设置中开启".into());
+        }
+    }
+    let scan_id = state.next_ledger_scan_id();
+    let current_id = state.ledger_scan_id.clone();
+    let is_cancelled = move || current_id.load(Ordering::Relaxed) != scan_id;
+
     let _gate=state.ledger_gate.lock().await;
-    tauri::async_runtime::spawn_blocking(move||crate::ledger::scan(days)).await.map_err(|_|"统计任务失败")?
+    if is_cancelled() {
+        return Err("已取消".into());
+    }
+    tauri::async_runtime::spawn_blocking(move||crate::ledger::scan_with_cancel(days, &is_cancelled)).await.map_err(|_|"统计任务失败")?
+}
+#[tauri::command]
+pub fn cancel_token_spend(state:State<'_,AppState>){
+    state.cancel_ledger_scan();
 }
 #[derive(serde::Serialize)]
 pub struct MonitorOption{pub name:String,pub label:String}
@@ -50,6 +67,16 @@ pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppStat
     if new_settings.hotkeys!=old.hotkeys{
         if let Err(e)=crate::apply_hotkeys(&app,&new_settings.hotkeys){let _=crate::apply_hotkeys(&app,&old.hotkeys);return Err(e)}
     }
+    let proxy_changed = new_settings.network_proxy != old.network_proxy;
+    if proxy_changed {
+        let new_client = crate::providers::client_with_proxy(&new_settings.network_proxy)?;
+        *state.http.write().await = new_client;
+        for id in new_settings.providers.keys() {
+            state.bump_account_gen(id).await;
+        }
+        state.schedule.lock().await.clear();
+        state.inflight.lock().await.clear();
+    }
     for (id,cfg) in &new_settings.providers{
         // 凭据来源（use_local）也是结果有效性的边界（B19）：变化即失效在途请求。
         if old.providers.get(id).map(|c|(c.order,c.enabled,&c.label,c.use_local))!=Some((cfg.order,cfg.enabled,&cfg.label,cfg.use_local)){
@@ -76,18 +103,23 @@ pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppStat
     let retained=cached.clone();drop(cached);
     app.emit("settings-updated",&new_settings).map_err(|_|"设置已保存，但窗口通知失败")?;
     app.emit("usages-updated",&retained).map_err(|_|"窗口通知失败")?;
-    // 找出所有已启用但在 cached_usages 中尚无读数的账号（例如新添加的账号），自动异步触发一次刷新
-    let unqueried_ids: Vec<String> = {
+    // 找出所有已启用但在 cached_usages 中尚无读数的账号（例如新添加的账号），或代理变更时刷所有已启用账号
+    let to_refresh_ids: Vec<String> = if proxy_changed {
+        new_settings.providers.iter()
+            .filter(|(_, cfg)| cfg.enabled)
+            .map(|(id, _)| id.clone())
+            .collect()
+    } else {
         let cached = state.cached_usages.lock().await;
         new_settings.providers.iter()
             .filter(|(id, cfg)| cfg.enabled && !cached.iter().any(|u| &u.account_id == *id))
             .map(|(id, _)| id.clone())
             .collect()
     };
-    if !unqueried_ids.is_empty() {
+    if !to_refresh_ids.is_empty() {
         let app_clone = app.clone();
         tauri::async_runtime::spawn(async move {
-            for aid in unqueried_ids {
+            for aid in to_refresh_ids {
                 let _ = crate::AppState::refresh_account_now(&app_clone, &aid).await;
             }
         });
@@ -112,11 +144,17 @@ pub async fn refresh_usages(app:AppHandle)->Result<crate::RefreshSummary,String>
 pub async fn refresh_account(account_id:String,app:AppHandle)->Result<u64,String>{crate::AppState::refresh_account_now(&app,&account_id).await}
 #[tauri::command]
 pub async fn test_account(account_id:String,state:State<'_,AppState>,app:AppHandle)->Result<ProviderUsage,String>{
-    let cfg={
-        let s=state.settings.lock().await;
-        s.providers.get(&account_id).cloned().ok_or("账号不存在")?
+    let (cfg, is_auth) = {
+        let s = state.settings.lock().await;
+        let c = s.providers.get(&account_id).cloned().ok_or("账号不存在")?;
+        let auth = !s.monitoring_setup_completed || s.authorized_providers.contains(&c.provider_id);
+        (c, auth)
     };
-    let usage=crate::providers::fetch_one(&account_id,&cfg,&state.http).await;
+    if !is_auth {
+        return Err(format!("服务商 {} 未授权监控；请在常规设置中开启授权", cfg.provider_id));
+    }
+    let http = state.http.read().await.clone();
+    let usage=crate::providers::fetch_one(&account_id,&cfg,&http).await;
     let _=crate::apply_single_reading(&app,&account_id,usage.clone(),None).await;
     Ok(usage)
 }
@@ -130,16 +168,37 @@ pub async fn set_window_state(state:String,app:AppHandle)->Result<(),String>{
 #[tauri::command]
 pub fn open_settings(app:AppHandle){crate::open_settings_window(&app)}
 #[tauri::command]
-pub fn close_settings_window(app:AppHandle){
-    if let Some(w)=app.get_webview_window("settings"){
-        let _=w.hide();
-    }
+pub async fn settings_window_ready(state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
+    state.close_coordinator.on_frontend_ready(&app).await;
+    Ok(())
+}
+#[tauri::command]
+pub async fn request_close_settings(source:String,state:State<'_,AppState>,app:AppHandle)->Result<u64,String>{
+    Ok(state.close_coordinator.request_close(&app,&source).await)
+}
+#[tauri::command]
+pub async fn acknowledge_close(request_id:u64,has_draft:bool,state:State<'_,AppState>)->Result<(),String>{
+    state.close_coordinator.acknowledge_close(request_id,has_draft).await
+}
+#[tauri::command]
+pub async fn confirm_close_settings(request_id:u64,action:String,state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
+    state.cancel_ledger_scan();
+    state.close_coordinator.confirm_close(&app,request_id,&action).await
+}
+#[tauri::command]
+pub async fn close_settings_window(state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
+    state.cancel_ledger_scan();
+    state.close_coordinator.confirm_close(&app,0,"discard_and_hide").await
 }
 #[tauri::command]
 pub async fn set_credential(account_id:String,secret:String,state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
     let _io=state.settings_io.lock().await;
     let mut settings=state.settings.lock().await.clone();
-    settings.providers.get_mut(&account_id).ok_or("账号不存在")?.credential_configured=true;
+    let pid = settings.providers.get_mut(&account_id).ok_or("账号不存在")?.provider_id.clone();
+    settings.providers.get_mut(&account_id).unwrap().credential_configured=true;
+    if !settings.authorized_providers.contains(&pid) {
+        settings.authorized_providers.push(pid);
+    }
     settings.generation=settings.generation.wrapping_add(1);
     let had_error=state.config_error().is_some();
     let had_cred=WindowsSecrets.get(&account_id).unwrap_or(None);
@@ -270,7 +329,13 @@ pub async fn diagnostics(state:State<'_,AppState>)->Result<String,String>{
         "last_success_at":r.last_success_at
     })).collect();
     let sanitized_err=state.config_error().map(|e|sanitize_diagnostics_string(&e));
-    serde_json::to_string_pretty(&serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"configuration_error":sanitized_err,"readings":rows})).map_err(|_|"诊断生成失败".into())
+    let close_events=state.close_coordinator.diagnostics.lock().await.clone();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "version":env!("CARGO_PKG_VERSION"),
+        "configuration_error":sanitized_err,
+        "readings":rows,
+        "close_diagnostics":close_events,
+    })).map_err(|_|"诊断生成失败".into())
 }
 
 #[tauri::command]
@@ -522,15 +587,24 @@ pub fn get_runtime_info() -> RuntimeInfo {
 }
 
 #[tauri::command]
+pub fn check_profile_status() -> Result<crate::config::ProfileStatus, String> {
+    Ok(crate::config::check_profile_status())
+}
+
+#[tauri::command]
 pub fn check_importable_config() -> Result<Option<crate::config::ImportableConfigSummary>, String> {
     crate::config::check_importable_config()
 }
 
 #[tauri::command]
-pub async fn import_installed_config(state: State<'_, AppState>, app: AppHandle) -> Result<AppSettings, String> {
+pub async fn import_installed_config(state: State<'_, AppState>, app: AppHandle, mode: Option<String>) -> Result<AppSettings, String> {
     let _io = state.settings_io.lock().await;
+    let import_mode = match mode.as_deref() {
+        Some("overwrite") => crate::config::ImportMode::Overwrite,
+        _ => crate::config::ImportMode::Append,
+    };
     let imported = tauri::async_runtime::spawn_blocking(move || {
-        crate::config::import_installed_config()
+        crate::config::import_installed_config(import_mode)
     }).await.map_err(|_| "导入任务失败")??;
 
     *state.settings.lock().await = imported.clone();

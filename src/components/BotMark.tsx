@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-export type Mood = "idle" | "working" | "fetching" | "spent" | "asleep";
+export type Mood = "idle" | "working" | "fetching" | "spent" | "asleep" | "unavailable";
 export const PERSONAS = ["calm", "eager", "steady", "curious", "sleepy", "playful", "stoic", "proud"] as const;
 export const SHAPES = ["blob", "pebble", "bean", "egg", "squircle", "tablet", "capsule", "cylinder", "hex", "gem", "crystal", "wedge", "shield", "dome", "arch", "cloud", "teardrop", "leaf"] as const;
 
@@ -26,7 +26,7 @@ const PERSONA: Record<string, { blink: number; expr: number; working?: string }>
   sleepy: { blink: 0.5, expr: 0.6 }, playful: { blink: 1.5, expr: 1.5, working: "excited" },
   stoic: { blink: 0.7, expr: 0.5 }, proud: { blink: 0.9, expr: 0.9 },
 };
-const MOOD_STATE: Record<Mood, string> = { idle: "idle", working: "working", fetching: "searching", spent: "sad", asleep: "sleeping" };
+const MOOD_STATE: Record<Mood, string> = { idle: "idle", working: "working", fetching: "searching", spent: "sad", asleep: "sleeping", unavailable: "sleeping" };
 
 /** 共享 rAF 时钟（≤30 FPS），页面隐藏时暂停；订阅者直接改 DOM 属性，不触发 React 渲染。 */
 const subs = new Set<(t: number) => void>();
@@ -80,7 +80,10 @@ export function BotMark({ shape: shapeId, persona, color, mood, size, reduceMoti
 
   const shape = data?.shapes[shapeId] ?? data?.shapes.blob;
   const mod = PERSONA[persona] ?? PERSONA.calm;
-  const stateId = mod.working && mood === "working" ? mod.working : MOOD_STATE[mood];
+  const hour = new Date().getHours();
+  const isSleepyResting = persona === "sleepy" && (hour >= 23 || hour < 8);
+  const effectiveMood: Mood = (mood === "idle" && isSleepyResting) ? "asleep" : mood;
+  const stateId = mod.working && effectiveMood === "working" ? mod.working : MOOD_STATE[effectiveMood];
   const info = data?.states.find(s => s.id === stateId) ?? data?.states[0];
   const headC = data?.headC ?? 114.27;
   const initPool = info?.expressionPool ?? [];
@@ -117,14 +120,22 @@ export function BotMark({ shape: shapeId, persona, color, mood, size, reduceMoti
       const pairCx2 = (centroidX(e0) + centroidX(e1)) / 2;
       const pairCy = (centroidY(e0) + centroidY(e1)) / 2;
       // 轮廓级钳制：在双眼中心高度扫描轮廓左右边界，整组平移不得把眼睛推出脸外。
+      // 增加 2.5% 内边距限制，防止极端视角（gaze）或缩放眨眼时眼睛溢出脸部轮廓。
       const span = spanAtRing(ring, pairCy);
       gaze += (look * 30 - gaze) * 0.2;
       let dx = gaze;
       if (span) {
+        const margin = (span[1] - span[0]) * 0.025;
+        const boundedLeft = span[0] + margin;
+        const boundedRight = span[1] - margin;
         const half = Math.max(Math.abs(centroidX(e0) - centroidX(e1)) / 2 + 8, 12);
-        const minDx = span[0] + half - pairCx2;
-        const maxDx = span[1] - half - pairCx2;
-        if (minDx <= maxDx) dx = Math.min(Math.max(dx, minDx), maxDx);
+        const minDx = boundedLeft + half - pairCx2;
+        const maxDx = boundedRight - half - pairCx2;
+        if (minDx <= maxDx) {
+          dx = Math.min(Math.max(dx, minDx), maxDx);
+        } else {
+          dx = (minDx + maxDx) / 2;
+        }
       }
       eyesGRef.current?.setAttribute("transform",
         `translate(${(shape.face.x + dx).toFixed(1)} ${(shape.face.y).toFixed(1)}) scale(${shape.face.sx} ${shape.face.sy * (t < blinkUntil ? 0.12 : 1)})`);
@@ -132,10 +143,10 @@ export function BotMark({ shape: shapeId, persona, color, mood, size, reduceMoti
         el?.setAttribute("d", pathD(pts));
       }
       bodyRef.current?.setAttribute("transform",
-        mood === "working" ? `rotate(${(Math.sin(t / 170) * 4).toFixed(2)} ${headC} ${headC})` : "");
+        effectiveMood === "working" ? `rotate(${(Math.sin(t / 170) * 4).toFixed(2)} ${headC} ${headC})` : "");
     });
     return unsub;
-  }, [animate, data, mood, look, persona, shapeId, mod.blink, mod.expr, mod.working, info, shape]);
+  }, [animate, data, effectiveMood, look, persona, shapeId, mod.blink, mod.expr, mod.working, info, shape, headC]);
 
   return (
     <svg width={size} height={size} viewBox="0 0 228.54 228.54" aria-hidden>

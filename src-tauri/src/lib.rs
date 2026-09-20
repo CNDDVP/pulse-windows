@@ -10,6 +10,7 @@ pub mod tray;
 pub mod alerts;
 pub mod activity;
 pub mod platform;
+pub mod settings_close;
 use std::{collections::HashMap,time::{Duration,Instant},sync::atomic::{AtomicBool,AtomicU64,Ordering},sync::Arc};
 use tauri::{AppHandle,Emitter,Manager};
 use tokio::sync::{Mutex,Semaphore};
@@ -18,9 +19,10 @@ use types::{AppSettings,HotkeySettings,ProviderUsage};
 pub struct AppState {
     pub settings:Mutex<AppSettings>,pub cached_usages:Mutex<Vec<ProviderUsage>>,
     pub refresh_gate:Mutex<()>,pub schedule:Mutex<HashMap<String,(Instant,u32)>>,
-    pub configuration_error:std::sync::Mutex<Option<String>>,pub http:reqwest::Client,
+    pub configuration_error:std::sync::Mutex<Option<String>>,pub http:tokio::sync::RwLock<reqwest::Client>,
     pub window_mode:Mutex<String>,pub user_hidden:AtomicBool,
     pub ledger_gate:Mutex<()>,
+    pub ledger_scan_id:Arc<AtomicU64>,
     pub alerts:Mutex<alerts::Memory>,
     pub detail_account:std::sync::Mutex<Option<String>>,
     pub settings_io:tokio::sync::Mutex<()>,
@@ -36,12 +38,15 @@ pub struct AppState {
     pub drag_side:std::sync::Mutex<String>,
     pub drag_ratio:std::sync::Mutex<(f64,f64)>,
     pub drag_monitors:std::sync::Mutex<Vec<tauri::Monitor>>,
+    pub close_coordinator:Arc<settings_close::SettingsCloseCoordinator>,
 }
 impl AppState {
     pub fn config_error(&self)->Option<String>{self.configuration_error.lock().ok().and_then(|g|g.clone())}
     /// A successful save from the UI has replaced the unreadable file.
     pub fn clear_config_error(&self){if let Ok(mut g)=self.configuration_error.lock(){*g=None}}
     pub fn next_request_id(&self)->u64{self.request_counter.fetch_add(1,Ordering::Relaxed)+1}
+    pub fn next_ledger_scan_id(&self)->u64{self.ledger_scan_id.fetch_add(1,Ordering::SeqCst)+1}
+    pub fn cancel_ledger_scan(&self){self.ledger_scan_id.fetch_add(1,Ordering::SeqCst);}
     pub fn activity_flag(&self,account_id:&str)->bool{
         self.activity.lock().ok().and_then(|m|m.get(account_id).map(|(a,_)|*a)).unwrap_or(false)
     }
@@ -54,6 +59,9 @@ impl AppState {
         let settings=state.settings.lock().await.clone();
         let Some(cfg)=settings.providers.get(account_id)else{return Err("账号不存在".into())};
         if !cfg.enabled{return Err("账号未启用；先保存账号设置".into())}
+        if settings.monitoring_setup_completed && !settings.authorized_providers.contains(&cfg.provider_id) {
+            return Err(format!("服务商 {} 未授权监控；请在常规设置中开启授权", cfg.provider_id));
+        }
         // Honour the provider's backoff window from the last failed attempt.
         {
             let schedule=state.schedule.lock().await;
@@ -76,7 +84,7 @@ impl AppState {
         if created{
             let _=app.emit("refresh-state",serde_json::json!({"account_id":account_id,"request_id":request_id,"phase":"started"}));
             let generation=state.account_generations.lock().await.get(account_id).copied().unwrap_or(0);
-            let http=state.http.clone();let cfg_clone=cfg.clone();
+            let http=state.http.read().await.clone();let cfg_clone=cfg.clone();
             let aid=account_id.to_string();let app2=app.clone();
             let slots=state.refresh_slots.clone();
             tauri::async_runtime::spawn(async move{
@@ -222,6 +230,10 @@ pub async fn refresh_usages_and_emit(app:&AppHandle,manual:bool)->Result<Refresh
     {let schedule=state.schedule.lock().await;
      let mut inflight=state.inflight.lock().await;
      for (id,cfg) in due.providers.iter_mut(){
+        if settings.monitoring_setup_completed && !settings.authorized_providers.contains(&cfg.provider_id) {
+            cfg.enabled = false;
+            continue;
+        }
         // 手动刷新在途的账号由该请求负责写回，定时轮不再重复发起。
         if inflight.contains_key(id){cfg.enabled=false}
         else if manual {
@@ -255,7 +267,8 @@ pub async fn refresh_usages_and_emit(app:&AppHandle,manual:bool)->Result<Refresh
     }
 
     let start_gens=state.account_generations.lock().await.clone();
-    let mut rx=providers::fetch_all_stream(&due,&state.http,state.refresh_slots.clone());
+    let http=state.http.read().await.clone();
+    let mut rx=providers::fetch_all_stream(&due,&http,state.refresh_slots.clone());
     let mut incoming=vec![];
     let mut passed:Vec<ProviderUsage>=vec![];
     let mut finished_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -419,7 +432,7 @@ fn poll_activity(app:&AppHandle){
     for (source,active) in sources{
         let Ok(settings)=state.settings.try_lock()else{return};
         let ids:Vec<String>=settings.providers.iter()
-            .filter(|(_,c)|c.enabled&&c.provider_id==source)
+            .filter(|(_,c)|c.enabled&&c.provider_id==source&&(!settings.monitoring_setup_completed || settings.authorized_providers.contains(&c.provider_id)))
             .map(|(id,_)|id.clone()).collect();
         drop(settings);
         let single=ids.len()==1;
@@ -471,6 +484,47 @@ fn expire_tick(app:&AppHandle){
 
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
 pub fn run(){
+    // W07: CLI --json 前置于所有 GUI/WebView2/单实例/注册表调用之前
+    if std::env::args().any(|a| a == "--json") {
+        let data_dir = if let Some(dir_str) = std::env::var_os("PULSE_DATA_DIR") {
+            std::path::PathBuf::from(dir_str)
+        } else if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                if exe_dir.join("portable.flag").exists() {
+                    exe_dir.join("data")
+                } else {
+                    dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("pulse-windows")
+                }
+            } else {
+                dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("pulse-windows")
+            }
+        } else {
+            dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("pulse-windows")
+        };
+        let path = data_dir.join("usage-cache.json");
+        if !path.exists() {
+            println!("[]");
+            std::process::exit(0);
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) => match serde_json::from_slice::<Vec<ProviderUsage>>(&bytes) {
+                Ok(readings) => {
+                    let expired: Vec<_> = readings.into_iter().map(|r| cache::expire(r, cache::now())).collect();
+                    println!("{}", serde_json::to_string(&expired).unwrap_or_else(|_| "[]".into()));
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("Pulse CLI: usage-cache.json 损坏: {e}");
+                    std::process::exit(1);
+                }
+            },
+            Err(e) => {
+                eprintln!("Pulse CLI: 读取 usage-cache.json 失败: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if !crate::platform::is_webview2_available() {
         crate::platform::show_missing_webview2_dialog();
         std::process::exit(1);
@@ -489,14 +543,20 @@ pub fn run(){
         }
     };
     let _single_instance_guard = match crate::platform::acquire_single_instance(&data_dir) {
-        Ok(Some(g)) => Some(g),
+        Ok(Some(g)) => g,
         Ok(None) => {
             // 已有实例在运行并已被唤醒
             std::process::exit(0);
         }
         Err(e) => {
-            eprintln!("Pulse 单实例初始化警告: {e}");
-            None
+            eprintln!("Pulse 单实例初始化失败（严禁无锁启动）: {e}");
+            #[cfg(windows)] {
+                use windows::{core::PCWSTR, Win32::UI::WindowsAndMessaging::*};
+                let title: Vec<u16> = "Pulse 单实例错误\0".encode_utf16().collect();
+                let msg: Vec<u16> = format!("无法获取单实例互斥锁，为防止配置与凭据损坏，程序已阻止启动：\n{e}\0").encode_utf16().collect();
+                unsafe { let _ = MessageBoxW(None, PCWSTR(msg.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONERROR); }
+            }
+            std::process::exit(1);
         }
     };
     crate::platform::repair_startup_if_moved();
@@ -507,15 +567,10 @@ pub fn run(){
         let _ = std::fs::create_dir_all(&wv2_dir);
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", wv2_dir);
     }
-    if std::env::args().any(|a|a=="--json"){
-        let path=config::get_config_dir().join("usage-cache.json");
-        let readings:Vec<ProviderUsage>=std::fs::read(path).ok().and_then(|b|serde_json::from_slice(&b).ok()).unwrap_or_default();
-        println!("{}",serde_json::to_string(&readings.into_iter().map(|r|cache::expire(r,cache::now())).collect::<Vec<_>>()).unwrap_or_else(|_|"[]".into()));return;
-    }
     let (settings,error)=match config::load_settings(){Ok(s)=>(s,None),Err(e)=>(AppSettings::default(),Some(e))};
-    let http=providers::client().expect("HTTP client initialization failed");
+    let http=tokio::sync::RwLock::new(providers::client_with_proxy(&settings.network_proxy).expect("HTTP client initialization failed"));
     let settings_start_hidden=settings.start_behavior=="tray";
-    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),ledger_gate:Mutex::new(()),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None),settings_io:tokio::sync::Mutex::new(()),account_generations:Mutex::new(HashMap::new()),refresh_slots:Arc::new(Semaphore::new(4)),inflight:Mutex::new(HashMap::new()),request_counter:AtomicU64::new(0),activity:std::sync::Mutex::new(HashMap::new()),activity_watcher:std::sync::Mutex::new(activity::Watcher::new(activity::Watcher::system_roots())),app_handle:std::sync::OnceLock::new(),dragging:AtomicBool::new(false),drag_grab:std::sync::Mutex::new((0,0)),drag_side:std::sync::Mutex::new("free".into()),drag_ratio:std::sync::Mutex::new((0.5,0.5)),drag_monitors:std::sync::Mutex::new(Vec::new())};
+    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),ledger_gate:Mutex::new(()),ledger_scan_id:Arc::new(AtomicU64::new(0)),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None),settings_io:tokio::sync::Mutex::new(()),account_generations:Mutex::new(HashMap::new()),refresh_slots:Arc::new(Semaphore::new(4)),inflight:Mutex::new(HashMap::new()),request_counter:AtomicU64::new(0),activity:std::sync::Mutex::new(HashMap::new()),activity_watcher:std::sync::Mutex::new(activity::Watcher::new(activity::Watcher::system_roots())),app_handle:std::sync::OnceLock::new(),dragging:AtomicBool::new(false),drag_grab:std::sync::Mutex::new((0,0)),drag_side:std::sync::Mutex::new("free".into()),drag_ratio:std::sync::Mutex::new((0.5,0.5)),drag_monitors:std::sync::Mutex::new(Vec::new()),close_coordinator:Arc::new(settings_close::SettingsCloseCoordinator::default())};
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -633,15 +688,15 @@ pub fn run(){
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "settings" {
-                    // 原生 X / Alt+F4 也要过前端的未保存确认：转交给 React 的 closeWindow
-                    // 流程（它确认后再调 close_settings_window 真正隐藏），不直接 hide。
                     api.prevent_close();
-                    use tauri::Emitter;
-                    let _ = window.app_handle().emit("settings-close-requested", ());
-                    let _ = window.emit("settings-close-requested", ());
+                    let app = window.app_handle().clone();
+                    let coord = app.state::<AppState>().close_coordinator.clone();
+                    tauri::async_runtime::spawn(async move {
+                        coord.request_close(&app, "native_x").await;
+                    });
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::refresh_account,commands::drag_begin,commands::drag_move,commands::drag_end,commands::drag_cancel,commands::rail_menu_cmd,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::set_credential,commands::delete_credential,commands::delete_account,commands::diagnostics,commands::test_account,commands::token_spend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::hide_detail,commands::detail_account,commands::set_detail_hover,commands::is_portable,commands::get_profile_info,commands::clear_profile_credentials,commands::create_isolated_profile,commands::get_runtime_info,commands::check_importable_config,commands::import_installed_config])
+        .invoke_handler(tauri::generate_handler![commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::refresh_account,commands::drag_begin,commands::drag_move,commands::drag_end,commands::drag_cancel,commands::rail_menu_cmd,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::settings_window_ready,commands::request_close_settings,commands::acknowledge_close,commands::confirm_close_settings,commands::set_credential,commands::delete_credential,commands::delete_account,commands::diagnostics,commands::test_account,commands::token_spend,commands::cancel_token_spend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::hide_detail,commands::detail_account,commands::set_detail_hover,commands::is_portable,commands::get_profile_info,commands::check_profile_status,commands::clear_profile_credentials,commands::create_isolated_profile,commands::get_runtime_info,commands::check_importable_config,commands::import_installed_config])
         .run(tauri::generate_context!()).expect("Pulse runtime failed");
 }

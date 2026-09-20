@@ -68,7 +68,25 @@ pub struct NotificationSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct HotkeySettings { pub open_settings: Option<String>, pub toggle_rail: Option<String> }
-pub const SCHEMA_VERSION: u32 = 3;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct NetworkProxySettings {
+    pub mode: String, // "auto" | "manual_http" | "manual_socks5"
+    pub host: String,
+    pub port: u16,
+}
+impl Default for NetworkProxySettings {
+    fn default() -> Self {
+        Self {
+            mode: "auto".into(),
+            host: String::new(),
+            port: 0,
+        }
+    }
+}
+
+pub const SCHEMA_VERSION: u32 = 4;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppSettings {
@@ -83,6 +101,10 @@ pub struct AppSettings {
     pub reduce_motion: bool,
     /// What to show right after launch: "rail" | "settings" | "tray".
     pub start_behavior: String,
+    pub monitoring_setup_completed: bool,
+    pub token_spend_enabled: bool,
+    pub authorized_providers: Vec<String>,
+    pub network_proxy: NetworkProxySettings,
     pub notifications: NotificationSettings,
     pub hotkeys: HotkeySettings,
     pub providers: BTreeMap<String, ProviderConfig>,
@@ -96,6 +118,8 @@ impl Default for AppSettings {
             refresh_interval_seconds:120, display_mode:"used".into(), forecast:false, show_elapsed:false,
             follow_active_display:false, hide_fullscreen:false, monitor_name:None, free_x:0.5, free_y:0.5,
             warning_threshold:90, show_rail:true, reduce_motion:false, start_behavior:"rail".into(),
+            monitoring_setup_completed:false, token_spend_enabled:false, authorized_providers:vec![],
+            network_proxy:NetworkProxySettings::default(),
             notifications:NotificationSettings::default(), hotkeys:HotkeySettings::default(), providers }
     }
 }
@@ -111,6 +135,19 @@ impl AppSettings {
             || [&self.hotkeys.open_settings,&self.hotkeys.toggle_rail].iter().any(|h|h.as_deref().is_some_and(|s|s.is_empty()||s.len()>64))
             || !self.free_x.is_finite() || !self.free_y.is_finite() || !(0.0..=1.0).contains(&self.free_x) || !(0.0..=1.0).contains(&self.free_y)
             || self.providers.len()>64 { return Err("设置版本或参数无效".into()); }
+        for p in &self.authorized_providers {
+            if !PROVIDERS.iter().any(|(id, _)| id == p) {
+                return Err(format!("未知的已授权服务商: {p}"));
+            }
+        }
+        if !["auto", "manual_http", "manual_socks5"].contains(&self.network_proxy.mode.as_str()) {
+            return Err("代理模式无效".into());
+        }
+        if self.network_proxy.mode != "auto" {
+            if self.network_proxy.host.is_empty() || self.network_proxy.host.len() > 255 || self.network_proxy.port == 0 {
+                return Err("代理服务器地址或端口无效".into());
+            }
+        }
         for (id,cfg) in &self.providers {
             if !valid_id(id) || !PROVIDERS.iter().any(|p|p.0==cfg.provider_id) || cfg.label.len()>160 { return Err("账号配置无效".into()); }
             if cfg.ring_color.as_deref().is_some_and(|c|!(c.len()==7 && c.starts_with('#') && c[1..].bytes().all(|b|b.is_ascii_hexdigit()))) { return Err("圆环颜色无效".into()); }

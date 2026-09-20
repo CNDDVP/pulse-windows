@@ -31,6 +31,11 @@ export interface ProviderConfig {
 export interface NotificationSettings { threshold: number | null; on_spent: boolean; on_reset: boolean; on_failure: boolean }
 export interface HotkeySettings { open_settings: string | null; toggle_rail: string | null }
 export interface MonitorOption { name: string; label: string }
+export interface NetworkProxySettings {
+  mode: "auto" | "manual_http" | "manual_socks5";
+  host: string;
+  port: number;
+}
 export interface AppSettings {
   schema_version: number; generation?: number; dock_side: "right" | "left" | "top" | "free";
   auto_collapse_seconds: number; theme: "obsidian" | "translucent";
@@ -38,6 +43,8 @@ export interface AppSettings {
   forecast: boolean; show_elapsed: boolean; follow_active_display: boolean; hide_fullscreen: boolean;
   monitor_name: string | null; free_x: number; free_y: number;
   warning_threshold: number; show_rail: boolean; reduce_motion: boolean; start_behavior: string;
+  monitoring_setup_completed: boolean; token_spend_enabled: boolean;
+  authorized_providers: string[]; network_proxy: NetworkProxySettings;
   notifications: NotificationSettings; hotkeys: HotkeySettings;
   providers: Record<string, ProviderConfig>;
 }

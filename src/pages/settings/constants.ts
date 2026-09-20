@@ -4,7 +4,8 @@ export const PROVIDERS: [string, string][] = [
   ["kimi", "Kimi Code"], ["opencode", "OpenCode Go"], ["antigravity", "Antigravity"], ["claude", "Claude Code"],
   ["codex", "Codex"], ["cursor", "Cursor"], ["copilot", "GitHub Copilot"], ["deepseek", "DeepSeek"], ["grok", "Grok"],
   ["grok-bot", "Grok Bot"], ["ollama", "Ollama Cloud"], ["zai", "z.ai"], ["zhipu", "Zhipu (智谱)"], ["minimax", "MiniMax"],
-  ["minimax-cn", "MiniMax CN"], ["volcengine", "Volcengine (火山方舟)"], ["command-code", "Command Code"], ["devin", "Devin"]
+  ["minimax-cn", "MiniMax CN"], ["volcengine", "Volcengine (火山方舟)"], ["command-code", "Command Code"], ["devin", "Devin"],
+  ["xiaomi", "小米 Coding Plan"]
 ];
 
 export const providerName = (id: string) => PROVIDERS.find(p => p[0] === id)?.[1] || id;

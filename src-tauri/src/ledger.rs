@@ -3,8 +3,8 @@ use std::{collections::BTreeMap,fs::{self,File},io::{BufRead,BufReader,Read,Seek
 use serde::{Serialize,Deserialize};use serde_json::Value;use sha2::{Digest,Sha256};
 use rusqlite::{Connection,params};
 #[derive(Default,Clone,Serialize,Deserialize)]struct State{model:String,totals:[u64;4],bad_lines:u64}
-#[derive(Clone,Serialize)]pub struct Row{pub source:String,pub model:String,pub day:String,pub hour:String,pub input:u64,pub output:u64,pub cache_read:u64,pub cache_write:u64,pub partial:bool}
-#[derive(Serialize)]pub struct Summary{pub rows:Vec<Row>,pub scanned_files:usize,pub skipped_files:usize,pub changed_files:usize,pub days:u32,pub partial:bool,pub cost_estimate:Option<f64>,pub notes:Vec<String>,pub duration_ms:Option<u64>,pub coverage_gap:bool}
+#[derive(Debug,Clone,Serialize)]pub struct Row{pub source:String,pub model:String,pub day:String,pub hour:String,pub input:u64,pub output:u64,pub cache_read:u64,pub cache_write:u64,pub partial:bool}
+#[derive(Debug,Serialize)]pub struct Summary{pub rows:Vec<Row>,pub scanned_files:usize,pub skipped_files:usize,pub changed_files:usize,pub days:u32,pub partial:bool,pub cost_estimate:Option<f64>,pub notes:Vec<String>,pub duration_ms:Option<u64>,pub coverage_gap:bool}
 struct Event{id:String,ts:i64,model:String,counts:[u64;4],partial:bool}
 fn count(v:&Value)->u64{v.as_u64().unwrap_or(0)}
 fn timestamp(v:&Value)->Option<i64>{
@@ -59,16 +59,20 @@ fn parse(source:&str,v:&Value,state:&mut State,offset:u64)->Option<Event>{
     }
     None
 }
-fn discover(root:&Path,source:&str,out:&mut Vec<(String,PathBuf)>,depth:usize,truncated:&mut bool){
-    if depth>18||out.len()>=10000{ *truncated = true; return; }
+fn discover<F>(root:&Path,source:&str,out:&mut Vec<(String,PathBuf)>,depth:usize,truncated:&mut bool,is_cancelled:&F)->Result<(),String>
+where F: Fn() -> bool {
+    if is_cancelled() { return Err("已取消".into()); }
+    if depth>18||out.len()>=10000{ *truncated = true; return Ok(()); }
     // 目录不存在=该来源未安装（正常）；权限等其他错误才标扫描截断（A13）。
     let entries=match fs::read_dir(root){
         Ok(e)=>e,
-        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return,
-        Err(_)=>{ *truncated = true; return; }
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(()),
+        Err(_)=>{ *truncated = true; return Ok(()); }
     };
-    for entry in entries.flatten(){let Ok(kind)=entry.file_type()else{continue};if kind.is_symlink(){continue}let path=entry.path();
-        if kind.is_dir(){discover(&path,source,out,depth+1,truncated)}else if path.extension().is_some_and(|e|e=="jsonl"||e=="json"){
+    for entry in entries.flatten(){
+        if is_cancelled() { return Err("已取消".into()); }
+        let Ok(kind)=entry.file_type()else{continue};if kind.is_symlink(){continue}let path=entry.path();
+        if kind.is_dir(){discover(&path,source,out,depth+1,truncated,is_cancelled)?}else if path.extension().is_some_and(|e|e=="jsonl"||e=="json"){
             let name=path.file_name().and_then(|s|s.to_str()).unwrap_or("");
             if ["cline","roocode","kilocode"].contains(&source) && name!="ui_messages.json"{continue}
             if source=="gemini" && !name.starts_with("session-"){continue}
@@ -76,22 +80,26 @@ fn discover(root:&Path,source:&str,out:&mut Vec<(String,PathBuf)>,depth:usize,tr
             out.push((source.into(),path));
         }
     }
+    Ok(())
 }
 /// Each source gets its own discovery budget: a pathological directory (gemini
 /// tmp can hold tens of thousands of transcripts) must not starve the sources
 /// that are discovered after it.
-fn collect(root:&Path,source:&str,out:&mut Vec<(String,PathBuf)>,truncated:&mut bool){
-    let mut part=vec![];discover(root,source,&mut part,0,truncated);out.extend(part);
+fn collect<F>(root:&Path,source:&str,out:&mut Vec<(String,PathBuf)>,truncated:&mut bool,is_cancelled:&F)->Result<(),String>
+where F: Fn() -> bool {
+    let mut part=vec![];discover(root,source,&mut part,0,truncated,is_cancelled)?;out.extend(part);
+    Ok(())
 }
-fn sources()->(Vec<(String,PathBuf)>,bool){
+fn sources_with_cancel<F>(is_cancelled:&F)->Result<(Vec<(String,PathBuf)>,bool),String>
+where F: Fn() -> bool {
     let mut out=vec![];
     let mut truncated=false;
-    if let Some(root)=crate::providers::credentials::home_path("CLAUDE_CONFIG_DIR",".claude"){collect(&root.join("projects"),"claude",&mut out,&mut truncated)}
-    if let Some(root)=crate::providers::credentials::home_path("CODEX_HOME",".codex"){collect(&root.join("sessions"),"codex",&mut out,&mut truncated);collect(&root.join("archived_sessions"),"codex",&mut out,&mut truncated)}
-    if let Some(root)=crate::providers::credentials::home_path("GEMINI_CLI_HOME",".gemini"){collect(&root.join("tmp"),"gemini",&mut out,&mut truncated)}
-    if let Some(home)=dirs::home_dir(){collect(&home.join(".openclaw/agents"),"openclaw",&mut out,&mut truncated)}
-    if let Some(app)=dirs::config_dir(){for editor in ["Code","Code - Insiders","VSCodium"]{for (source,ext) in [("cline","saoudrizwan.claude-dev"),("roocode","rooveterinaryinc.roo-cline"),("kilocode","kilocode.kilo-code")]{collect(&app.join(editor).join("User/globalStorage").join(ext).join("tasks"),source,&mut out,&mut truncated)}}}
-    (out,truncated)
+    if let Some(root)=crate::providers::credentials::home_path("CLAUDE_CONFIG_DIR",".claude"){collect(&root.join("projects"),"claude",&mut out,&mut truncated,is_cancelled)?;}
+    if let Some(root)=crate::providers::credentials::home_path("CODEX_HOME",".codex"){collect(&root.join("sessions"),"codex",&mut out,&mut truncated,is_cancelled)?;collect(&root.join("archived_sessions"),"codex",&mut out,&mut truncated,is_cancelled)?;}
+    if let Some(root)=crate::providers::credentials::home_path("GEMINI_CLI_HOME",".gemini"){collect(&root.join("tmp"),"gemini",&mut out,&mut truncated,is_cancelled)?;}
+    if let Some(home)=dirs::home_dir(){collect(&home.join(".openclaw/agents"),"openclaw",&mut out,&mut truncated,is_cancelled)?;}
+    if let Some(app)=dirs::config_dir(){for editor in ["Code","Code - Insiders","VSCodium"]{for (source,ext) in [("cline","saoudrizwan.claude-dev"),("roocode","rooveterinaryinc.roo-cline"),("kilocode","kilocode.kilo-code")]{collect(&app.join(editor).join("User/globalStorage").join(ext).join("tasks"),source,&mut out,&mut truncated,is_cancelled)?;}}}
+    Ok((out,truncated))
 }
 fn database(path:&Path)->Result<Connection,String>{
     let db=Connection::open(path).map_err(|_|"无法打开统计缓存")?;
@@ -99,12 +107,21 @@ fn database(path:&Path)->Result<Connection,String>{
     db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,source TEXT,size INTEGER,mtime INTEGER,prefix TEXT,offset INTEGER,state TEXT); CREATE TABLE IF NOT EXISTS events(path TEXT,source TEXT,event_id TEXT,ts INTEGER,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,partial INTEGER,PRIMARY KEY(path,event_id)); CREATE INDEX IF NOT EXISTS idx_events_source_ts ON events(source, ts);").map_err(|_|"无法初始化统计缓存")?;Ok(db)
 }
 pub fn scan(days:u32)->Result<Summary,String>{
-    if ![7,30,90].contains(&days){return Err("统计区间无效".into())}
-    let root=crate::config::get_config_dir();fs::create_dir_all(&root).map_err(|_|"无法创建统计缓存")?;
-    let (paths, truncated) = sources();
-    scan_paths(days,&root.join("ledger-v1.sqlite"),paths,truncated)
+    scan_with_cancel(days,&||false)
 }
-fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool)->Result<Summary,String>{
+pub fn scan_with_cancel<F>(days:u32,is_cancelled:&F)->Result<Summary,String>
+where F: Fn() -> bool + Send + Sync {
+    if ![7,30,90].contains(&days){return Err("统计区间无效".into())}
+    if is_cancelled() { return Err("已取消".into()); }
+    let root=crate::config::get_config_dir();fs::create_dir_all(&root).map_err(|_|"无法创建统计缓存")?;
+    let (paths, truncated) = sources_with_cancel(is_cancelled)?;
+    scan_paths_with_cancel(days,&root.join("ledger-v1.sqlite"),paths,truncated,is_cancelled)
+}
+pub fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool)->Result<Summary,String>{
+    scan_paths_with_cancel(days,db_path,paths,truncated,&||false)
+}
+pub fn scan_paths_with_cancel<F>(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool,is_cancelled:&F)->Result<Summary,String>
+where F: Fn() -> bool + Send + Sync {
     let scan_start=std::time::Instant::now();
     let mut db=database(db_path)?;let mut changed=0;let mut skipped=0;let scanned=paths.len();
     let today=chrono::Local::now().date_naive();let first=today-chrono::Duration::days(days as i64-1);
@@ -113,6 +130,7 @@ fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool)
     let window_start_ns=window_start_dt.and_then(|t|t.timestamp_nanos_opt()).unwrap_or(0);
     let live:Vec<String>=paths.iter().map(|(_,p)|format!("{:x}",Sha256::digest(p.to_string_lossy().as_bytes()))).collect();
     for (source,path) in paths{
+        if is_cancelled() { return Err("已取消".into()); }
         let result=(||->Result<(),String>{
             let metadata=fs::metadata(&path).map_err(|_|"metadata")?;
             if metadata.len()>256*1024*1024{return Err("large".into())}
@@ -140,7 +158,11 @@ fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool)
             };
             file.seek(SeekFrom::Start(offset)).map_err(|_|"seek")?;
             if jsonl {
-                let mut reader=BufReader::new(file);loop{
+                let mut reader=BufReader::new(file);
+                let mut line_counter = 0usize;
+                loop{
+                    line_counter += 1;
+                    if line_counter % 100 == 0 && is_cancelled() { return Err("已取消".into()); }
                     let mut line=vec![];let read=reader.by_ref().take(2*1024*1024+1).read_until(b'\n',&mut line).map_err(|_|"line")?;
                     if read==0{break}if read>2*1024*1024{return Err("oversized line".into())}
                     if !line.ends_with(b"\n"){break} // incomplete trailing record retried after append
@@ -151,14 +173,23 @@ fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool)
                 if metadata.len()>16*1024*1024{return Err("large json".into())}
                 let v:Value=serde_json::from_reader(file).map_err(|_|"json")?;
                 let array=v.as_array().or_else(||v["messages"].as_array()).ok_or("format")?;
-                for (i,line) in array.iter().enumerate(){insert(line,i as u64,&mut state)?;}offset=metadata.len();
+                for (i,line) in array.iter().enumerate(){
+                    if i % 100 == 0 && is_cancelled() { return Err("已取消".into()); }
+                    insert(line,i as u64,&mut state)?;
+                }
+                offset=metadata.len();
             }
             tx.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?)",params![path_key,source,metadata.len(),mtime,prefix,offset,serde_json::to_string(&state).map_err(|_|"state")?]).map_err(|_|"checkpoint")?;
             tx.commit().map_err(|_|"commit")?;
             if file_events_count>0{changed+=1;}
             Ok(())
-        })();if result.is_err(){skipped+=1;}
+        })();
+        if let Err(e) = &result {
+            if e == "已取消" { return Err("已取消".into()); }
+            skipped+=1;
+        }
     }
+    if is_cancelled() { return Err("已取消".into()); }
     // Only clean up deleted/moved files when discovery was complete and no files errored out.
     // If discovery was truncated, deleting files outside `live` would falsely wipe unvisited records.
     if !truncated && skipped==0 {
@@ -328,4 +359,29 @@ fn estimate_model_cost(model: &str, counts: &[u64; 4]) -> Option<f64> {
         let gone=scan_paths(7,&db,vec![],false).unwrap();
         assert!(gone.rows.is_empty(),"events of deleted files must not linger");
     }
+    #[test]fn test_scan_cancellation_immediate(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let file=d.path().join("first.jsonl");
+        let v=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"m1","model":"x","usage":{"input_tokens":10,"output_tokens":5}}});
+        fs::write(&file,format!("{v}\n")).unwrap();
+        let res=scan_paths_with_cancel(7,&db,vec![("claude".into(),file)],false,&||true);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(),"已取消");
+    }
+    #[test]fn test_scan_cancellation_during_processing(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let file1=d.path().join("first.jsonl");let file2=d.path().join("second.jsonl");
+        let v=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"m1","model":"x","usage":{"input_tokens":10,"output_tokens":5}}});
+        fs::write(&file1,format!("{v}\n")).unwrap();
+        fs::write(&file2,format!("{v}\n")).unwrap();
+        let counter=std::sync::atomic::AtomicUsize::new(0);
+        let cancel_fn=move||{
+            let count=counter.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+            count >= 2
+        };
+        let res=scan_paths_with_cancel(7,&db,vec![("claude".into(),file1),("claude".into(),file2)],false,&cancel_fn);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(),"已取消");
+    }
 }
+
