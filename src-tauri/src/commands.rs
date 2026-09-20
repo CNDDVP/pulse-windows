@@ -1017,3 +1017,80 @@ pub fn rail_menu_cmd(app:AppHandle,window:tauri::Window)->Result<(),String>{
     let menu=Menu::with_items(&app,&[&m_set,&m_ref,&m_tog,&m_quit]).map_err(|e|e.to_string())?;
     menu.popup(window).map_err(|e|e.to_string())
 }
+
+#[tauri::command]
+pub async fn check_local_antigravity() -> Result<bool, String> {
+    #[cfg(not(windows))]
+    {
+        Ok(false)
+    }
+    #[cfg(windows)]
+    {
+        let script = r#"if (Get-CimInstance Win32_Process -Filter "Name LIKE 'language_server%'" | Where-Object { $_.ExecutablePath -match 'Antigravity' }) { exit 0 } else { exit 1 }"#;
+        let mut cmd = tokio::process::Command::new("powershell.exe");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .creation_flags(0x08000000)
+            .kill_on_drop(true);
+        match tokio::time::timeout(std::time::Duration::from_secs(4), cmd.status()).await {
+            Ok(Ok(status)) if status.success() => Ok(true),
+            _ => Ok(false),
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn quick_add_antigravity_account(state: State<'_, AppState>, app: AppHandle) -> Result<AppSettings, String> {
+    let _io = state.settings_io.lock().await;
+    let mut settings = state.settings.lock().await.clone();
+
+    // If an antigravity account already exists, return current settings
+    if settings.providers.values().any(|p| p.provider_id == "antigravity") {
+        return Ok(settings);
+    }
+
+    let account_id = if !settings.providers.contains_key("antigravity-default") {
+        "antigravity-default".to_string()
+    } else {
+        format!("antigravity-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0))
+    };
+
+    let max_order = settings.providers.values().map(|p| p.order).max().unwrap_or(0);
+
+    let config = crate::types::ProviderConfig {
+        provider_id: "antigravity".to_string(),
+        label: "Antigravity".to_string(),
+        enabled: true,
+        order: max_order + 1,
+        use_local: true,
+        credential_configured: false,
+        ..Default::default()
+    };
+
+    settings.providers.insert(account_id.clone(), config);
+    settings.generation = settings.generation.wrapping_add(1);
+
+    let had_error = state.config_error().is_some();
+    let saved = tauri::async_runtime::spawn_blocking({
+        let settings = settings.clone();
+        move || {
+            if had_error {
+                crate::config::backup_settings()?;
+            }
+            crate::config::save_settings(&settings)?;
+            Ok::<_, String>(settings)
+        }
+    }).await.map_err(|_| "添加 Antigravity 账号任务失败")??;
+
+    *state.settings.lock().await = saved.clone();
+    state.clear_config_error();
+    state.bump_account_gen(&account_id).await;
+
+    let _ = app.emit("settings-updated", &saved);
+
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::refresh_usages_and_emit(&app_clone, true).await;
+    });
+
+    Ok(saved)
+}
