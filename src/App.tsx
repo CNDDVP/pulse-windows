@@ -1,3 +1,4 @@
+import { detailViewportReady } from "./detailLayout";
 import {useEffect,useState} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {listen} from "@tauri-apps/api/event";
@@ -13,7 +14,9 @@ function windowLabel(): string {
 
 /** The free-mode hover card lives in its own overlay window ("detail"); Rust tells it
  *  which account to draw via the "detail-account" event. */
+interface DetailLayout {request_id:number;account_id:string;placement:"left"|"right"|"top"|"bottom";width:number;height:number}
 function DetailOverlay() {
+  const [layout,setLayout]=useState<DetailLayout|null>(null);
   const [usages,setUsages]=useState<ProviderUsage[]|null>(null);
   const [accountId,setAccountId]=useState<string|null>(null);
   const [settings,setSettings]=useState<AppSettings|null>(null);
@@ -21,8 +24,12 @@ function DetailOverlay() {
   useEffect(()=>{
     let alive=true;const stops:(()=>void)[]=[];let settingsVersion=0,usageVersion=0;
     void(async()=>{
-      const a=await listen<string>("detail-account",e=>{if(alive)setAccountId(e.payload)}).catch(()=>null);
+      let layoutVersion=0;
+      const applyLayout=(v:DetailLayout|null)=>{if(alive){setLayout(v);setAccountId(v?.account_id??null);if(v)setPlacement(v.placement)}};
+      const a=await listen<DetailLayout>("detail-layout",e=>{layoutVersion++;applyLayout(e.payload)}).catch(()=>null);
       if(a){if(!alive){void a();return}stops.push(a)}
+      const lv=layoutVersion;
+      void invoke<DetailLayout|null>("get_detail_layout").then(v=>{if(lv===layoutVersion)applyLayout(v)}).catch(()=>{});
       const b=await listen<ProviderUsage[]>("usages-updated",e=>{usageVersion++;if(alive)setUsages(e.payload)}).catch(()=>null);
       if(b){if(!alive){void b();return}stops.push(b)}
       const c=await listen<AppSettings>("settings-updated",e=>{settingsVersion++;if(alive)setSettings(e.payload)}).catch(()=>null);
@@ -33,8 +40,6 @@ function DetailOverlay() {
       const sv=settingsVersion,uv=usageVersion;
       void invoke<ProviderUsage[]>("get_usages").then(u=>{if(alive&&uv===usageVersion)setUsages(u)}).catch(()=>{});
       void invoke<AppSettings>("get_settings").then(x=>{if(alive&&sv===settingsVersion)setSettings(x)}).catch(()=>{});
-      // The create-time "detail-account" event can fire before this listener exists; ask directly.
-      void invoke<string|null>("detail_account").then(id=>{if(alive&&id)setAccountId(id)}).catch(()=>{});
     })();
     return()=>{alive=false;stops.forEach(f=>f())};
   },[]);
@@ -47,6 +52,25 @@ function DetailOverlay() {
   // 正下/正上时水平居中对准图标。
   // B15：独立窗口同样执行减少动态设置（根元素标记只在 MainApp 挂，detail 窗口拿不到）。
   useEffect(()=>{document.documentElement.classList.toggle("reduce-motion",!!settings?.reduce_motion);},[settings?.reduce_motion]);
+  const detailContentReady = !!settings && usages !== null;
+  useEffect(()=>{
+    if(!layout||!detailContentReady)return;
+    let stopped=false,stable=0,attempts=0;
+    let timer:ReturnType<typeof setTimeout>;
+    const check=()=>{
+      if(stopped)return;
+      stable=detailViewportReady(window.innerWidth,window.innerHeight,window.devicePixelRatio,layout.width,layout.height)?stable+1:0;
+      if(stable>=2 || attempts>=20){
+        void invoke("detail_layout_ready",{requestId:layout.request_id}).catch(console.error);
+        return;
+      }
+      attempts++;
+      timer=setTimeout(check,attempts<=2?16:30);
+    };
+    // Hidden WebViews may suspend rAF: use bounded checks until resize has settled.
+    timer=setTimeout(check,0);
+    return()=>{stopped=true;clearTimeout(timer)};
+  },[layout,detailContentReady]);
   const justifyClass=placement==="left"?"justify-end":placement==="right"?"justify-start":"justify-center";
   // 窗口在 rail 正下/正上时内容贴边渲染，否则卡片矮时垂直居中会在窗口顶留出大片透明，
   // 视觉上像"详情卡离悬浮栏很远"。

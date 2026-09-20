@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Pulse",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "identifier": "com.cnddvp.pulse",
   "build": {
     "frontendDist": "../dist",
@@ -46,8 +46,8 @@
         "label": "detail",
         "title": "Pulse 详情",
         "url": "index.html",
-        "width": 380,
-        "height": 340,
+        "width": 340,
+        "height": 360,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,
