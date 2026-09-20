@@ -29,8 +29,12 @@ export const levelName:Record<RailLevel,string>={unknown:'灰色',green:'绿色'
 export const defaultRailWarnings=():RailWarnings=>({scope:'all',account_ids:[],custom_thresholds:false,yellow:75,red:90,accounts:{}});
 export const defaultAccountRule=():RailAccountRule=>({mode:'primary',window_id:null,balances:{}});
 export function railConfig(settings:AppSettings):RailWarnings {
-  return settings.rail_warnings??{...defaultRailWarnings(),custom_thresholds:settings.warning_threshold!==90,
+  const base=settings.rail_warnings??{...defaultRailWarnings(),custom_thresholds:settings.warning_threshold!==90,
     yellow:settings.warning_threshold-15,red:settings.warning_threshold};
+  // 未启用自定义阈值时跟随通用预警阈值：避免用户调整 warning_threshold 后
+  // 收纳条颜色与圆环颜色不一致。
+  if(base.custom_thresholds)return base;
+  return {...base,yellow:Math.max(0,settings.warning_threshold-15),red:settings.warning_threshold};
 }
 
 export function formatTimeAgo(dateStr:string|null|undefined,now=Date.now()):string {
@@ -148,19 +152,27 @@ function periodAdvanced(previous:string,next:string):boolean {
 
 export interface RailTransition {shown:RailResult;configKey:string;pending:RailLevel|null;since:number}
 /** Pure clock-driven transition; reset/config changes and data loss bypass the downgrade delay. */
+function sameShown(a:RailResult,b:RailResult):boolean {
+  return a.level===b.level&&a.reason===b.reason&&a.shortReason===b.shortReason&&a.resetKey===b.resetKey
+    &&a.excluded.length===b.excluded.length&&a.sources.length===b.sources.length;
+}
 export function advanceRail(previous:RailTransition|null,next:RailResult,configKey:string,now:number):RailTransition {
-  if(!previous||previous.configKey!==configKey||periodAdvanced(previous.shown.resetKey,next.resetKey)||next.sources.some(s=>s.level==='unknown')||next.level==='unknown'||previous.shown.level==='unknown'||levelRank[next.level]>=levelRank[previous.shown.level])
-    return {shown:next,configKey,pending:null,since:now};
+  const immediate=(shown:RailResult):RailTransition=>({shown,configKey,pending:null,since:now});
+  // 状态语义未变时复用旧引用：避免秒级 tick 每次产生新对象触发下游重渲染与 IPC（B 稳定性）。
+  const reuseIfSame=(t:RailTransition):RailTransition=>
+    previous&&previous.configKey===configKey&&previous.pending===null&&sameShown(previous.shown,t.shown)?previous:t;
+  if(!previous||previous.configKey!==configKey||periodAdvanced(previous.shown.resetKey,next.resetKey)||next.sources.some(s=>s.level==='unknown')||next.level==='unknown'||previous.shown.level==='unknown'||levelRank[next.level]>=levelRank[previous.shown.level]){
+    return reuseIfSame(immediate(next));
+  }
   const since=previous.pending===next.level?previous.since:now;
-  if(now-since>=10000)return {shown:next,configKey,pending:null,since:now};
-  return {
-    ...previous,
-    pending:next.level,
-    since,
-    shown:{
-      ...previous.shown,
-      reason:`降级确认中（持续 10 秒后变色）；当前读数：${next.reason}`,
-      shortReason:`${previous.shown.shortReason}（降级确认中，持续 10 秒后变色）`
-    }
-  };
+  if(now-since>=10000){
+    return reuseIfSame(immediate(next));
+  }
+  const waiting:RailTransition={...previous,pending:next.level,since,shown:{
+    ...previous.shown,
+    reason:`降级确认中（持续 10 秒后变色）；当前读数：${next.reason}`,
+    shortReason:`${previous.shown.shortReason}（降级确认中，持续 10 秒后变色）`
+  }};
+  if(previous.pending===waiting.pending&&previous.since===waiting.since&&sameShown(previous.shown,waiting.shown))return previous;
+  return waiting;
 }
