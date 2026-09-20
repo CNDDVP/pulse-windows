@@ -177,6 +177,10 @@ pub async fn request_close_settings(source:String,state:State<'_,AppState>,app:A
     Ok(state.close_coordinator.request_close(&app,&source).await)
 }
 #[tauri::command]
+pub async fn pending_settings_close(state:State<'_,AppState>)->Result<Option<crate::settings_close::CloseRequestPayload>,String>{
+    Ok(state.close_coordinator.pending_close().await)
+}
+#[tauri::command]
 pub async fn acknowledge_close(request_id:u64,has_draft:bool,state:State<'_,AppState>)->Result<(),String>{
     state.close_coordinator.acknowledge_close(request_id,has_draft).await
 }
