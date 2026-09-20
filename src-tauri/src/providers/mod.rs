@@ -18,6 +18,58 @@ pub const IMPLEMENTED:&[&str]=&[
     "volcengine","command-code","devin","ollama","xiaomi"
 ];
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProxyDetection {
+    pub mode: String,
+    pub detected_type: String,
+    pub address: Option<String>,
+    pub detail: String,
+}
+
+pub fn detect_proxy(proxy_cfg: &crate::types::NetworkProxySettings) -> ProxyDetection {
+    match proxy_cfg.mode.as_str() {
+        "manual_http" => ProxyDetection {
+            mode: "manual_http".into(),
+            detected_type: "manual_http".into(),
+            address: Some(format!("{}:{}", proxy_cfg.host, proxy_cfg.port)),
+            detail: format!("手动 HTTP 代理 ({}:{})", proxy_cfg.host, proxy_cfg.port),
+        },
+        "manual_socks5" => ProxyDetection {
+            mode: "manual_socks5".into(),
+            detected_type: "manual_socks5".into(),
+            address: Some(format!("{}:{}", proxy_cfg.host, proxy_cfg.port)),
+            detail: format!("手动 SOCKS5 代理 ({}:{})", proxy_cfg.host, proxy_cfg.port),
+        },
+        _ => {
+            if let Ok(env_proxy) = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("ALL_PROXY")).or_else(|_| std::env::var("HTTP_PROXY")) {
+                if !env_proxy.trim().is_empty() {
+                    return ProxyDetection {
+                        mode: "auto".into(),
+                        detected_type: "env_proxy".into(),
+                        address: Some(env_proxy.clone()),
+                        detail: format!("环境变量代理 ({env_proxy})"),
+                    };
+                }
+            }
+            if let Some(sys_proxy) = crate::platform::detect_windows_system_proxy() {
+                ProxyDetection {
+                    mode: "auto".into(),
+                    detected_type: "system_proxy".into(),
+                    address: Some(sys_proxy.clone()),
+                    detail: format!("Windows 系统代理 ({sys_proxy})"),
+                }
+            } else {
+                ProxyDetection {
+                    mode: "auto".into(),
+                    detected_type: "direct".into(),
+                    address: None,
+                    detail: "直连（未检测到系统代理或环境变量代理）".into(),
+                }
+            }
+        }
+    }
+}
+
 pub fn client_with_proxy(proxy_cfg: &crate::types::NetworkProxySettings) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(12))
@@ -57,15 +109,36 @@ pub async fn response(id:&str,request:reqwest::RequestBuilder)->Result<Value,Pro
         .unwrap_or_else(||"目标服务".to_string());
     let mut response=request.send().await.map_err(|e|{
         let host=host.as_str();
-        let detail=if e.is_timeout(){"连接超时".to_string()}
-            else if e.is_connect(){format!("无法建立到 {host} 的连接").to_string()}
-            else if e.is_decode(){"响应解码失败".to_string()}
-            else{format!("{host}：{e}")};
-        ProviderUsage::problem(id,if e.is_timeout(){"timeout"}else{"network"},&format!("网络请求失败：{detail}；请检查代理或连接"))
+        let err_str = e.to_string().to_lowercase();
+        let (code, detail) = if e.is_timeout() {
+            ("timeout", "连接超时，请检查网络延迟或代理响应".to_string())
+        } else if err_str.contains("dns") || err_str.contains("name resolution") || err_str.contains("no such host") {
+            ("dns", format!("无法解析 {host} 域名，请检查 DNS 设置或代理规则"))
+        } else if err_str.contains("proxy") {
+            ("proxy", "无法连接到指定的本地/系统代理端口，请检查代理软件是否已启动".to_string())
+        } else if err_str.contains("tls") || err_str.contains("handshake") || err_str.contains("certificate") || err_str.contains("rustls") {
+            ("tls", format!("与 {host} 建立安全连接失败（TLS/SSL 握手错误），请检查代理证书或网络拦截"))
+        } else if e.is_connect() {
+            ("connect", format!("无法建立到 {host} 的网络连接，请检查网络环境或代理配置"))
+        } else if e.is_decode() {
+            ("decode", format!("{host} 返回的数据无法解码"))
+        } else {
+            ("network", format!("{host}：{e}"))
+        };
+        ProviderUsage::problem(id, code, &format!("网络请求失败：{detail}"))
     })?;
     if !response.status().is_success(){
-        let (code,msg)=match response.status().as_u16(){401|403=>("auth","凭据失效或权限不足，请重新登录"),429=>("rate_limited","请求频率受限，稍后重试"),404=>("not_found","服务接口不存在"),300..=399=>("redirect","服务重定向已阻止，请核对登录状态"),_=>("server","服务暂时无法提供数据")};
-        let mut r=ProviderUsage::problem(id,code,msg);
+        let status = response.status().as_u16();
+        let (code,msg)=match status {
+            401 => ("auth", "登录凭据无效或已过期，请重新登录".to_string()),
+            403 => ("forbidden", "服务拒绝访问（HTTP 403）；请检查账号权限、区域限制或网络出口（重新登录未必能解决）".to_string()),
+            404 => ("not_found", "服务接口不存在（HTTP 404）".to_string()),
+            429 => ("rate_limited", "请求频率受限（HTTP 429），稍后自动重试".to_string()),
+            300..=399 => ("redirect", "服务重定向已阻止，请核对登录状态".to_string()),
+            500..=599 => ("server", format!("服务端暂时异常（HTTP {status}），稍后自动重试")),
+            _ => ("server", format!("服务返回异常状态码（HTTP {status}）")),
+        };
+        let mut r=ProviderUsage::problem(id,code,&msg);
         r.retry_after_seconds=response.headers().get("retry-after").and_then(|h|h.to_str().ok()).and_then(|s|s.parse::<u64>().ok()).map(|n|n.clamp(30,3600));
         return Err(r)
     }

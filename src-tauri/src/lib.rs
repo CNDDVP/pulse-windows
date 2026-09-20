@@ -21,6 +21,7 @@ pub struct AppState {
     pub refresh_gate:Mutex<()>,pub schedule:Mutex<HashMap<String,(Instant,u32)>>,
     pub configuration_error:std::sync::Mutex<Option<String>>,pub http:tokio::sync::RwLock<reqwest::Client>,
     pub window_mode:Mutex<String>,pub user_hidden:AtomicBool,
+    pub last_cursor_over:std::sync::Mutex<Instant>,
     pub ledger_gate:Mutex<()>,
     pub ledger_scan_id:Arc<AtomicU64>,
     pub alerts:Mutex<alerts::Memory>,
@@ -186,8 +187,16 @@ pub fn apply_hotkeys(app:&AppHandle,hk:&HotkeySettings)->Result<(),String>{
     Ok(())
 }
 pub fn notify(app:&AppHandle,title:&str,body:&str)->Result<(),String>{
-    use tauri_plugin_notification::NotificationExt;
-    app.notification().builder().title(title).body(body).show().map_err(|e|format!("通知发送失败：{e}"))
+    #[cfg(windows)]
+    {
+        let _ = app;
+        crate::platform::send_native_toast(title, body).map(|_| ()).map_err(|e| format!("通知发送失败：{e}"))
+    }
+    #[cfg(not(windows))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        app.notification().builder().title(title).body(body).show().map_err(|e|format!("通知发送失败：{e}"))
+    }
 }
 pub fn open_settings_window(app:&AppHandle){
     if let Some(w)=app.get_webview_window("settings"){
@@ -560,6 +569,7 @@ pub fn run(){
         }
     };
     crate::platform::repair_startup_if_moved();
+    crate::platform::sync_portable_notification_identity();
     // profile_id exists from first run, not first credential use.
     let _=config::get_profile();
     if mode == config::ConfigMode::Portable || std::env::var_os("PULSE_DATA_DIR").is_some() {
@@ -570,7 +580,7 @@ pub fn run(){
     let (settings,error)=match config::load_settings(){Ok(s)=>(s,None),Err(e)=>(AppSettings::default(),Some(e))};
     let http=tokio::sync::RwLock::new(providers::client_with_proxy(&settings.network_proxy).expect("HTTP client initialization failed"));
     let settings_start_hidden=settings.start_behavior=="tray";
-    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),ledger_gate:Mutex::new(()),ledger_scan_id:Arc::new(AtomicU64::new(0)),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None),settings_io:tokio::sync::Mutex::new(()),account_generations:Mutex::new(HashMap::new()),refresh_slots:Arc::new(Semaphore::new(4)),inflight:Mutex::new(HashMap::new()),request_counter:AtomicU64::new(0),activity:std::sync::Mutex::new(HashMap::new()),activity_watcher:std::sync::Mutex::new(activity::Watcher::new(activity::Watcher::system_roots())),app_handle:std::sync::OnceLock::new(),dragging:AtomicBool::new(false),drag_grab:std::sync::Mutex::new((0,0)),drag_side:std::sync::Mutex::new("free".into()),drag_ratio:std::sync::Mutex::new((0.5,0.5)),drag_monitors:std::sync::Mutex::new(Vec::new()),close_coordinator:Arc::new(settings_close::SettingsCloseCoordinator::default())};
+    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),last_cursor_over:std::sync::Mutex::new(Instant::now()),ledger_gate:Mutex::new(()),ledger_scan_id:Arc::new(AtomicU64::new(0)),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None),settings_io:tokio::sync::Mutex::new(()),account_generations:Mutex::new(HashMap::new()),refresh_slots:Arc::new(Semaphore::new(4)),inflight:Mutex::new(HashMap::new()),request_counter:AtomicU64::new(0),activity:std::sync::Mutex::new(HashMap::new()),activity_watcher:std::sync::Mutex::new(activity::Watcher::new(activity::Watcher::system_roots())),app_handle:std::sync::OnceLock::new(),dragging:AtomicBool::new(false),drag_grab:std::sync::Mutex::new((0,0)),drag_side:std::sync::Mutex::new("free".into()),drag_ratio:std::sync::Mutex::new((0.5,0.5)),drag_monitors:std::sync::Mutex::new(Vec::new()),close_coordinator:Arc::new(settings_close::SettingsCloseCoordinator::default())};
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -596,24 +606,27 @@ pub fn run(){
                     // synchronous Win32 calls; keep them off the async workers that serve IPC.
                     let tick_handle=window_handle.clone();
                     let dragging=state.dragging.load(Ordering::Relaxed);
-                    let _=tauri::async_runtime::spawn_blocking(move||{
-                        if dragging{return}
-                        let Some(w)=tick_handle.get_webview_window("main")else{return};
-                        let hide=user_hidden || !settings.show_rail || (settings.hide_fullscreen && window::fullscreen_other(&tick_handle));
+                    let settings_c=settings.clone();
+                    let mode_c=mode.clone();
+                    let is_over=tauri::async_runtime::spawn_blocking(move||{
+                        if dragging{return false}
+                        let Some(w)=tick_handle.get_webview_window("main")else{return false};
+                        let hide=user_hidden || !settings_c.show_rail || (settings_c.hide_fullscreen && window::fullscreen_other(&tick_handle));
                         if hide {
                             if w.is_visible().unwrap_or(false){let _=w.hide();}
                             // 主栏隐藏（托盘/全屏避让）时同步收起详情卡，避免置顶卡片残留屏幕。
                             if let Some(d)=tick_handle.get_webview_window("detail"){
                                 if d.is_visible().unwrap_or(false){let _=d.hide();}
                             }
+                            false
                         } else {
                             if !w.is_visible().unwrap_or(false) {
                                 let _=w.show();
                                 let _=w.set_always_on_top(true);
                             }
-                            if mode != "expanded" && settings.dock_side != "free" {
-                                window::position(&tick_handle,&settings,&mode);
-                            } else if settings.dock_side == "free" && tick_no % 5 == 0 {
+                            if mode_c != "expanded" && settings_c.dock_side != "free" {
+                                window::position(&tick_handle,&settings_c,&mode_c);
+                            } else if settings_c.dock_side == "free" && tick_no % 20 == 0 {
                                 // A15 断屏恢复（每 ~5s 查一次）：自由模式窗口落在任何已知
                                 // 显示器之外（屏被拔/显示配置切换）时，按 free_x/free_y 比例
                                 // 重挂主屏工作区，避免悬浮栏不可达。吸附模式由 position() 兜底。
@@ -626,17 +639,54 @@ pub fn run(){
                                     });
                                     if !on_screen{
                                         let area=primary.work_area();
-                                        let count=crate::window::item_count(&settings);
+                                        let count=crate::window::item_count(&settings_c);
                                         let rect=crate::window::geometry(
                                             crate::window::Rect{x:area.position.x,y:area.position.y,w:area.size.width,h:area.size.height},
-                                            primary.scale_factor(),"free","rail",count,settings.free_x,settings.free_y);
+                                            primary.scale_factor(),"free","rail",count,settings_c.free_x,settings_c.free_y);
                                         crate::window::place_at(&w,rect.x,rect.y,rect.w,rect.h);
                                     }
                                 }
                             }
+                            let over_main = crate::window::is_cursor_over_window(&w);
+                            let over_detail = tick_handle.get_webview_window("detail")
+                                .map(|d| d.is_visible().unwrap_or(false) && crate::window::is_cursor_over_window(&d))
+                                .unwrap_or(false);
+                            over_main || over_detail
                         }
-                    }).await;
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    }).await.unwrap_or(false);
+
+                    if !user_hidden && settings.show_rail && !dragging && settings.dock_side != "free" {
+                        if is_over {
+                            *state.last_cursor_over.lock().unwrap() = Instant::now();
+                            if mode == "collapsed" {
+                                *state.window_mode.lock().await = "rail".into();
+                                let _ = window_handle.emit("window-state-changed", "rail");
+                                let s = settings.clone();
+                                let h = window_handle.clone();
+                                let _ = tauri::async_runtime::spawn_blocking(move || {
+                                    crate::window::position(&h, &s, "rail");
+                                }).await;
+                            }
+                        } else if settings.auto_collapse_seconds > 0 {
+                            let elapsed = state.last_cursor_over.lock().unwrap().elapsed();
+                            if elapsed >= Duration::from_secs(settings.auto_collapse_seconds) {
+                                if mode == "rail" {
+                                    *state.window_mode.lock().await = "collapsed".into();
+                                    let _ = window_handle.emit("window-state-changed", "collapsed");
+                                    let s = settings.clone();
+                                    let h = window_handle.clone();
+                                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                                        crate::window::position(&h, &s, "collapsed");
+                                        if let Some(d) = h.get_webview_window("detail") {
+                                            if d.is_visible().unwrap_or(false) { let _ = d.hide(); }
+                                        }
+                                    }).await;
+                                }
+                            }
+                        }
+                    }
+
+                    tokio::time::sleep(Duration::from_millis(250)).await;
                 }
             });
             tauri::async_runtime::spawn(async move{
@@ -697,6 +747,6 @@ pub fn run(){
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::refresh_account,commands::drag_begin,commands::drag_move,commands::drag_end,commands::drag_cancel,commands::rail_menu_cmd,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::settings_window_ready,commands::request_close_settings,commands::acknowledge_close,commands::pending_settings_close,commands::confirm_close_settings,commands::set_credential,commands::delete_credential,commands::delete_account,commands::diagnostics,commands::test_account,commands::token_spend,commands::cancel_token_spend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::get_detail_layout,commands::detail_layout_ready,commands::hide_detail,commands::detail_account,commands::set_detail_hover,commands::is_portable,commands::get_profile_info,commands::check_profile_status,commands::clear_profile_credentials,commands::create_isolated_profile,commands::get_runtime_info,commands::check_importable_config,commands::import_installed_config])
+        .invoke_handler(tauri::generate_handler![commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::refresh_account,commands::drag_begin,commands::drag_move,commands::drag_end,commands::drag_cancel,commands::rail_menu_cmd,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::settings_window_ready,commands::request_close_settings,commands::acknowledge_close,commands::pending_settings_close,commands::confirm_close_settings,commands::set_credential,commands::delete_credential,commands::delete_account,commands::diagnostics,commands::test_account,commands::token_spend,commands::cancel_token_spend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::get_notification_status,commands::register_notification_identity,commands::unregister_notification_identity,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::get_detail_layout,commands::detail_layout_ready,commands::hide_detail,commands::detail_account,commands::set_detail_hover,commands::is_portable,commands::get_profile_info,commands::check_profile_status,commands::clear_profile_credentials,commands::create_isolated_profile,commands::get_runtime_info,commands::check_importable_config,commands::import_installed_config,commands::detect_network_proxy,commands::test_network_connection])
         .run(tauri::generate_context!()).expect("Pulse runtime failed");
 }

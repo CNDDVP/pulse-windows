@@ -51,9 +51,40 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   useEffect(()=>{insideRef.current=inside;},[inside]);
 
   useEffect(()=>{
+    let alive=true;
+    const stop=listen<string>("window-state-changed",e=>{
+      if(alive){
+        setCollapsed(e.payload==="collapsed");
+      }
+    });
+    return()=>{alive=false;void stop.then(f=>f())};
+  },[]);
+  useEffect(()=>{
+    const onBlur=()=>{
+      insideRef.current=false;
+      setInside(false);
+    };
+    const onDocLeave=(e:MouseEvent)=>{
+      if(!e.relatedTarget&&!(e as unknown as {toElement:unknown}).toElement){
+        insideRef.current=false;
+        setInside(false);
+      }
+    };
+    window.addEventListener("blur",onBlur);
+    document.addEventListener("mouseleave",onDocLeave);
+    return()=>{
+      window.removeEventListener("blur",onBlur);
+      document.removeEventListener("mouseleave",onDocLeave);
+    };
+  },[]);
+
+  useEffect(()=>{
     if(draggingRef.current)return;
     if(free){setCollapsed(false);return}
-    if(inside||pinned||settings.auto_collapse_seconds===0){setCollapsed(false);return}
+    if(inside||pinned||settings.auto_collapse_seconds===0){
+      if(settings.auto_collapse_seconds===0)setCollapsed(false);
+      return;
+    }
     const t=setTimeout(()=>{
       setHovered(null);
       setCollapsed(true);
@@ -233,6 +264,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     insideRef.current=true;
     setInside(true);
     setCollapsed(false);
+    void invoke("set_window_state",{state:"rail"});
   };
   const exit = () => {
     if (leave.current) clearTimeout(leave.current);
@@ -242,7 +274,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       if(!detailPointer.current){
         closeDetail();
       }
-    }, 250);
+    }, 120);
   };
 
   // The rail follows the account order from settings, not the arrival order of readings.

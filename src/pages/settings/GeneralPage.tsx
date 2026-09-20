@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, MonitorOption, ProviderUsage } from "../../types";
+import type { AppSettings, MonitorOption, ProviderUsage, ProxyDetection, NetworkTestResult } from "../../types";
 import { Section, Row, Field, Switch } from "./shared";
 import { selectCls, btnGhost, timeText, PROVIDERS } from "./constants";
 
@@ -11,6 +11,33 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
 }) {
   const [startup, setStartup] = useState<boolean | null>(null);
   const [isPortable, setIsPortable] = useState(false);
+  const [proxyInfo, setProxyInfo] = useState<ProxyDetection | null>(null);
+  const [testingProxy, setTestingProxy] = useState(false);
+  const [testResult, setTestResult] = useState<NetworkTestResult | null>(null);
+
+  const fetchProxyInfo = () => {
+    void invoke<ProxyDetection>("detect_network_proxy").then(setProxyInfo).catch(() => setProxyInfo(null));
+  };
+  useEffect(() => { fetchProxyInfo(); }, [settings.network_proxy]);
+
+  const handleTestProxy = async () => {
+    setTestingProxy(true);
+    setTestResult(null);
+    try {
+      const res = await invoke<NetworkTestResult>("test_network_connection", { target: null });
+      setTestResult(res);
+      if (res.ok) {
+        toast("success", `连接成功 (${res.duration_ms}ms)`);
+      } else {
+        toast("error", `连接测试失败: ${res.error || "未知错误"}`);
+      }
+    } catch (e) {
+      toast("error", `测试失败: ${String(e)}`);
+    } finally {
+      setTestingProxy(false);
+    }
+  };
+
   useEffect(() => { void invoke<boolean>("startup_enabled").then(setStartup).catch(() => setStartup(null)); }, []);
   useEffect(() => { void invoke<boolean>("is_portable").then(setIsPortable).catch(() => {}); }, []);
   const lastSuccess = usages.map(u => u.last_success_at).filter((s): s is string => !!s).sort().at(-1) ?? null;
@@ -79,8 +106,8 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
           </Field>
         </div>
         <div className="pt-2 border-t border-white/5 space-y-3">
-          <Row title="显示额度周期已过时间（外圈细线）" subtitle="外圈表示所选周期已流逝的比例，可与用量对比；每个账号可在其页面选择跟随的周期。">
-            <Switch checked={settings.show_elapsed} onChange={v => update({ show_elapsed: v })} label="显示额度周期已过时间" />
+          <Row title="显示时间外环（所有账号）" subtitle="在主圆环外侧显示白色细线，表示所选周期已流逝的比例（不代表额度使用率）；每个账号可在其设置页指定跟随的周期。">
+            <Switch checked={settings.show_elapsed} onChange={v => update({ show_elapsed: v })} label="显示时间外环（所有账号）" />
           </Row>
           <Row title="显示耗尽预测" subtitle="按周期平均速度估算是否会在重置前用满。">
             <Switch checked={settings.forecast} onChange={v => update({ forecast: v })} label="显示耗尽预测" />
@@ -214,6 +241,25 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
             </div>
           </div>
         )}
+        <div className="pt-2 border-t border-white/5 space-y-2">
+          <div className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-950/60 border border-white/5 text-xs">
+            <div className="space-y-0.5">
+              <span className="text-zinc-400">检测结果：</span>
+              <span className="text-zinc-200 font-mono font-medium ml-1">{proxyInfo?.detail || "正在检测…"}</span>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <button className={btnGhost} onClick={fetchProxyInfo}>重新检测</button>
+              <button className={btnGhost} disabled={testingProxy} onClick={() => void handleTestProxy()}>
+                {testingProxy ? "测试中…" : "检测连接"}
+              </button>
+            </div>
+          </div>
+          {testResult && (
+            <div className={`p-2.5 rounded-xl border text-xs font-mono ${testResult.ok ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-300" : "bg-red-950/30 border-red-500/40 text-red-300"}`}>
+              {testResult.ok ? `✓ 连接成功 (${testResult.duration_ms}ms) · 目标 ${testResult.target}` : `✗ 连接失败 · ${testResult.error || "未知错误"}`}
+            </div>
+          )}
+        </div>
       </Section>
 
       <Section title="启动" icon="🚀">

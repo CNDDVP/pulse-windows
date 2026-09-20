@@ -39,6 +39,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                             tauri::async_runtime::spawn(async move {
                                 let s = app_c.state::<crate::AppState>().settings.lock().await.clone();
                                 *app_c.state::<crate::AppState>().window_mode.lock().await = "rail".into();
+                                *app_c.state::<crate::AppState>().last_cursor_over.lock().unwrap() = std::time::Instant::now();
                                 crate::window::position(&app_c, &s, "rail");
                             });
                         }
@@ -78,6 +79,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     tauri::async_runtime::spawn(async move {
                         let s = app_c.state::<crate::AppState>().settings.lock().await.clone();
                         *app_c.state::<crate::AppState>().window_mode.lock().await = "rail".into();
+                        *app_c.state::<crate::AppState>().last_cursor_over.lock().unwrap() = std::time::Instant::now();
                         crate::window::position(&app_c, &s, "rail");
                     });
                 }

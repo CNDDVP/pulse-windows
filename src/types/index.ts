@@ -51,3 +51,40 @@ export interface AppSettings {
 
 /** 一次全量刷新的结果（A07）：读数快照 + 实际发起/被冷却跳过的账号数。 */
 export interface RefreshSummary { readings: ProviderUsage[]; initiated: number; skipped: number; }
+
+export interface ProxyDetection {
+  mode: string;
+  detected_type: string;
+  address: string | null;
+  detail: string;
+}
+
+export interface NetworkTestResult {
+  ok: boolean;
+  target: string;
+  status: number | null;
+  duration_ms: number;
+  error: string | null;
+}
+
+export interface NotificationSendResult {
+  success: boolean;
+  stage: string;
+  setting: string;
+  test_id: string;
+  error: string | null;
+  hint: string | null;
+}
+
+export interface NotificationFullStatus {
+  identity_status: "registered" | "moved" | "missing_shortcut" | "missing_aumid" | "unregistered";
+  shortcut_path: string | null;
+  shortcut_target: string | null;
+  current_exe: string;
+  windows_toasts_enabled: boolean | null;
+  app_notification_setting: "enabled" | "disabled_for_app" | "disabled_for_user" | "disabled_by_policy" | "disabled_by_manifest" | "unknown";
+  is_portable: boolean;
+  plugin_permission: string;
+  last_error: string | null;
+}
+

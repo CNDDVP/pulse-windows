@@ -105,7 +105,22 @@ function MainApp({label}:{label:string}){
         const u=await invoke<ProviderUsage[]>("get_usages");
         if(alive&&uv===usageVersion)setUsages(u);
       }catch{/* 读数加载失败不阻塞界面；下一次刷新事件会补上 */}
-    })();return()=>{alive=false;stops.forEach(f=>f())};
+    })();
+    const refreshSnapshot = () => {
+      if (!alive) return;
+      void invoke<ProviderUsage[]>("get_usages").then(u => {
+        if (alive) setUsages(u);
+      }).catch(() => {});
+    };
+    window.addEventListener("focus", refreshSnapshot);
+    const onVis = () => { if (document.visibilityState === "visible") refreshSnapshot(); };
+    document.addEventListener("visibilitychange", onVis);
+    return()=>{
+      alive=false;
+      window.removeEventListener("focus", refreshSnapshot);
+      document.removeEventListener("visibilitychange", onVis);
+      stops.forEach(f=>f());
+    };
   },[]);
   // 减少动态效果：应用内开关挂到根元素，CSS 一处覆盖所有动画（A27）。
   useEffect(()=>{document.documentElement.classList.toggle("reduce-motion",!!settings?.reduce_motion);},[settings?.reduce_motion]);
