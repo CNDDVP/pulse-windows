@@ -23,7 +23,13 @@ export function UsageDetailCard({usage,settings,placement}:{usage:ProviderUsage;
       />
     )}
     <strong className="text-sm">{usage.display_name}</strong><p className="text-zinc-500">{usage.plan_name}</p>
-    {usage.error_message&&<p className="text-amber-500 my-2">{usage.state==="stale"?"旧读数 · ":""}{usage.error_message}</p>}
+    {usage.error_message && (
+      <p className="text-amber-500 my-2">
+        {usage.state === "stale"
+          ? (usage.error_code === "local_service" ? "应用未运行 · 显示上次读数" : `旧读数 · ${usage.error_message}`)
+          : usage.error_message}
+      </p>
+    )}
     {usage.windows.map(w => {
       const pct = isRemaining ? Math.max(0, 100 - w.used_percent) : w.used_percent;
       const label = isRemaining ? "剩余" : "已用";
