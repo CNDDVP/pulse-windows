@@ -91,16 +91,32 @@
   box-shadow: 0 0 12px rgba(239, 68, 68, 0.85);
 }
 
+@keyframes railBreathe {
+  0%, 100% {
+    opacity: 0.92;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 1;
+    filter: brightness(1.35) drop-shadow(0 0 8px currentColor);
+  }
+}
+
+.rail-breathe {
+  animation: railBreathe 2s ease-in-out infinite;
+}
+
 /* 减少动态效果（A27）：应用内开关（html.reduce-motion）与系统偏好统一生效，
    覆盖刷新弧/活动卫星灯（animate-spin）与详情卡进出动画；状态以静态形态保留。 */
 @media (prefers-reduced-motion: reduce) {
-  .animate-spin, .card-animate-left, .card-animate-right, .card-enter {
+  .animate-spin, .card-animate-left, .card-animate-right, .card-enter, .rail-breathe {
     animation: none !important;
   }
 }
 html.reduce-motion .animate-spin,
 html.reduce-motion .card-animate-left,
 html.reduce-motion .card-animate-right,
-html.reduce-motion .card-enter {
+html.reduce-motion .card-enter,
+html.reduce-motion .rail-breathe {
   animation: none !important;
 }

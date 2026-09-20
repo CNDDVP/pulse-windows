@@ -66,6 +66,30 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
   const [toast, setToast] = useState<{ type: ToastKind; text: string } | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [importable, setImportable] = useState<{ account_count: number; provider_names: string[]; installed_path: string } | null>(null);
+  const [antigravityDetected, setAntigravityDetected] = useState(false);
+  const [dismissedAntigravity, setDismissedAntigravity] = useState(false);
+  const hasAntigravity = useMemo(() => Object.values(settings.providers).some(p => p.provider_id === "antigravity"), [settings.providers]);
+  useEffect(() => {
+    if (!hasAntigravity) {
+      invoke<boolean>("check_local_antigravity").then(setAntigravityDetected).catch(() => {});
+    }
+  }, [hasAntigravity]);
+
+  const handleQuickAddAntigravity = async () => {
+    try {
+      setBusy(true);
+      const saved = await invoke<AppSettings>("quick_add_antigravity_account");
+      markApplied(saved);
+      setSettings(saved);
+      onSaved(saved);
+      showToast("success", "已成功接入本地 Antigravity 账号，正在获取最新配额！");
+    } catch (e) {
+      showToast("error", `接入失败: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const [wizardSelected, setWizardSelected] = useState<string[]>(() => {
     return (settings.authorized_providers && settings.authorized_providers.length > 0)
       ? settings.authorized_providers
@@ -372,6 +396,68 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
     <button key={key} onClick={onClick} className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left text-xs transition-colors cursor-pointer ${active ? "bg-zinc-800 text-white font-semibold" : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"}`}>{children}</button>
   );
   const stateDot = (u?: ProviderUsage, enabled = true) => <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${!enabled ? "bg-zinc-700" : u?.state === "live" ? "bg-emerald-400" : u?.state === "stale" ? "bg-amber-400" : u ? "bg-red-400" : "bg-zinc-600"}`} />;
+  const quotaCapsule = (u?: ProviderUsage, enabled = true) => {
+    if (!enabled) {
+      return (
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-zinc-800/80 text-zinc-500 border border-zinc-700/40 shrink-0">
+          已停用
+        </span>
+      );
+    }
+    if (!u) {
+      return (
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-zinc-800/60 text-zinc-500 border border-zinc-700/30 shrink-0">
+          待读数
+        </span>
+      );
+    }
+    if (u.state === "error" || u.state === "unavailable") {
+      return (
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-red-950/40 text-red-400 border border-red-800/50 shrink-0" title={u.error_message || "连接异常"}>
+          异常
+        </span>
+      );
+    }
+    if (u.state === "loading") {
+      return (
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-950/40 text-blue-300 border border-blue-800/40 shrink-0 animate-pulse">
+          刷新中
+        </span>
+      );
+    }
+
+    const pct = u.primary_percent != null ? Math.round(u.primary_percent) : null;
+    if (pct == null) {
+      return (
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-zinc-800/60 text-zinc-400 border border-zinc-700/40 shrink-0">
+          --%
+        </span>
+      );
+    }
+
+    const isStale = u.state === "stale";
+    const colorCls = pct >= 85
+      ? "bg-red-950/60 text-red-300 border-red-800/60"
+      : pct >= 65
+      ? "bg-amber-950/60 text-amber-300 border-amber-800/60"
+      : "bg-emerald-950/60 text-emerald-300 border-emerald-800/60";
+    const barCls = pct >= 85
+      ? "bg-red-400"
+      : pct >= 65
+      ? "bg-amber-400"
+      : "bg-emerald-400";
+
+    return (
+      <div className={`inline-flex flex-col justify-center px-1.5 py-0.5 rounded border text-[10px] font-mono ${colorCls} min-w-[44px] shrink-0`} title={isStale ? `缓存读数: ${pct}% (应用未运行)` : `当前用量: ${pct}%`}>
+        <div className="flex items-center justify-between gap-1 leading-none">
+          <span className="font-semibold">{pct}%{isStale ? "*" : ""}</span>
+        </div>
+        <div className="w-full bg-zinc-800/80 rounded-full h-[2px] mt-0.5 overflow-hidden">
+          <div className={`h-full rounded-full ${barCls}`} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
+        </div>
+      </div>
+    );
+  };
   const current = view.kind === "account" ? settings.providers[view.id] : undefined;
   const dirtyHere = view.kind === "account" && (accountDirty(view.id) || !(view.id in applied.providers));
 
@@ -418,6 +504,22 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
           <div className="flex gap-2 shrink-0">
             <button onClick={() => void handleImportConfig()} className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium cursor-pointer">立即导入</button>
             <button onClick={() => setImportable(null)} className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer">暂不导入</button>
+          </div>
+        </div>
+      )}
+      {antigravityDetected && !hasAntigravity && !dismissedAntigravity && (
+        <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-2.5 bg-indigo-950/80 border-b border-indigo-800/60 text-xs text-indigo-200">
+          <div className="flex items-center gap-2">
+            <span className="text-sm animate-pulse">✨</span>
+            <span>检测到本机正在运行 Antigravity 本地服务，可一键完成接入与配额监控。</span>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <button onClick={() => void handleQuickAddAntigravity()} disabled={busy} className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium cursor-pointer transition-colors shadow-sm">
+              {busy ? "正在添加…" : "一键接入"}
+            </button>
+            <button onClick={() => setDismissedAntigravity(true)} className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer transition-colors">
+              暂不添加
+            </button>
           </div>
         </div>
       )}
@@ -473,6 +575,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                 {matchedAccounts.map(id => { const c = settings.providers[id]; const u = usages.find(x => x.account_id === id); return navItem(view.kind === "account" && view.id === id, () => setView({ kind: "account", id }), <>
                   <span className="w-6 h-6 rounded-lg bg-zinc-800/90 border border-zinc-700/50 flex items-center justify-center text-zinc-200 shrink-0"><ProviderIcon id={c.provider_id} size={13} /></span>
                   <span className="min-w-0 flex-1"><span className="block truncate">{c.label || providerName(c.provider_id)}</span>{c.label && c.label !== providerName(c.provider_id) && <span className="block text-[10px] text-zinc-500 truncate">{providerName(c.provider_id)}</span>}</span>
+                  {quotaCapsule(u, c.enabled)}
                   {stateDot(u, c.enabled)}
                 </>, id); })}
                 {!q && <button onClick={() => setPickerOpen(true)} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left text-xs text-emerald-400 hover:bg-emerald-950/40 cursor-pointer"><span className="font-bold">+</span><span>添加账号</span></button>}
@@ -513,14 +616,17 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                       <span onPointerDown={e => startDrag(e, id, index)} className={`text-zinc-500 select-none touch-none text-base leading-none px-1 ${locked ? "" : "cursor-grab active:cursor-grabbing"}`} title="拖动排序" aria-hidden>☰</span>
                       <span className="w-5 text-[11px] font-mono text-zinc-500 text-right">{index + 1}</span>
                       <span className="w-6 h-6 rounded-lg bg-zinc-800/90 border border-zinc-700/50 flex items-center justify-center text-zinc-200 shrink-0"><ProviderIcon id={c.provider_id} size={14} /></span>
-                      <button className="text-xs text-zinc-200 truncate hover:underline cursor-pointer text-left" onClick={() => setView({ kind: "account", id })}>{c.label}</button>
+                      <button className="text-xs text-zinc-200 truncate hover:underline cursor-pointer text-left font-medium" onClick={() => setView({ kind: "account", id })}>{c.label}</button>
                       <span className="text-[11px] text-zinc-500 truncate">{providerName(c.provider_id)}</span>
-                      {stateDot(u, c.enabled)}
-                      {!c.enabled && <span className="text-[10px] px-1.5 py-[2px] bg-zinc-800 text-zinc-400 rounded border border-zinc-700/60 shrink-0">不在悬浮栏</span>}
-                      <span className="ml-auto flex items-center gap-1 shrink-0">
-                        <button disabled={locked || index === 0} onClick={() => moveAccount(index, index - 1)} className="w-6 h-6 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-30 cursor-pointer text-xs" aria-label={`上移 ${c.label}`}>▲</button>
-                        <button disabled={locked || index === railOrder.length - 1} onClick={() => moveAccount(index, index + 1)} className="w-6 h-6 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-30 cursor-pointer text-xs" aria-label={`下移 ${c.label}`}>▼</button>
-                      </span>
+                      <div className="ml-auto flex items-center gap-2 shrink-0">
+                        {quotaCapsule(u, c.enabled)}
+                        {stateDot(u, c.enabled)}
+                        {!c.enabled && <span className="text-[10px] px-1.5 py-[2px] bg-zinc-800 text-zinc-400 rounded border border-zinc-700/60 shrink-0">不在悬浮栏</span>}
+                        <div className="flex items-center gap-1 shrink-0 ml-1">
+                          <button disabled={locked || index === 0} onClick={() => moveAccount(index, index - 1)} className="w-6 h-6 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-30 cursor-pointer text-xs" aria-label={`上移 ${c.label}`}>▲</button>
+                          <button disabled={locked || index === railOrder.length - 1} onClick={() => moveAccount(index, index + 1)} className="w-6 h-6 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-30 cursor-pointer text-xs" aria-label={`下移 ${c.label}`}>▼</button>
+                        </div>
+                      </div>
                     </li>); })}
                   {railOrder.length === 0 && <p className="text-xs text-zinc-500">尚无账号。</p>}
                 </ul>

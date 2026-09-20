@@ -23,6 +23,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   const draggingRef=useRef(false);
   // Measured rail box (border-box) lets the collapsed edge bar mirror the rail's exact height.
   const [railBox,setRailBox]=useState<{w:number;h:number}|null>(null);
+  const [antigravityAvailable, setAntigravityAvailable] = useState(false);
   useEffect(()=>{
     const el=railRef.current;if(!el)return;
     const measure=()=>setRailBox({w:el.offsetWidth,h:el.offsetHeight});
@@ -30,6 +31,18 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     const ro=new ResizeObserver(measure);ro.observe(el);
     return()=>ro.disconnect();
   },[]);
+  useEffect(() => {
+    if (!settings.providers || Object.keys(settings.providers).length === 0) {
+      invoke<boolean>("check_local_antigravity").then(setAntigravityAvailable).catch(() => {});
+    }
+  }, [settings.providers]);
+  const handleQuickAddAntigravity = async () => {
+    try {
+      await invoke("quick_add_antigravity_account");
+    } catch {
+      void invoke("open_settings");
+    }
+  };
   useEffect(()=>{
     let alive=true;
     const stop=listen("reveal-rail",()=>{
@@ -358,22 +371,34 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
             refreshing={!!refreshing[s.account]} onClick={() => handleRingClick(s.account)} onDoubleClick={handleRingDoubleClick} lookX={lookX} />
         ))}
         {!slots.length && (
-          <button className="text-xs p-2 text-zinc-400 hover:text-zinc-200" onClick={() => void invoke("open_settings")}>
-            添加账号
-          </button>
+          antigravityAvailable ? (
+            <button
+              className="flex flex-col items-center justify-center p-2 text-center rounded-xl bg-indigo-950/70 hover:bg-indigo-900/90 border border-indigo-700/60 text-indigo-200 hover:text-white transition-all cursor-pointer group shadow-sm"
+              onClick={() => void handleQuickAddAntigravity()}
+              title="检测到本地运行中的 Antigravity，点击一键接入"
+            >
+              <span className="text-sm mb-0.5 animate-pulse">✨</span>
+              <span className="text-[10px] font-semibold leading-tight whitespace-nowrap">一键接入</span>
+              <span className="text-[9px] text-indigo-400 group-hover:text-indigo-300">Antigravity</span>
+            </button>
+          ) : (
+            <button className="text-xs p-2 text-zinc-400 hover:text-zinc-200" onClick={() => void invoke("open_settings")}>
+              添加账号
+            </button>
+          )
         )}
       </div>
     </div>
-    {/* Collapsed edge hint: 4 dip visual, flush to the docked edge, exactly as tall/wide
-        as the rail. The hover hit area is the whole (10 dip) window, not just the bar.
-        Right-click opens the rail menu; dragging the bar moves/re-docks the rail. */}
+    {/* Collapsed edge hint: 4 dip visual (expanding to 6 dip on hover with gentle breathing pulse),
+        flush to the docked edge, exactly as tall/wide as the rail. The hover hit area is the
+        whole (10 dip) window. Right-click opens rail menu; double-click expands. */}
     {collapsed && (
       <div
         aria-label="展开 Pulse"
         onMouseEnter={enter}
         onDoubleClick={() => { setCollapsed(false); }}
         onContextMenu={e=>{e.preventDefault();void invoke("rail_menu_cmd").catch(()=>{})}}
-        className={`absolute cursor-pointer rounded-full ${top ? "top-0 left-1/2 -translate-x-1/2 h-1" : left ? "left-0 top-1/2 -translate-y-1/2 w-1" : "right-0 top-1/2 -translate-y-1/2 w-1"} ${glowClass}`}
+        className={`absolute cursor-pointer rounded-full transition-all duration-200 ease-out hover:rail-breathe ${top ? "top-0 left-1/2 -translate-x-1/2 h-1 hover:h-1.5" : left ? "left-0 top-1/2 -translate-y-1/2 w-1 hover:w-1.5" : "right-0 top-1/2 -translate-y-1/2 w-1 hover:w-1.5"} ${glowClass}`}
         style={top ? { width: railBox?.w ?? "100%" } : { height: railBox?.h ?? "100%" }}
       />
     )}
