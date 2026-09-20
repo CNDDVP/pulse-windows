@@ -11,7 +11,8 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   const [dragSide,setDragSide]=useState<string|null>(null);
   const effSide=(dragSide??settings.dock_side) as AppSettings["dock_side"];
   const free=effSide==="free";
-  const [hovered,setHovered]=useState<string|null>(null),[inside,setInside]=useState(false),[collapsed,setCollapsed]=useState(false),[pinned,setPinned]=useState(false);
+  const [hovered,setHovered]=useState<string|null>(null),[inside,setInside]=useState(false),[collapsed,setCollapsed]=useState(false),[collapsing,setCollapsing]=useState(false),[pinned,setPinned]=useState(false);
+  const collapseTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
   const detailPointer=useRef(false);const leave=useRef<ReturnType<typeof setTimeout>|null>(null);
   const railRef=useRef<HTMLDivElement>(null);
   // Ring click → per-account refresh; the arc keeps spinning >=650ms even for fast replies.
@@ -43,14 +44,42 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       void invoke("open_settings");
     }
   };
+
+  const startCollapse = () => {
+    if (free || insideRef.current || pinned || settings.auto_collapse_seconds === 0) return;
+    if (settings.reduce_motion) {
+      setCollapsed(true);
+      setCollapsing(false);
+      void invoke("set_window_state", { state: "collapsed" });
+      return;
+    }
+    setCollapsing(true);
+    if (collapseTimer.current) clearTimeout(collapseTimer.current);
+    collapseTimer.current = setTimeout(() => {
+      setCollapsing(false);
+      setCollapsed(true);
+      void invoke("set_window_state", { state: "collapsed" });
+    }, 280);
+  };
+
+  const handleExpand = () => {
+    if (collapseTimer.current) clearTimeout(collapseTimer.current);
+    setCollapsing(false);
+    setCollapsed(false);
+    insideRef.current = true;
+    setInside(true);
+    void invoke("set_window_state", { state: "rail" });
+  };
+
   useEffect(()=>{
     let alive=true;
     const stop=listen("reveal-rail",()=>{
       if(alive){
-        // The pointer is on the tray, not inside the window: never set `inside` here,
-        // or no mouseleave will ever fire and the rail stops collapsing.
+        if (collapseTimer.current) clearTimeout(collapseTimer.current);
+        setCollapsing(false);
         setPinned(true);
         setCollapsed(false);
+        void invoke("set_window_state", { state: "rail" });
       }
     });
     return()=>{alive=false;void stop.then(f=>f())};
@@ -67,11 +96,29 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     let alive=true;
     const stop=listen<string>("window-state-changed",e=>{
       if(alive){
-        setCollapsed(e.payload==="collapsed");
+        if (e.payload === "rail") {
+          if (collapseTimer.current) clearTimeout(collapseTimer.current);
+          setCollapsing(false);
+          setCollapsed(false);
+        } else if (e.payload === "collapsed") {
+          setCollapsing(false);
+          setCollapsed(true);
+        }
       }
     });
     return()=>{alive=false;void stop.then(f=>f())};
   },[]);
+
+  useEffect(() => {
+    let alive = true;
+    const stop = listen("request-collapse", () => {
+      if (alive && !insideRef.current && !pinned && !free && settings.auto_collapse_seconds > 0) {
+        startCollapse();
+      }
+    });
+    return () => { alive = false; void stop.then(f => f()); };
+  }, [settings.auto_collapse_seconds, pinned, free]);
+
   useEffect(()=>{
     const onBlur=()=>{
       insideRef.current=false;
@@ -93,23 +140,27 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
 
   useEffect(()=>{
     if(draggingRef.current)return;
-    if(free){setCollapsed(false);return}
+    if(free){
+      if (collapseTimer.current) clearTimeout(collapseTimer.current);
+      setCollapsed(false);
+      setCollapsing(false);
+      return;
+    }
     if(inside||pinned||settings.auto_collapse_seconds===0){
-      if(settings.auto_collapse_seconds===0)setCollapsed(false);
+      if(settings.auto_collapse_seconds===0){
+        if (collapseTimer.current) clearTimeout(collapseTimer.current);
+        setCollapsed(false);
+        setCollapsing(false);
+      }
       return;
     }
     const t=setTimeout(()=>{
       setHovered(null);
-      setCollapsed(true);
       void invoke("hide_detail");
+      startCollapse();
     },settings.auto_collapse_seconds*1000);
     return()=>clearTimeout(t);
   },[inside,pinned,free,settings.auto_collapse_seconds]);
-
-  useEffect(()=>{
-    if(draggingRef.current)return;
-    void invoke("set_window_state",{state:collapsed?"collapsed":"rail"});
-  },[collapsed,settings.dock_side]);
 
   useEffect(()=>{
     const stop=listen<{account_id:string;request_id:number;phase:string}>("refresh-state",e=>{
@@ -274,10 +325,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   const dark=settings.theme==="obsidian";
   const enter = () => {
     if (leave.current) clearTimeout(leave.current);
-    insideRef.current=true;
-    setInside(true);
-    setCollapsed(false);
-    void invoke("set_window_state",{state:"rail"});
+    handleExpand();
   };
   const exit = () => {
     if (leave.current) clearTimeout(leave.current);
@@ -370,13 +418,30 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   }
   const lookX=left?1:free?0:-1;
 
+  const isSlidOut = collapsed || collapsing;
+  const isHidden = collapsed && !collapsing;
+
+  const transformCls = isSlidOut
+    ? top
+      ? "-translate-y-[calc(100%+24px)] opacity-0 scale-95 pointer-events-none"
+      : left
+      ? "-translate-x-[calc(100%+24px)] opacity-0 scale-95 pointer-events-none"
+      : free
+      ? "opacity-0 scale-95 pointer-events-none"
+      : "translate-x-[calc(100%+24px)] opacity-0 scale-95 pointer-events-none"
+    : "translate-x-0 translate-y-0 opacity-100 scale-100";
+
+  const transitionCls = settings.reduce_motion
+    ? ""
+    : "transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]";
+
   return <div
-    className={`relative w-full h-full flex ${top?"flex-col items-center":left?"flex-row items-center":"flex-row-reverse items-center"} select-none ${collapsed ? "" : "overflow-hidden"}`}
+    className={`relative w-full h-full flex ${top?"flex-col items-center":left?"flex-row items-center":"flex-row-reverse items-center"} select-none ${isSlidOut ? "" : "overflow-hidden"}`}
     onMouseEnter={enter}
     onMouseLeave={exit}
     onContextMenu={e=>{e.preventDefault();void invoke("rail_menu_cmd").catch(()=>{})}}
   >
-    {/* The rail stays mounted (invisible) while collapsed so its live measurements keep driving the edge bar. */}
+    {/* The rail stays mounted (invisible when fully collapsed) so its live measurements keep driving the edge bar. */}
     <div
       ref={railRef}
       className={`relative flex ${top ? "flex-row max-w-full max-h-full" : "flex-col max-h-full"} shrink-0 ${
@@ -387,7 +452,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
           : free
           ? "rounded-2xl border"
           : "rounded-l-2xl border-l border-y border-r-0"
-      } p-1.5 ${dark ? "glass-obsidian text-zinc-200" : "glass-translucent text-zinc-800"} ${collapsed ? "invisible" : ""} cursor-move touch-none ${draggingUI ? "opacity-80" : ""}`}
+      } p-1.5 ${dark ? "glass-obsidian text-zinc-200" : "glass-translucent text-zinc-800"} ${isHidden ? "invisible" : ""} ${transformCls} ${transitionCls} cursor-move touch-none ${draggingUI ? "opacity-80" : ""}`}
     >
       <div className={`flex ${top ? "flex-row space-x-2" : "flex-col space-y-1.5"} overflow-y-auto max-h-full scrollbar-none`}>
         {slots.map(s => (
@@ -416,13 +481,15 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     {/* Collapsed edge hint: 4 dip visual (expanding to 6 dip on hover with gentle breathing pulse),
         flush to the docked edge, exactly as tall/wide as the rail. The hover hit area is the
         whole window. Right-click opens rail menu; double-click expands. */}
-    {collapsed && (
+    {!free && (
       <div
         aria-label="展开 Pulse"
         onMouseEnter={enter}
-        onDoubleClick={() => { setCollapsed(false); }}
+        onDoubleClick={handleExpand}
         onContextMenu={e=>{e.preventDefault();void invoke("rail_menu_cmd").catch(()=>{})}}
-        className={`absolute cursor-pointer rounded-full transition-all duration-200 ease-out hover:brightness-125 ${top ? "top-0 left-1/2 -translate-x-1/2 h-1 hover:h-1.5" : left ? "left-0 top-1/2 -translate-y-1/2 w-1 hover:w-1.5" : "right-0 top-1/2 -translate-y-1/2 w-1 hover:w-1.5"} ${barGlowClass}`}
+        className={`absolute cursor-pointer rounded-full transition-all duration-300 ease-out hover:brightness-125 ${
+          isSlidOut ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
+        } ${top ? "top-0 left-1/2 -translate-x-1/2 h-1 hover:h-1.5" : left ? "left-0 top-1/2 -translate-y-1/2 w-1 hover:w-1.5" : "right-0 top-1/2 -translate-y-1/2 w-1 hover:w-1.5"} ${barGlowClass}`}
         style={{ ...barColorStyle, ...(top ? { width: railBox?.w ?? "100%" } : { height: railBox?.h ?? "100%" }) }}
       />
     )}

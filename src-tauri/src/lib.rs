@@ -671,16 +671,22 @@ pub fn run(){
                             let elapsed = state.last_cursor_over.lock().unwrap().elapsed();
                             if elapsed >= Duration::from_secs(settings.auto_collapse_seconds) {
                                 if mode == "rail" {
-                                    *state.window_mode.lock().await = "collapsed".into();
-                                    let _ = window_handle.emit("window-state-changed", "collapsed");
-                                    let s = settings.clone();
-                                    let h = window_handle.clone();
-                                    let _ = tauri::async_runtime::spawn_blocking(move || {
-                                        crate::window::position(&h, &s, "collapsed");
-                                        if let Some(d) = h.get_webview_window("detail") {
-                                            if d.is_visible().unwrap_or(false) { let _ = d.hide(); }
-                                        }
-                                    }).await;
+                                    // Request smooth collapse animation from frontend (280ms).
+                                    // After frontend animates to transparent, it invokes set_window_state("collapsed").
+                                    let _ = window_handle.emit("request-collapse", ());
+                                    // Failsafe: if frontend didn't collapse within 1.2s, force collapse.
+                                    if elapsed >= Duration::from_secs(settings.auto_collapse_seconds + 1) {
+                                        *state.window_mode.lock().await = "collapsed".into();
+                                        let _ = window_handle.emit("window-state-changed", "collapsed");
+                                        let s = settings.clone();
+                                        let h = window_handle.clone();
+                                        let _ = tauri::async_runtime::spawn_blocking(move || {
+                                            crate::window::position(&h, &s, "collapsed");
+                                            if let Some(d) = h.get_webview_window("detail") {
+                                                if d.is_visible().unwrap_or(false) { let _ = d.hide(); }
+                                            }
+                                        }).await;
+                                    }
                                 }
                             }
                         }
