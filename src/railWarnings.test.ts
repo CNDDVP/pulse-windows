@@ -99,3 +99,23 @@ describe('rail risk rules',()=>{
     expect(res.excluded[0]).toContain('此计量类型暂未配置预警规则');
   });
 });
+
+it('reuses the previous transition reference when nothing changed', () => {
+  const s = settings();
+  const first = advanceRail(null, evaluateRail(s, [usage('a', 20)], now), 'k', now);
+  const second = advanceRail(first, evaluateRail(s, [usage('a', 20)], now), 'k', now + 1_000);
+  expect(second).toBe(first);
+  const changed = advanceRail(second, evaluateRail(s, [usage('a', 96)], now), 'k', now + 2_000);
+  expect(changed).not.toBe(second);
+  expect(changed.shown.level).toBe('red');
+});
+it('non-custom thresholds follow warning_threshold changes', () => {
+  const s = settings();
+  expect(railConfig(s).red).toBe(90);
+  expect(railConfig(s).yellow).toBe(75);
+  const changed = { ...s, warning_threshold: 80 };
+  expect(railConfig(changed).red).toBe(80);
+  expect(railConfig(changed).yellow).toBe(65);
+  const custom = { ...s, rail_warnings: { ...defaultRailWarnings(), custom_thresholds: true, yellow: 30, red: 50 } };
+  expect(railConfig(custom).red).toBe(50);
+});
