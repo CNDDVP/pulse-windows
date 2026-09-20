@@ -18,14 +18,36 @@ pub const IMPLEMENTED:&[&str]=&[
     "volcengine","command-code","devin","ollama","xiaomi"
 ];
 
-pub fn client()->Result<reqwest::Client,String>{
-    reqwest::Client::builder()
+pub fn client_with_proxy(proxy_cfg: &crate::types::NetworkProxySettings) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(12))
         .connect_timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent(concat!("PulseWindows/",env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|_|"无法初始化网络客户端".into())
+        .user_agent(concat!("PulseWindows/", env!("CARGO_PKG_VERSION")));
+
+    match proxy_cfg.mode.as_str() {
+        "manual_http" => {
+            let proxy_url = format!("http://{}:{}", proxy_cfg.host, proxy_cfg.port);
+            let mut p = reqwest::Proxy::all(&proxy_url).map_err(|e| format!("无效的 HTTP 代理地址: {e}"))?;
+            p = p.no_proxy(reqwest::NoProxy::from_string("127.0.0.1,localhost"));
+            builder = builder.proxy(p);
+        }
+        "manual_socks5" => {
+            let proxy_url = format!("socks5h://{}:{}", proxy_cfg.host, proxy_cfg.port);
+            let mut p = reqwest::Proxy::all(&proxy_url).map_err(|e| format!("无效的 SOCKS5 代理地址: {e}"))?;
+            p = p.no_proxy(reqwest::NoProxy::from_string("127.0.0.1,localhost"));
+            builder = builder.proxy(p);
+        }
+        _ => {
+            // "auto": 自动使用系统代理与环境变量代理
+        }
+    }
+
+    builder.build().map_err(|e| format!("无法初始化网络客户端: {e}"))
+}
+
+pub fn client()->Result<reqwest::Client,String>{
+    client_with_proxy(&crate::types::NetworkProxySettings::default())
 }
 
 pub async fn response(id:&str,request:reqwest::RequestBuilder)->Result<Value,ProviderUsage>{
@@ -210,3 +232,34 @@ pub async fn fetch_all_usages(settings:&AppSettings,http:&reqwest::Client,semaph
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::NetworkProxySettings;
+
+    #[test]
+    fn test_client_with_proxy_modes() {
+        let auto_cfg = NetworkProxySettings {
+            mode: "auto".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 7890,
+        };
+        assert!(client_with_proxy(&auto_cfg).is_ok());
+
+        let http_cfg = NetworkProxySettings {
+            mode: "manual_http".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+        };
+        assert!(client_with_proxy(&http_cfg).is_ok());
+
+        let socks_cfg = NetworkProxySettings {
+            mode: "manual_socks5".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 1080,
+        };
+        assert!(client_with_proxy(&socks_cfg).is_ok());
+    }
+}
+

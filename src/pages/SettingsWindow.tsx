@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { AppSettings, HotkeySettings, MonitorOption, ProviderConfig, ProviderUsage, RefreshSummary } from "../types";
 import { ProviderIcon } from "../components/icons/ProviderIcons";
@@ -54,6 +53,11 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
   const [toast, setToast] = useState<{ type: ToastKind; text: string } | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [importable, setImportable] = useState<{ account_count: number; provider_names: string[]; installed_path: string } | null>(null);
+  const [wizardSelected, setWizardSelected] = useState<string[]>(() => {
+    return (settings.authorized_providers && settings.authorized_providers.length > 0)
+      ? settings.authorized_providers
+      : ["claude", "codex", "antigravity", "kimi"];
+  });
   useEffect(() => {
     invoke<{ account_count: number; provider_names: string[]; installed_path: string } | null>("check_importable_config")
       .then(res => { if (res && res.account_count > 0) setImportable(res); })
@@ -63,7 +67,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
   const handleImportConfig = async () => {
     try {
       setBusy(true);
-      const imported = await invoke<AppSettings>("import_installed_config");
+      const imported = await invoke<AppSettings>("import_installed_config", { mode: "append" });
       markApplied(imported);
       setSettings(imported);
       onSaved(imported);
@@ -189,7 +193,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
 
   const handleAddAccount = (pid: string) => {
     const id = crypto.randomUUID();
-    patch(id, { provider_id: pid, label: providerName(pid), enabled: true, order: Object.values(settings.providers).reduce((m, c) => Math.max(m, c.order), -1) + 1, use_local: !!ROUTES[pid]?.local, credential_configured: false, primary_window: null, elapsed_window: null, ring_color: null, low_balance: null, low_balance_currency: null, mark_mode: null, bot_persona: null, bot_shape: null, bot_color: null, secondary_window: null, split_model_groups: false });
+    patch(id, { provider_id: pid, label: providerName(pid), enabled: true, order: Object.values(settings.providers).reduce((m, c) => Math.max(m, c.order), -1) + 1, use_local: !!ROUTES[pid]?.local, credential_configured: false, primary_window: null, elapsed_window: null, ring_color: pid === "kimi" ? "#7AA5FF" : null, low_balance: null, low_balance_currency: null, mark_mode: null, bot_persona: null, bot_shape: null, bot_color: pid === "kimi" ? "#7AA5FF" : null, secondary_window: null, split_model_groups: false });
     setPickerOpen(false); setPickerQuery("");
     setView({ kind: "account", id });
     showToast("info", `已添加 ${providerName(pid)} 账号，完成配置后点击“保存”`);
@@ -257,33 +261,111 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
     else showToast("info", `全部账号都在冷却或刷新中，本次未发起（${r.skipped} 个跳过）`);
   };
 
-  const closeWindow = async () => {
-    if (anyDirty && confirmArmed !== "close") { armConfirm("close"); showToast("info", "有未保存的更改——再次点击关闭将放弃它们"); return; }
-    disarmConfirm();
-    if (anyDirty) { setSettings(appliedRef.current); }
-    setSecrets({});
-    setShowSecrets({});
-    try { await invoke("close_settings_window"); } catch { try { await getCurrentWebviewWindow().hide(); } catch { /* nothing left to do */ } }
+  const anyDirtyRef = useRef(anyDirty);
+  useEffect(() => { anyDirtyRef.current = anyDirty; }, [anyDirty]);
+  const secretsRef = useRef(secrets);
+  useEffect(() => { secretsRef.current = secrets; }, [secrets]);
+  const settingsRef2 = useRef(settings);
+  useEffect(() => { settingsRef2.current = settings; }, [settings]);
+
+  const [closeModal, setCloseModal] = useState<{ isOpen: boolean; requestId: number } | null>(null);
+
+  const handleUserClose = async () => {
+    try {
+      await invoke("request_close_settings", { source: "button" });
+    } catch {
+      // 降级兜底
+      void invoke("confirm_close_settings", { requestId: 0, action: "discard_and_hide" });
+    }
   };
-  const closeWindowRef = useRef(closeWindow);
-  useEffect(() => { closeWindowRef.current = closeWindow; });
-  useEffect(() => {
-    return () => {
+
+  const handleModalSaveAndClose = async () => {
+    if (!closeModal) return;
+    setBusy(true);
+    try {
+      if (anyDirtyRef.current) {
+        await persist(settingsRef2.current, "");
+      }
+      for (const [id, secret] of Object.entries(secretsRef.current)) {
+        if (secret && secret.trim()) {
+          await invoke("set_credential", { accountId: id, secret: secret.trim() });
+        }
+      }
       setSecrets({});
       setShowSecrets({});
-    };
-  }, []);
+      await invoke("confirm_close_settings", { requestId: closeModal.requestId, action: "save_and_hide" });
+      setCloseModal(null);
+    } catch (e) {
+      showToast("error", `保存失败，未关闭窗口: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleModalDiscardAndClose = async () => {
+    if (!closeModal) return;
+    setSettings(appliedRef.current);
+    setSecrets({});
+    setShowSecrets({});
+    await invoke("confirm_close_settings", { requestId: closeModal.requestId, action: "discard_and_hide" });
+    setCloseModal(null);
+  };
+
+  const handleModalCancel = async () => {
+    if (!closeModal) return;
+    await invoke("confirm_close_settings", { requestId: closeModal.requestId, action: "cancel" });
+    setCloseModal(null);
+  };
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !(e.target instanceof HTMLInputElement)) void closeWindow(); };
-    window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
-  });
-  // 原生 X / Alt+F4：后端拦下 CloseRequested 转发此事件，走与按钮/Esc 相同的
-  // closeWindow 流程（未保存更改需二次确认），不再直接 hide 绕过确认。
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !(e.target instanceof HTMLInputElement)) {
+        if (closeModal) {
+          void handleModalCancel();
+        } else {
+          void invoke("request_close_settings", { source: "esc" });
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [closeModal]);
+
+  // 原生 X / Alt+F4 / 按钮 / Esc 统一走后端的 settings-close-requested 定向通道
   useEffect(() => {
     let alive = true;
-    const p1 = listen("settings-close-requested", () => { if (alive) void closeWindowRef.current(); });
-    const p2 = getCurrentWebviewWindow().listen("settings-close-requested", () => { if (alive) void closeWindowRef.current(); });
-    return () => { alive = false; void p1.then(f => f()); void p2.then(f => f()); };
+    const webview = getCurrentWebviewWindow();
+    const p = webview.listen<{ request_id: number; source: string }>("settings-close-requested", async e => {
+      if (!alive) return;
+      const reqId = e.payload.request_id;
+      const hasDraft = anyDirtyRef.current || Object.values(secretsRef.current).some(s => s && s.trim().length > 0);
+      try {
+        await invoke("acknowledge_close", { requestId: reqId, hasDraft });
+      } catch (err) {
+        console.error("acknowledge_close 异常:", err);
+      }
+      if (!hasDraft) {
+        setSecrets({});
+        setShowSecrets({});
+        try {
+          await invoke("confirm_close_settings", { requestId: reqId, action: "hide" });
+        } catch (err) {
+          console.error("confirm_close_settings 异常:", err);
+        }
+      } else {
+        setCloseModal({ isOpen: true, requestId: reqId });
+      }
+    });
+
+    // 通知后端监听已就绪
+    void invoke("settings_window_ready").catch(err => {
+      console.error("settings_window_ready 异常:", err);
+    });
+
+    return () => {
+      alive = false;
+      void p.then(f => f());
+    };
   }, []);
 
   // Search covers pages (title + keywords) and accounts (label + provider name/id).
@@ -301,6 +383,32 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
 
   return (
     <main className="h-screen flex flex-col bg-[#0f0f12] text-zinc-200 text-sm select-none font-sans overflow-hidden">
+      {closeModal?.isOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-150">
+          <div className="bg-zinc-900 border border-zinc-700/80 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 text-lg font-bold shrink-0">
+                ⚠️
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">有未保存的设置更改</h3>
+                <p className="text-xs text-zinc-400 mt-0.5">当前存在未保存的账号设置或凭据草稿。请选择您想要进行的操作：</p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 pt-2">
+              <button onClick={() => void handleModalSaveAndClose()} disabled={busy} className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer transition-colors shadow-lg">
+                {busy ? "正在保存…" : "保存更改并关闭"}
+              </button>
+              <button onClick={() => void handleModalDiscardAndClose()} disabled={busy} className="w-full py-2 px-4 rounded-xl bg-zinc-800 hover:bg-red-950/40 hover:text-red-300 text-zinc-300 border border-zinc-700/60 text-xs font-medium cursor-pointer transition-colors">
+                放弃更改并关闭
+              </button>
+              <button onClick={() => void handleModalCancel()} disabled={busy} className="w-full py-2 px-4 rounded-xl text-zinc-400 hover:text-zinc-200 text-xs cursor-pointer transition-colors">
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {toast && (
         <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-2xl border text-xs font-medium ${toast.type === "success" ? "bg-emerald-950/95 border-emerald-700/60 text-emerald-200" : toast.type === "error" ? "bg-red-950/95 border-red-700/60 text-red-200" : "bg-zinc-900/95 border-zinc-700 text-zinc-200"}`} role="status">
           <span className="font-bold">{toast.type === "success" ? "✓" : toast.type === "error" ? "✕" : "ℹ"}</span><span>{toast.text}</span>
@@ -347,9 +455,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
               <button className={btnPrimary} disabled={locked} onClick={() => void saveAccounts()}>{busy ? "正在保存…" : "保存"}</button>
             </>
           )}
-          {confirmArmed === "close"
-          ? <button onClick={() => void closeWindow()} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-950/40 text-red-300 border border-red-900/60 text-sm font-medium"><span>✕</span><span>放弃更改并关闭</span></button>
-          : <button onClick={() => void closeWindow()} className={`${btnGhost} flex items-center gap-1.5`} title="关闭设置窗口 (Esc)"><span>✕</span><span>关闭</span><kbd className="text-[10px] text-zinc-500 border border-zinc-700 rounded px-1">Esc</kbd></button>}
+          <button onClick={() => void handleUserClose()} className={`${btnGhost} flex items-center gap-1.5`} title="关闭设置窗口 (Esc)"><span>✕</span><span>关闭</span><kbd className="text-[10px] text-zinc-500 border border-zinc-700 rounded px-1">Esc</kbd></button>
         </div>
       </header>
 
@@ -394,7 +500,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
 
         <div className="flex-1 overflow-y-auto p-6">
           {view.kind === "general" && <GeneralPage settings={settings} update={update} screens={screens} usages={usages} busy={busy} onRefreshAll={refreshAll} toast={showToast} />}
-          <div className={view.kind === "spend" ? "" : "hidden"}><TokenSpend /></div>
+          <div className={view.kind === "spend" ? "" : "hidden"}><TokenSpend active={view.kind === "spend"} /></div>
           {view.kind === "notifications" && <NotificationsPage settings={settings} update={update} toast={showToast} />}
           {view.kind === "hotkeys" && <HotkeysPage settings={settings} save={saveHotkeys} onError={m => m && showToast("error", m)} />}
           {view.kind === "diagnostics" && <DiagnosticsPage usages={usages} settings={settings} busy={busy} setBusy={setBusy} toast={showToast} open={id => setView({ kind: "account", id })} />}
@@ -521,7 +627,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                   </Field>
                   <Row title="圆环颜色" subtitle="自定义颜色用于正常区间；达到琥珀/红色阈值或服务商报告耗尽时仍按预警色显示。">
                     <div className="flex items-center gap-2">
-                      <select className={selectCls} value={c.ring_color ? "custom" : "auto"} onChange={e => patch(id, { ring_color: e.target.value === "custom" ? (c.ring_color ?? "#10b981") : null })} aria-label="圆环颜色模式"><option value="auto">自动（按用量压力）</option><option value="custom">自定义</option></select>
+                      <select className={selectCls} value={c.ring_color ? "custom" : "auto"} onChange={e => patch(id, { ring_color: e.target.value === "custom" ? (c.ring_color ?? (c.provider_id === "kimi" ? "#7AA5FF" : "#10b981")) : null })} aria-label="圆环颜色模式"><option value="auto">自动（按用量压力）</option><option value="custom">自定义</option></select>
                       {c.ring_color && <input type="color" value={c.ring_color} onChange={e => patch(id, { ring_color: e.target.value })} className="w-9 h-8 rounded-lg bg-transparent border border-zinc-700 cursor-pointer" aria-label="选择圆环颜色" />}
                     </div>
                   </Row>
@@ -533,7 +639,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                       <Field label="个性"><select className={selectCls} value={c.bot_persona ?? ""} onChange={e => patch(id, { bot_persona: e.target.value || null })}><option value="">自动（沉稳）</option>{BOT_PERSONAS.map(p => <option key={p[0]} value={p[0]}>{p[1]}</option>)}</select></Field>
                       <Field label="形状"><select className={selectCls} value={c.bot_shape ?? ""} onChange={e => patch(id, { bot_shape: e.target.value || null })}><option value="">自动（圆团）</option>{BOT_SHAPES.map(p => <option key={p[0]} value={p[0]}>{p[1]}</option>)}</select></Field>
                       <Field label="颜色"><div className="flex items-center gap-2">
-                        <select className={selectCls} value={c.bot_color ? "custom" : "auto"} onChange={e => patch(id, { bot_color: e.target.value === "custom" ? (c.bot_color ?? "#10b981") : null })} aria-label="机器人颜色模式"><option value="auto">跟随主题</option><option value="custom">自定义</option></select>
+                        <select className={selectCls} value={c.bot_color ? "custom" : "auto"} onChange={e => patch(id, { bot_color: e.target.value === "custom" ? (c.bot_color ?? (c.provider_id === "kimi" ? "#7AA5FF" : "#10b981")) : null })} aria-label="机器人颜色模式"><option value="auto">跟随主题</option><option value="custom">自定义</option></select>
                         {c.bot_color && <input type="color" value={c.bot_color} onChange={e => patch(id, { bot_color: e.target.value })} className="w-9 h-8 rounded-lg bg-transparent border border-zinc-700 cursor-pointer" aria-label="选择机器人颜色" />}
                       </div></Field>
                     </div>
@@ -637,6 +743,65 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
               })}
             </ul>
             <p className="px-4 py-2 border-t border-white/5 text-[11px] text-zinc-500">取消不会创建空账号，也不会影响现有排序。</p>
+          </div>
+        </div>
+      )}
+      {!settings.monitoring_setup_completed && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-6">
+          <div className="w-[28rem] max-h-[34rem] bg-zinc-900 border border-zinc-700/80 rounded-2xl shadow-2xl p-6 flex flex-col space-y-4">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">🛡️</span>
+              <div>
+                <h3 className="text-base font-semibold text-zinc-100">欢迎使用 Pulse</h3>
+                <p className="text-xs text-zinc-400">首次启动：请配置您的服务商监控授权</p>
+              </div>
+            </div>
+            <div className="text-xs text-zinc-300/90 leading-relaxed bg-zinc-950/60 p-3 rounded-xl border border-white/5">
+              Pulse 承诺<b>零云端数据回传、零遥测</b>。所有凭据均保存在本机 Windows 凭据管理器中。请勾选您希望 Pulse 监控的服务商（未勾选的服务商将保持零连接、零后台扫描）：
+            </div>
+            <div className="flex-1 flex flex-col min-h-0 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-zinc-400">选择服务商 ({wizardSelected.length} / {PROVIDERS.length})：</span>
+                <div className="flex gap-2">
+                  <button className="text-emerald-400 hover:text-emerald-300 cursor-pointer" onClick={() => setWizardSelected(PROVIDERS.map(p => p[0]))}>全选</button>
+                  <span className="text-zinc-600">·</span>
+                  <button className="text-emerald-400 hover:text-emerald-300 cursor-pointer" onClick={() => setWizardSelected(["claude", "codex", "antigravity", "kimi"])}>常用</button>
+                  <span className="text-zinc-600">·</span>
+                  <button className="text-zinc-400 hover:text-zinc-300 cursor-pointer" onClick={() => setWizardSelected([])}>暂不监控</button>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 overflow-y-auto p-2 bg-zinc-950/50 rounded-xl border border-white/5 flex-1">
+                {PROVIDERS.map(([pid, name]) => (
+                  <label key={pid} className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer hover:bg-white/5 p-1.5 rounded-lg">
+                    <input
+                      type="checkbox"
+                      checked={wizardSelected.includes(pid)}
+                      onChange={e => {
+                        setWizardSelected(prev => e.target.checked ? [...prev, pid] : prev.filter(x => x !== pid));
+                      }}
+                      className="accent-emerald-500 rounded"
+                    />
+                    <span className="truncate">{name}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="pt-2 flex justify-end gap-3 border-t border-white/5">
+              <button
+                className={btnPrimary}
+                onClick={async () => {
+                  const updated: AppSettings = {
+                    ...settings,
+                    monitoring_setup_completed: true,
+                    authorized_providers: wizardSelected,
+                  };
+                  setSettings(updated);
+                  await persist(updated, `已完成授权！已授权 ${wizardSelected.length} 个服务商。`);
+                }}
+              >
+                完成设置并开始使用
+              </button>
+            </div>
           </div>
         </div>
       )}

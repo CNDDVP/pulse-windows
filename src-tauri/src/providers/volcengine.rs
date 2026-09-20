@@ -157,6 +157,22 @@ pub async fn fetch_arkcli() -> Result<Value, ProviderUsage> {
     cmd.args(["usage", "plan", "--format", "json"]);
     cmd.kill_on_drop(true);
 
+    if let Ok(settings) = crate::config::load_settings() {
+        match settings.network_proxy.mode.as_str() {
+            "manual_http" => {
+                let url = format!("http://{}:{}", settings.network_proxy.host, settings.network_proxy.port);
+                cmd.env("HTTP_PROXY", &url);
+                cmd.env("HTTPS_PROXY", &url);
+                cmd.env("ALL_PROXY", &url);
+            }
+            "manual_socks5" => {
+                let url = format!("socks5://{}:{}", settings.network_proxy.host, settings.network_proxy.port);
+                cmd.env("ALL_PROXY", &url);
+            }
+            _ => {}
+        }
+    }
+
     let output = match tokio::time::timeout(std::time::Duration::from_secs(6), cmd.output()).await {
         Ok(Ok(out)) => out,
         Ok(Err(_)) => return Err(ProviderUsage::problem("volcengine", "missing_credentials", "未找到 arkcli 命令行工具或已配置的 AccessKey:SecretAccessKey 凭据")),

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, MonitorOption, ProviderUsage } from "../../types";
 import { Section, Row, Field, Switch } from "./shared";
-import { selectCls, btnGhost, timeText } from "./constants";
+import { selectCls, btnGhost, timeText, PROVIDERS } from "./constants";
 
 export function GeneralPage({ settings, update, screens, usages, busy, onRefreshAll, toast }: {
   settings: AppSettings; update: (patch: Partial<AppSettings>) => void; screens: MonitorOption[];
@@ -103,6 +103,117 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
             <div className={`${selectCls} font-mono`}>{lastSuccess ? timeText(lastSuccess) : "尚无成功读数"}</div>
           </Field>
         </div>
+      </Section>
+
+      <Section title="监控授权与数据隐私" icon="🛡️" subtitle="零云端上传、零遥测。未授权的服务商不会进行任何网络连接与本地日志监控。">
+        <Row title="Token 消耗统计" subtitle="启用本地 Token 消耗扫描与历史记录分析。">
+          <Switch checked={settings.token_spend_enabled} onChange={v => update({ token_spend_enabled: v })} label="Token 消耗统计" />
+        </Row>
+        <div className="pt-2 border-t border-white/5 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-zinc-300 font-medium">已授权服务商 ({settings.authorized_providers?.length || 0} / {PROVIDERS.length})</div>
+            <div className="flex items-center gap-2">
+              <button
+                className="text-[11px] text-emerald-400 hover:text-emerald-300 cursor-pointer"
+                onClick={() => update({ authorized_providers: PROVIDERS.map(p => p[0]) })}
+              >
+                全选
+              </button>
+              <span className="text-zinc-600">·</span>
+              <button
+                className="text-[11px] text-emerald-400 hover:text-emerald-300 cursor-pointer"
+                onClick={() => update({ authorized_providers: ["claude", "codex", "antigravity", "kimi"] })}
+              >
+                常用
+              </button>
+              <span className="text-zinc-600">·</span>
+              <button
+                className="text-[11px] text-zinc-400 hover:text-zinc-300 cursor-pointer"
+                onClick={() => update({ authorized_providers: [] })}
+              >
+                取消全部
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto p-1 bg-zinc-950/40 rounded-xl border border-white/5">
+            {PROVIDERS.map(([pid, name]) => {
+              const checked = settings.authorized_providers?.includes(pid) ?? false;
+              return (
+                <label key={pid} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/5 cursor-pointer text-xs text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={e => {
+                      const cur = new Set(settings.authorized_providers || []);
+                      if (e.target.checked) cur.add(pid);
+                      else cur.delete(pid);
+                      update({ authorized_providers: Array.from(cur) });
+                    }}
+                    className="accent-emerald-500 rounded"
+                  />
+                  <span className="truncate">{name}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      </Section>
+
+      <Section title="网络代理" icon="🌐" subtitle="配置请求各服务商 Quota API 时使用的网络代理。Antigravity 本地服务始终走回环直连。">
+        <Row title="代理模式" subtitle="支持自动跟随系统/环境变量、手动 HTTP/HTTPS 或手动 SOCKS5 代理。">
+          <select
+            className={selectCls}
+            value={settings.network_proxy?.mode || "auto"}
+            onChange={e => update({
+              network_proxy: {
+                ...(settings.network_proxy || { host: "127.0.0.1", port: 7890 }),
+                mode: e.target.value as "auto" | "manual_http" | "manual_socks5"
+              }
+            })}
+          >
+            <option value="auto">自动探测（系统代理 / 环境变量）</option>
+            <option value="manual_http">手动 HTTP / HTTPS 代理</option>
+            <option value="manual_socks5">手动 SOCKS5 代理</option>
+          </select>
+        </Row>
+        {settings.network_proxy?.mode !== "auto" && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-white/5">
+            <div className="sm:col-span-2">
+              <Field label="代理主机 (Host)">
+                <input
+                  type="text"
+                  className={selectCls}
+                  placeholder="127.0.0.1"
+                  value={settings.network_proxy?.host || ""}
+                  onChange={e => update({
+                    network_proxy: {
+                      ...(settings.network_proxy || { mode: "manual_http", port: 7890 }),
+                      host: e.target.value.trim()
+                    }
+                  })}
+                />
+              </Field>
+            </div>
+            <div>
+              <Field label="端口 (Port)">
+                <input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  className={selectCls}
+                  placeholder="7890"
+                  value={settings.network_proxy?.port || 7890}
+                  onChange={e => update({
+                    network_proxy: {
+                      ...(settings.network_proxy || { mode: "manual_http", host: "127.0.0.1" }),
+                      port: Math.max(1, Math.min(65535, parseInt(e.target.value) || 7890))
+                    }
+                  })}
+                />
+              </Field>
+            </div>
+          </div>
+        )}
       </Section>
 
       <Section title="启动" icon="🚀">

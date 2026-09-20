@@ -102,30 +102,29 @@ Copy-Item (Join-Path $Root "README-portable.zh-CN.md") -Destination (Join-Path $
 Copy-Item (Join-Path $Root "LICENSE") -Destination (Join-Path $StagingDir "LICENSE") -Force
 Copy-Item (Join-Path $Root "NOTICE") -Destination (Join-Path $StagingDir "NOTICE") -Force
 
-$FinalZipName = "Pulse-$Version-windows-x64-portable.zip"
-$FinalZipPath = Join-Path $ArtifactsDir $FinalZipName
-Compress-Archive -Path "$StagingDir\*" -DestinationPath $FinalZipPath -Force
-Remove-Item -Recurse -Force $StagingDir
-Write-Host "  -> Portable ZIP: $FinalZipName" -ForegroundColor Green
-
-# 5. 结构化依赖与构建信息（不含本机路径）
-Write-Host "`n[4/6] Generating manifests..." -ForegroundColor Yellow
+# Generate BUILD_INFO.json and BUILD_INFO.txt
 $nodeVer = (node --version)
 $cargoVer = (cargo --version)
 $commit = (git rev-parse HEAD)
 $utc = (Get-Date).ToUniversalTime().ToString('u')
 
-# 从 package.json 结构化生成 npm 直依赖清单（名称、版本），不经过带路径的命令输出。
-$pkgJson = Get-Content "$Root/package.json" -Raw | ConvertFrom-Json
-$depLines = @("=== npm (direct dependencies) ===")
-foreach ($p in ($pkgJson.dependencies.PSObject.Properties)) { $depLines += "$($p.Name) $($p.Value)" }
-foreach ($p in ($pkgJson.devDependencies.PSObject.Properties)) { $depLines += "dev: $($p.Name) $($p.Value)" }
-$depLines += ""
-$depLines += "=== cargo (direct dependencies) ==="
-foreach ($line in (Get-Content "$Root/src-tauri/Cargo.toml")) {
-    if ($line -match '^([a-zA-Z0-9_-]+)\s*=\s*') { $depLines += $Matches[1] }
+$buildInfoObj = [ordered]@{
+    product = "Pulse for Windows"
+    version = $Version
+    commit = $commit
+    built = $utc
+    target = "x86_64-pc-windows-msvc"
+    exe_sha256 = $exeSha
+    node = $nodeVer
+    cargo = $cargoVer
+    mode = "release"
+    signing = "unsigned"
+    webview2 = "system install required (bootstrapped by installer when missing)"
 }
-$depLines | Out-File -FilePath (Join-Path $ArtifactsDir "DEPENDENCIES.txt") -Encoding utf8
+$buildInfoJson = $buildInfoObj | ConvertTo-Json -Depth 4
+$BuildJsonFile = Join-Path $ArtifactsDir "BUILD_INFO.json"
+$buildInfoJson | Out-File -FilePath $BuildJsonFile -Encoding utf8
+$buildInfoJson | Out-File -FilePath (Join-Path $StagingDir "BUILD_INFO.json") -Encoding utf8
 
 $buildInfo = @"
 product: Pulse for Windows
@@ -142,11 +141,49 @@ webview2: system install required (bootstrapped by installer when missing)
 "@
 $BuildFile = Join-Path $ArtifactsDir "BUILD_INFO.txt"
 $buildInfo | Out-File -FilePath $BuildFile -Encoding ascii
+$buildInfo | Out-File -FilePath (Join-Path $StagingDir "BUILD_INFO.txt") -Encoding ascii
+
+$FinalZipName = "Pulse-$Version-windows-x64-portable.zip"
+$FinalZipPath = Join-Path $ArtifactsDir $FinalZipName
+Compress-Archive -Path "$StagingDir\*" -DestinationPath $FinalZipPath -Force
+Remove-Item -Recurse -Force $StagingDir
+Write-Host "  -> Portable ZIP: $FinalZipName" -ForegroundColor Green
+
+# Verify ZIP extraction & hash
+Write-Host "  -> Verifying Portable ZIP contents and SHA256..." -ForegroundColor Yellow
+$verifyDir = Join-Path $ArtifactsDir "verify-portable"
+if (Test-Path $verifyDir) { Remove-Item -Recurse -Force $verifyDir }
+Expand-Archive -Path $FinalZipPath -DestinationPath $verifyDir -Force
+$unzippedExe = Join-Path $verifyDir "Pulse.exe"
+if (-not (Test-Path $unzippedExe)) { throw "校验失败：ZIP 内未找到 Pulse.exe" }
+$unzippedSha = (Get-FileHash -Path $unzippedExe -Algorithm SHA256).Hash.ToLower()
+if ($unzippedSha -ne $exeSha) {
+    throw "校验失败：ZIP 内 Pulse.exe SHA256 ($unzippedSha) 与原始二进制 ($exeSha) 不匹配"
+}
+$unzippedJson = Join-Path $verifyDir "BUILD_INFO.json"
+if (-not (Test-Path $unzippedJson)) { throw "校验失败：ZIP 内未找到 BUILD_INFO.json" }
+Remove-Item -Recurse -Force $verifyDir
+Write-Host "  -> Verified: ZIP extracted Pulse.exe matches release binary ($unzippedSha)" -ForegroundColor Green
+
+# 5. 结构化依赖与构建信息（不含本机路径）
+Write-Host "`n[4/6] Generating manifests..." -ForegroundColor Yellow
+
+# 从 package.json 结构化生成 npm 直依赖清单（名称、版本），不经过带路径的命令输出。
+$pkgJson = Get-Content "$Root/package.json" -Raw | ConvertFrom-Json
+$depLines = @("=== npm (direct dependencies) ===")
+foreach ($p in ($pkgJson.dependencies.PSObject.Properties)) { $depLines += "$($p.Name) $($p.Value)" }
+foreach ($p in ($pkgJson.devDependencies.PSObject.Properties)) { $depLines += "dev: $($p.Name) $($p.Value)" }
+$depLines += ""
+$depLines += "=== cargo (direct dependencies) ==="
+foreach ($line in (Get-Content "$Root/src-tauri/Cargo.toml")) {
+    if ($line -match '^([a-zA-Z0-9_-]+)\s*=\s*') { $depLines += $Matches[1] }
+}
+$depLines | Out-File -FilePath (Join-Path $ArtifactsDir "DEPENDENCIES.txt") -Encoding utf8
 
 # 6. SHA256SUMS：从最终产物重新计算
 Write-Host "`n[5/6] Generating SHA256 checksums..." -ForegroundColor Yellow
 $ShaFile = Join-Path $ArtifactsDir "SHA256SUMS.txt"
-$ItemsToHash = @($FinalSetupPath, $FinalZipPath, (Join-Path $ArtifactsDir "DEPENDENCIES.txt"), $BuildFile)
+$ItemsToHash = @($FinalSetupPath, $FinalZipPath, (Join-Path $ArtifactsDir "DEPENDENCIES.txt"), $BuildFile, $BuildJsonFile)
 $HashLines = foreach ($item in $ItemsToHash) {
     $hash = (Get-FileHash -Path $item -Algorithm SHA256).Hash.ToLower()
     "$hash  $([System.IO.Path]::GetFileName($item))"

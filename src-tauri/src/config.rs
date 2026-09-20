@@ -15,6 +15,19 @@ pub struct AppProfile {
     pub profile_id: String,
     pub created_at: String,
     pub mode: ConfigMode,
+    #[serde(default)]
+    pub last_known_exe_path: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProfileStatus {
+    pub profile_id: String,
+    pub mode: ConfigMode,
+    pub created_at: String,
+    pub last_known_exe_path: Option<String>,
+    pub current_exe_path: Option<String>,
+    pub is_copy: bool,
+    pub is_moved: bool,
 }
 
 static DATA_DIR_AND_MODE: OnceLock<Result<(PathBuf, ConfigMode), String>> = OnceLock::new();
@@ -80,9 +93,19 @@ pub fn get_profile() -> AppProfile {
         let dir = get_config_dir();
         let path = dir.join("profile.json");
         let mode = get_config_mode();
+        let current_exe_str = std::env::current_exe().ok().map(|p| p.to_string_lossy().to_string());
         if let Ok(bytes) = fs::read(&path) {
             match serde_json::from_slice::<AppProfile>(&bytes) {
-                Ok(mut prof) => { prof.mode = mode; return Mutex::new(prof); }
+                Ok(mut prof) => {
+                    prof.mode = mode;
+                    if prof.last_known_exe_path.is_none() && current_exe_str.is_some() {
+                        prof.last_known_exe_path = current_exe_str;
+                        if let Ok(b) = serde_json::to_vec_pretty(&prof) {
+                            let _ = atomic_write(&path, &b);
+                        }
+                    }
+                    return Mutex::new(prof);
+                }
                 Err(e) => {
                     // 损坏不静默：保留坏文件副本供诊断，写日志说明换发了新身份（A18）。
                     let bad = dir.join(format!("profile.json.bad-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
@@ -94,23 +117,19 @@ pub fn get_profile() -> AppProfile {
                 }
             }
         }
-        // 写盘失败的兜底（B03）：凭据键含 profile_id，随机新 ID 一次漂移就让已存
-        // 凭据不可达，重启再漂移一次。改用目录路径的稳定散列派生 ID——同一台机器
-        // 反复失败时身份保持一致，凭据仍可达；写盘成功则用正式随机 ID。
-        let mut hasher=std::collections::hash_map::DefaultHasher::new();
-        use std::hash::{Hash,Hasher};
-        dir.hash(&mut hasher);format!("{:?}",mode).hash(&mut hasher);
-        let recovered_id=format!("pr{:016x}",hasher.finish());
+        // W11: 首次启动创建便携配置时，使用 crypto-random 生成持久的 Profile ID (pr_xxxxxxxx)
+        let new_id = format!("pr_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
         let prof = AppProfile {
-            profile_id: recovered_id,
+            profile_id: new_id,
             created_at: chrono::Utc::now().to_rfc3339(),
             mode,
+            last_known_exe_path: current_exe_str,
         };
         if let Ok(bytes) = serde_json::to_vec_pretty(&prof) {
             match atomic_write(&path, &bytes) {
                 Ok(()) => {}
                 Err(write_err)=>{
-                    eprintln!("Pulse: 新 Profile 写盘失败——使用内容派生的稳定回退身份，凭据保持可达；写盘错误: {write_err}");
+                    eprintln!("Pulse: 新 Profile 写盘失败: {write_err}");
                 }
             }
         }
@@ -123,23 +142,94 @@ pub fn get_profile_id() -> String {
     get_profile().profile_id
 }
 
+pub fn check_profile_status() -> ProfileStatus {
+    let prof = get_profile();
+    let current_exe = std::env::current_exe().ok().map(|p| p.to_string_lossy().to_string());
+    let mut is_copy = false;
+    let mut is_moved = false;
+    if let (Some(ref last), Some(ref curr)) = (&prof.last_known_exe_path, &current_exe) {
+        if !last.eq_ignore_ascii_case(curr) {
+            if Path::new(last).exists() {
+                is_copy = true;
+            } else {
+                is_moved = true;
+            }
+        }
+    }
+    ProfileStatus {
+        profile_id: prof.profile_id,
+        mode: prof.mode,
+        created_at: prof.created_at,
+        last_known_exe_path: prof.last_known_exe_path,
+        current_exe_path: current_exe,
+        is_copy,
+        is_moved,
+    }
+}
+
 pub fn create_isolated_profile() -> Result<String, String> {
     let dir = get_config_dir();
     let path = dir.join("profile.json");
     let mode = get_config_mode();
-    let new_id = format!("p_{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
+    let old_id = get_profile_id();
+    let current_exe_str = std::env::current_exe().ok().map(|p| p.to_string_lossy().to_string());
+    let new_id = format!("pr_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
     let prof = AppProfile {
         profile_id: new_id.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
         mode,
+        last_known_exe_path: current_exe_str,
     };
     let bytes = serde_json::to_vec_pretty(&prof).map_err(|e| format!("序列化 Profile 失败: {e}"))?;
     atomic_write(&path, &bytes)?;
     if let Some(cell) = CACHED_PROFILE.get() {
         *cell.lock().unwrap() = prof;
     }
+    #[cfg(windows)]
+    let _ = crate::platform::remove_startup_for_profile(&old_id);
     Ok(new_id)
 }
+pub fn parse_settings_readonly(path:&Path,store:&dyn SecretStore)->Result<AppSettings,String>{
+    if !path.exists(){return Ok(AppSettings::default())}
+    let bytes=fs::read(path).map_err(|_|"无法读取设置；原文件未修改")?;
+    let mut root:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|"设置 JSON 损坏；原文件未修改")?;
+    let legacy=root.get("schema_version").is_none();
+    if legacy {
+        let providers=root.get_mut("providers").and_then(|v|v.as_object_mut()).ok_or("旧设置缺少 providers")?;
+        for (id,cfg) in providers.iter_mut(){
+            if !crate::types::valid_id(id){return Err("旧账号标识无效".into())}
+            let map=cfg.as_object_mut().ok_or("旧账号设置无效")?;
+            map.insert("provider_id".into(),serde_json::json!(id));
+            map.insert("label".into(),serde_json::json!(crate::types::name(id)));
+            map.insert("use_local".into(),serde_json::json!(true));
+            if map.get("custom_endpoint").and_then(|v|v.as_str()).is_some_and(|s|!s.is_empty()) {
+                return Err("旧配置含自定义地址；请先核对，不会忽略或覆盖原文件".into());
+            }
+            map.remove("custom_endpoint");
+        }
+        root["schema_version"]=serde_json::json!(2);
+    }
+    let mut cleaned=root.clone();
+    if let Some(providers)=cleaned.get_mut("providers").and_then(|v|v.as_object_mut()) {
+        for cfg in providers.values_mut(){cfg.as_object_mut().ok_or("账号设置无效")?.remove("api_key");}
+    }
+    let mut settings:AppSettings=serde_json::from_value(cleaned).map_err(|_|"设置结构无效；原文件未修改")?;
+    if !settings.monitoring_setup_completed && settings.providers.values().any(|p| p.enabled) {
+        settings.monitoring_setup_completed = true;
+        let mut auth: Vec<String> = settings.providers.values().filter(|p| p.enabled).map(|p| p.provider_id.clone()).collect();
+        auth.sort();
+        auth.dedup();
+        settings.authorized_providers = auth;
+    }
+    settings.validate()?;
+    settings.schema_version=crate::types::SCHEMA_VERSION;
+    for (id,cfg) in settings.providers.iter_mut(){
+        cfg.credential_configured=store.get(id)?.is_some()
+            || root.get("providers").and_then(|p|p.get(id)).and_then(|c|c.get("api_key")).and_then(|k|k.as_str()).is_some_and(|k|!k.trim().is_empty());
+    }
+    Ok(settings)
+}
+
 pub fn load_settings()->Result<AppSettings,String>{load_from(&get_config_dir().join("settings.json"),&WindowsSecrets)}
 pub fn load_from(path:&Path,store:&dyn SecretStore)->Result<AppSettings,String>{
     if !path.exists(){return Ok(AppSettings::default())}
@@ -166,6 +256,13 @@ pub fn load_from(path:&Path,store:&dyn SecretStore)->Result<AppSettings,String>{
         for cfg in providers.values_mut(){cfg.as_object_mut().ok_or("账号设置无效")?.remove("api_key");}
     }
     let mut settings:AppSettings=serde_json::from_value(cleaned).map_err(|_|"设置结构无效；原文件未修改")?;
+    if !settings.monitoring_setup_completed && settings.providers.values().any(|p| p.enabled) {
+        settings.monitoring_setup_completed = true;
+        let mut auth: Vec<String> = settings.providers.values().filter(|p| p.enabled).map(|p| p.provider_id.clone()).collect();
+        auth.sort();
+        auth.dedup();
+        settings.authorized_providers = auth;
+    }
     settings.validate()?;
     // Older schemas deserialize through serde defaults; persist them at the current version so
     // every field is spelled out on disk and a downgrade is visible instead of silent.
@@ -269,7 +366,14 @@ pub fn check_importable_config() -> Result<Option<ImportableConfigSummary>, Stri
     }))
 }
 
-pub fn import_installed_config() -> Result<AppSettings, String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportMode {
+    Append,
+    Overwrite,
+}
+
+pub fn import_installed_config(mode: ImportMode) -> Result<AppSettings, String> {
     if !is_portable() {
         return Err("仅便携版支持从安装版导入配置".into());
     }
@@ -336,18 +440,61 @@ pub fn import_installed_config() -> Result<AppSettings, String> {
         old_dir: installed_dir,
     };
 
-    let mut imported = load_from(&installed_settings_path, &old_store)?;
+    // W04: 只读解析源配置，绝不写回或污染源目录
+    let source_settings = parse_settings_readonly(&installed_settings_path, &old_store)?;
 
-    for (id, cfg) in imported.providers.iter_mut() {
-        if let Ok(Some(secret)) = old_store.get(id) {
-            let _ = WindowsSecrets.put(id, &secret);
-        }
-        cfg.credential_configured = WindowsSecrets.get(id)?.is_some();
+    // W06: 覆盖模式先备份，追加模式遇到冲突则分配新唯一 ID
+    let mut current_settings = load_settings().unwrap_or_default();
+    if mode == ImportMode::Overwrite {
+        backup_settings()?;
+        current_settings.providers.clear();
     }
 
-    save_settings(&imported)?;
+    let mut written_keys: Vec<String> = Vec::new();
 
-    Ok(imported)
+    let merge_result: Result<(), String> = (|| {
+        let mut max_order = current_settings.providers.values().map(|c| c.order).max().unwrap_or(0);
+        for (src_id, mut cfg) in source_settings.providers {
+            let target_id = if current_settings.providers.contains_key(&src_id) {
+                format!("{}_{}", src_id, &uuid::Uuid::new_v4().simple().to_string()[..6])
+            } else {
+                src_id.clone()
+            };
+
+            // W05: 迁移凭据并校验 (Read-after-Write)
+            if let Ok(Some(secret)) = old_store.get(&src_id) {
+                WindowsSecrets.put(&target_id, &secret)
+                    .map_err(|e| format!("写入凭据失败 ({target_id}): {e}"))?;
+                written_keys.push(target_id.clone());
+
+                let readback = WindowsSecrets.get(&target_id)
+                    .map_err(|e| format!("读回凭据校验异常 ({target_id}): {e}"))?;
+                if readback.as_deref() != Some(&secret) {
+                    return Err(format!("凭据读回校验不一致 ({target_id})"));
+                }
+                cfg.credential_configured = true;
+            } else {
+                cfg.credential_configured = false;
+            }
+
+            max_order += 1;
+            cfg.order = max_order;
+            cfg.provider_id = target_id.clone();
+            current_settings.providers.insert(target_id, cfg);
+        }
+        Ok(())
+    })();
+
+    if let Err(e) = merge_result {
+        // 发生错误时回滚所有已写入的目标凭据
+        for key in &written_keys {
+            let _ = WindowsSecrets.delete(key);
+        }
+        return Err(format!("导入失败已回滚凭据: {e}"));
+    }
+
+    save_settings(&current_settings)?;
+    Ok(current_settings)
 }
 #[cfg(test)] mod tests {
     use super::*; use std::{cell::RefCell,collections::HashMap};
@@ -366,16 +513,18 @@ pub fn import_installed_config() -> Result<AppSettings, String> {
     }
     #[test] fn invalid_settings_are_not_written(){let d=tempfile::tempdir().unwrap();let mut s=AppSettings::default();s.refresh_interval_seconds=0;assert!(save_to(&d.path().join("x"),&s).is_err());}
     #[test] fn unicode_path_and_roundtrip(){let d=tempfile::tempdir().unwrap();let p=d.path().join("中文 空格/settings.json");save_to(&p,&AppSettings::default()).unwrap();assert!(load_from(&p,&Memory::default()).is_ok());}
-    #[test] fn v2_settings_upgrade_to_v3_keeping_everything(){
+    #[test] fn v2_settings_upgrade_to_v4_keeping_everything(){
         let d=tempfile::tempdir().unwrap();let p=d.path().join("settings.json");
         let v2=r#"{"schema_version":2,"dock_side":"left","auto_collapse_seconds":2,"theme":"translucent","refresh_interval_seconds":300,"display_mode":"remaining","forecast":true,"show_elapsed":true,"follow_active_display":false,"hide_fullscreen":true,"monitor_name":"\\\\.\\DISPLAY3","free_x":0.5,"free_y":0.5,"providers":{"codex":{"provider_id":"codex","label":"工作","enabled":true,"order":2,"use_local":true,"credential_configured":false,"primary_window":"account-primary_window"}}}"#;
         fs::write(&p,v2).unwrap();
         let s=load_from(&p,&Memory::default()).unwrap();
-        assert_eq!(s.schema_version,3);assert_eq!(s.dock_side,"left");assert_eq!(s.theme,"translucent");assert_eq!(s.refresh_interval_seconds,300);
+        assert_eq!(s.schema_version,4);assert_eq!(s.dock_side,"left");assert_eq!(s.theme,"translucent");assert_eq!(s.refresh_interval_seconds,300);
         assert_eq!(s.providers["codex"].order,2);assert_eq!(s.providers["codex"].label,"工作");assert_eq!(s.providers["codex"].primary_window.as_deref(),Some("account-primary_window"));
         assert_eq!(s.warning_threshold,90);assert_eq!(s.notifications,crate::types::NotificationSettings::default());assert!(s.show_rail);assert_eq!(s.start_behavior,"rail");
+        assert!(s.monitoring_setup_completed);
+        assert_eq!(s.authorized_providers, vec!["codex"]);
         let on_disk:serde_json::Value=serde_json::from_slice(&fs::read(&p).unwrap()).unwrap();
-        assert_eq!(on_disk["schema_version"],3,"file is rewritten at the current schema");
+        assert_eq!(on_disk["schema_version"],4,"file is rewritten at the current schema");
         assert_eq!(on_disk["providers"]["codex"]["order"],2);
         assert!(load_from(&p,&Memory::default()).is_ok(),"the rewritten file loads again");
     }
@@ -407,11 +556,22 @@ pub fn import_installed_config() -> Result<AppSettings, String> {
             profile_id: "p_1234567890abcdef".into(),
             created_at: "2026-09-18T00:00:00Z".into(),
             mode: ConfigMode::Portable,
+            last_known_exe_path: None,
         };
         let v = serde_json::to_value(&p).unwrap();
         assert_eq!(v["mode"], "portable");
         let p2: AppProfile = serde_json::from_value(v).unwrap();
         assert_eq!(p2.profile_id, "p_1234567890abcdef");
         assert_eq!(p2.mode, ConfigMode::Portable);
+    }
+    #[test] fn parse_settings_readonly_does_not_modify_disk() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("settings.json");
+        let v2 = r#"{"schema_version":2,"providers":{"codex":{"provider_id":"codex","label":"工作","enabled":true,"order":2,"use_local":true,"credential_configured":false}}}"#;
+        fs::write(&p, v2).unwrap();
+        let s = parse_settings_readonly(&p, &Memory::default()).unwrap();
+        assert_eq!(s.schema_version, crate::types::SCHEMA_VERSION);
+        let on_disk = fs::read_to_string(&p).unwrap();
+        assert_eq!(on_disk, v2, "source file on disk must NOT be modified by parse_settings_readonly");
     }
 }

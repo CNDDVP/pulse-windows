@@ -24,6 +24,16 @@ interface RuntimeInfo {
   profile_id: string;
 }
 
+interface ProfileStatus {
+  profile_id: string;
+  mode: string;
+  created_at: string;
+  last_known_exe_path: string | null;
+  current_exe_path: string | null;
+  is_copy: boolean;
+  is_moved: boolean;
+}
+
 function sanitizePath(raw: string): string {
   return raw
     .replace(/[a-zA-Z]:\\[^"\s,;]+/g, "[PATH]")
@@ -32,6 +42,7 @@ function sanitizePath(raw: string): string {
 
 export function AboutPage() {
   const [profile, setProfile] = useState<ProfileInfo | null>(null);
+  const [profileStatus, setProfileStatus] = useState<ProfileStatus | null>(null);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const [msg, setMsg] = useState("");
   const [confirmArmed, setConfirmArmed] = useState<string | null>(null);
@@ -55,6 +66,7 @@ export function AboutPage() {
 
   const refreshProfile = () => {
     invoke<ProfileInfo>("get_profile_info").then(setProfile).catch(() => {});
+    invoke<ProfileStatus>("check_profile_status").then(setProfileStatus).catch(() => {});
     invoke<RuntimeInfo>("get_runtime_info").then(setRuntime).catch(() => {});
   };
 
@@ -165,6 +177,25 @@ export function AboutPage() {
       </Section>
 
       <Section title="配置与凭据隔离" icon="🛡️" subtitle="便携版与安装版凭据独立托管于系统凭据管理器。">
+        {profileStatus?.is_copy && (
+          <div className="p-3 bg-amber-950/40 border border-amber-500/30 rounded-xl text-amber-200 text-xs flex items-start gap-2.5 mb-3">
+            <span className="text-base leading-none">⚠️</span>
+            <div className="flex-1 space-y-1">
+              <div className="font-medium text-amber-300">检测到便携目录已被复制（当前共享配置）</div>
+              <div className="text-[11px] text-amber-200/80 leading-relaxed">
+                当前便携程序运行于新路径，但原程序路径仍存在。两份程序目前共享相同的配置身份与 Windows 凭据，可能导致数据相互覆盖。
+              </div>
+              <div className="pt-1">
+                <button
+                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 rounded-lg text-xs font-medium transition cursor-pointer"
+                  onClick={() => void handleIsolateProfile()}
+                >
+                  {confirmArmed === "isolate_profile" ? "再次点击以确认分离" : "一键创建独立配置副本"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="flex flex-wrap gap-3">
           {profile?.mode === "portable" && (
             <button

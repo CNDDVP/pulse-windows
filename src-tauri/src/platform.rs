@@ -39,12 +39,27 @@ mod imp {
             if enable {
                 let exe = std::env::current_exe().map_err(|_| "无法定位程序路径")?;
                 let cmd = wide(&format!("\"{}\"", exe.display()));
-                if RegSetKeyValueW(HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), PCWSTR(val.as_ptr()), REG_SZ.0, Some(cmd.as_ptr() as *const _), (cmd.len() * 2) as u32) != ERROR_SUCCESS {
-                    return Err("写入开机启动项失败".into());
+                let res = RegSetKeyValueW(HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), PCWSTR(val.as_ptr()), REG_SZ.0, Some(cmd.as_ptr() as *const _), (cmd.len() * 2) as u32);
+                if res != ERROR_SUCCESS {
+                    return Err(format!("写入开机启动项失败 (错误码: {:?})", res.0));
                 }
             } else {
                 let r = RegDeleteKeyValueW(HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), PCWSTR(val.as_ptr()));
-                if r != ERROR_SUCCESS && r != ERROR_FILE_NOT_FOUND { return Err("删除开机启动项失败".into()); }
+                if r != ERROR_SUCCESS && r != ERROR_FILE_NOT_FOUND {
+                    return Err(format!("删除开机启动项失败 (错误码: {:?})", r.0));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn remove_startup_for_profile(profile_id: &str) -> Result<(), String> {
+        let val_name = format!("Pulse_Portable_{profile_id}");
+        let sub = wide(RUN); let val = wide(&val_name);
+        unsafe {
+            let r = RegDeleteKeyValueW(HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), PCWSTR(val.as_ptr()));
+            if r != ERROR_SUCCESS && r != ERROR_FILE_NOT_FOUND {
+                return Err(format!("清理旧启动项失败 (错误码: {:?})", r.0));
             }
         }
         Ok(())
@@ -159,7 +174,16 @@ mod imp {
                             cbData: msg_data.len() as u32,
                             lpData: msg_data.as_ptr() as *mut _,
                         };
-                        let _ = SendMessageW(hwnd, WM_COPYDATA, WPARAM(0), LPARAM(&cds as *const _ as isize));
+                        let mut result: usize = 0;
+                        let _ = SendMessageTimeoutW(
+                            hwnd,
+                            WM_COPYDATA,
+                            WPARAM(0),
+                            LPARAM(&cds as *const _ as isize),
+                            SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                            2000,
+                            Some(&mut result),
+                        );
                     }
                 }
                 let _ = CloseHandle(hmutex);
@@ -213,6 +237,7 @@ mod imp {
 mod imp {
     pub fn startup_command() -> Option<String> { None }
     pub fn set_startup(_: bool) -> Result<(), String> { Err("仅支持 Windows".into()) }
+    pub fn remove_startup_for_profile(_: &str) -> Result<(), String> { Ok(()) }
     pub fn repair_startup_if_moved() {}
     pub fn toasts_enabled() -> Option<bool> { None }
     pub fn is_webview2_available() -> bool { true }
