@@ -76,6 +76,22 @@ pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppStat
     let retained=cached.clone();drop(cached);
     app.emit("settings-updated",&new_settings).map_err(|_|"设置已保存，但窗口通知失败")?;
     app.emit("usages-updated",&retained).map_err(|_|"窗口通知失败")?;
+    // 找出所有已启用但在 cached_usages 中尚无读数的账号（例如新添加的账号），自动异步触发一次刷新
+    let unqueried_ids: Vec<String> = {
+        let cached = state.cached_usages.lock().await;
+        new_settings.providers.iter()
+            .filter(|(id, cfg)| cfg.enabled && !cached.iter().any(|u| &u.account_id == *id))
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+    if !unqueried_ids.is_empty() {
+        let app_clone = app.clone();
+        tauri::async_runtime::spawn(async move {
+            for aid in unqueried_ids {
+                let _ = crate::AppState::refresh_account_now(&app_clone, &aid).await;
+            }
+        });
+    }
     let mode=state.window_mode.lock().await.clone();
     crate::window::position(&app,&new_settings,&mode);Ok(new_settings)
 }
@@ -95,12 +111,13 @@ pub async fn refresh_usages(app:AppHandle)->Result<crate::RefreshSummary,String>
 #[tauri::command]
 pub async fn refresh_account(account_id:String,app:AppHandle)->Result<u64,String>{crate::AppState::refresh_account_now(&app,&account_id).await}
 #[tauri::command]
-pub async fn test_account(account_id:String,state:State<'_,AppState>)->Result<ProviderUsage,String>{
+pub async fn test_account(account_id:String,state:State<'_,AppState>,app:AppHandle)->Result<ProviderUsage,String>{
     let cfg={
         let s=state.settings.lock().await;
         s.providers.get(&account_id).cloned().ok_or("账号不存在")?
     };
     let usage=crate::providers::fetch_one(&account_id,&cfg,&state.http).await;
+    let _=crate::apply_single_reading(&app,&account_id,usage.clone(),None).await;
     Ok(usage)
 }
 #[tauri::command]
@@ -142,7 +159,14 @@ pub async fn set_credential(account_id:String,secret:String,state:State<'_,AppSt
     // 清读数并广播（B05/B06 同语义）：悬浮栏立即摆脱旧凭据下的旧额度。
     let snapshot={let mut cached=state.cached_usages.lock().await;cached.retain(|r|r.account_id!=account_id);cached.clone()};
     let _=app.emit("usages-updated",&snapshot);
-    app.emit("settings-updated",&saved).map_err(|_|"凭据已保存但窗口通知失败")?;Ok(())
+    app.emit("settings-updated",&saved).map_err(|_|"凭据已保存但窗口通知失败")?;
+    // 凭据保存成功后，立即在后台发起一次即时刷新，无需等待 5 分钟轮询
+    let app2=app.clone();
+    let aid=account_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let _=crate::AppState::refresh_account_now(&app2,&aid).await;
+    });
+    Ok(())
 }
 #[tauri::command]
 pub async fn delete_credential(account_id:String,state:State<'_,AppState>,app:AppHandle)->Result<(),String>{

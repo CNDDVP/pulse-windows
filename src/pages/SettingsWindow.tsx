@@ -6,6 +6,12 @@ import type { AppSettings, HotkeySettings, MonitorOption, ProviderConfig, Provid
 import { ProviderIcon } from "../components/icons/ProviderIcons";
 const BOT_PERSONAS: [string,string][]=[["calm","沉稳"],["eager","热切"],["steady","踏实"],["curious","好奇"],["sleepy","瞌睡"],["playful","顽皮"],["stoic","淡漠"],["proud","骄傲"]];
 const BOT_SHAPES: [string,string][]=[["blob","圆团"],["pebble","卵石"],["bean","豆子"],["egg","蛋"],["squircle","方圆"],["tablet","平板"],["capsule","胶囊"],["cylinder","圆柱"],["hex","六边"],["gem","宝石"],["crystal","晶体"],["wedge","楔形"],["shield","盾牌"],["dome","穹顶"],["arch","拱门"],["cloud","云朵"],["teardrop","泪滴"],["leaf","叶片"]];
+const ANTIGRAVITY_DEFAULT_WINDOWS = [
+  { id: "0-0", name: "Gemini 模型 · 每周限额" },
+  { id: "0-1", name: "Gemini 模型 · 5小时限额" },
+  { id: "1-0", name: "Claude 与 GPT 模型 · 每周限额" },
+  { id: "1-1", name: "Claude 与 GPT 模型 · 5小时限额" },
+];
 import { TokenSpend } from "./TokenSpend";
 import { resetText, pickElapsedWindow } from "../presentation";
 import { orderedIds, moveItem, applyOrder } from "../ordering";
@@ -31,8 +37,11 @@ const PAGES: { kind: Exclude<View, { kind: "account" }>["kind"]; title: string; 
   { kind: "about", title: "关于 Pulse", icon: "ℹ️", group: "app", keywords: "关于 版本 更新 开发者 json 集成" },
 ];
 
-export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSettings: AppSettings; usages: ProviderUsage[]; onSaved: (s: AppSettings) => void }) {
+export function SettingsWindow({ initialSettings, usages: externalUsages, onSaved }: { initialSettings: AppSettings; usages: ProviderUsage[]; onSaved: (s: AppSettings) => void }) {
   const [settings, setSettings] = useState<AppSettings>(initialSettings);
+  const [localUsages, setLocalUsages] = useState<ProviderUsage[]>(externalUsages);
+  useEffect(() => { setLocalUsages(externalUsages); }, [externalUsages]);
+  const usages = localUsages;
   const [view, setView] = useState<View>({ kind: "accounts" });
   const [search, setSearch] = useState("");
   const [secrets, setSecrets] = useState<Record<string, string>>({});
@@ -214,7 +223,7 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
       if (accountDirty(id) || !(id in appliedRef.current.providers)) await persist(settings, "");
       await invoke("set_credential", { accountId: id, secret });
       setSecrets(s => ({ ...s, [id]: "" }));
-      showToast("success", "凭据已安全存入 Windows 凭据管理器");
+      showToast("success", "凭据已安全存入 Windows 凭据管理器，正在获取最新读数…");
     } catch (e) { showToast("error", `凭据保存失败: ${String(e)}`); } finally { setBusy(false); }
   };
   const handleDeleteCredential = async (id: string) => {
@@ -228,8 +237,17 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
   const test = async (id: string) => {
     setTestingId(id);
     try {
+      // 若用户在输入框填写了新凭据，测试时自动一并保存，避免"先填后测却提示未发现可用凭据"
+      if (secrets[id]) {
+        await invoke("set_credential", { accountId: id, secret: secrets[id] });
+        setSecrets(s => ({ ...s, [id]: "" }));
+      }
       if (accountDirty(id)) await persist(settings, "");
       const r = await invoke<ProviderUsage>("test_account", { accountId: id });
+      setLocalUsages(prev => {
+        const next = prev.filter(u => u.account_id !== id);
+        return [r, ...next];
+      });
       showToast(r.state === "live" ? "success" : "error", r.state === "live" ? `${r.display_name}: 连接成功，已获取最新读数` : `${r.display_name}: ${r.error_message || r.state}`);
     } catch (e) { showToast("error", `测试失败: ${String(e)}`); } finally { setTestingId(null); }
   };
@@ -469,26 +487,36 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
                 </Section>
 
                 <Section title="悬浮栏" icon="◎" subtitle="保存后即刻生效。">
-                  <Field label="主圆环显示的额度" hint={reading?.windows && reading.windows.length > 0 ? "圆环以该窗口的使用率与重置倒计时为准。" : "尚未获取该账号的额度数据；配置凭据并连接成功后，可在此下拉指定具体的额度窗口。"}>
+                  <Field label="主圆环显示的额度" hint={reading?.windows && reading.windows.length > 0 ? "圆环以该窗口的使用率与重置倒计时为准。" : c.provider_id === "antigravity" ? "支持选择 Antigravity 预设额度窗口；连接成功后将显示实时用量与重置倒计时。" : "尚未获取该账号的额度数据；配置凭据并连接成功后，可在此下拉指定具体的额度窗口。"}>
                     <select className={selectCls} value={c.primary_window || ""} onChange={e => patch(id, { primary_window: e.target.value || null })}>
                       <option value="">自动选择最高使用率（默认）</option>
-                      {c.primary_window && !reading?.windows?.some(w => w.id === c.primary_window) && (
+                      {c.primary_window && !reading?.windows?.some(w => w.id === c.primary_window) && !ANTIGRAVITY_DEFAULT_WINDOWS.some(w => c.provider_id === "antigravity" && w.id === c.primary_window) && (
                         <option value={c.primary_window}>{c.primary_window}（已配置 · 等待读数）</option>
                       )}
-                      {reading?.windows?.map(w => <option key={w.id} value={w.id}>{w.name} — 已使用 {w.used_percent.toFixed(1)}% ({resetText(w.resets_at)})</option>)}
+                      {reading?.windows && reading.windows.length > 0
+                        ? reading.windows.map(w => <option key={w.id} value={w.id}>{w.name} — 已使用 {w.used_percent.toFixed(1)}% ({resetText(w.resets_at)})</option>)
+                        : c.provider_id === "antigravity"
+                        ? ANTIGRAVITY_DEFAULT_WINDOWS.map(w => <option key={w.id} value={w.id}>{w.name}</option>)
+                        : null}
                     </select>
                   </Field>
-                  <Field label="外圈时间环跟随的周期" hint={!reading || !reading.windows || reading.windows.length === 0
-                    ? "尚未获取该账号的额度数据；连接成功后将自动识别周期长度。"
-                    : timedWindows.length === 0
-                    ? "该账号的额度窗口未报告周期长度，外圈暂不可用。"
-                    : settings.show_elapsed ? "外圈细线表示所选周期已流逝的比例；默认跟随倒计时最短的周期。" : "外圈已在通用设置中关闭。"}>
-                    <select className={selectCls} disabled={timedWindows.length === 0 && !c.elapsed_window} value={c.elapsed_window || ""} onChange={e => patch(id, { elapsed_window: e.target.value || null })}>
+                  <Field label="外圈时间环跟随的周期" hint={reading?.windows && reading.windows.length > 0
+                    ? timedWindows.length === 0
+                      ? "该账号的额度窗口未报告周期长度，外圈暂不可用。"
+                      : settings.show_elapsed ? "外圈细线表示所选周期已流逝的比例；默认跟随倒计时最短的周期。" : "外圈已在通用设置中关闭。"
+                    : c.provider_id === "antigravity"
+                    ? "支持选择 Antigravity 预设周期；连接成功后将自动对齐倒计时。"
+                    : "尚未获取该账号的额度数据；连接成功后将自动识别周期长度。"}>
+                    <select className={selectCls} disabled={timedWindows.length === 0 && !c.elapsed_window && c.provider_id !== "antigravity"} value={c.elapsed_window || ""} onChange={e => patch(id, { elapsed_window: e.target.value || null })}>
                       <option value="">自动选择倒计时最短的周期（默认）</option>
-                      {c.elapsed_window && !timedWindows.some(w => w.id === c.elapsed_window) && (
+                      {c.elapsed_window && !timedWindows.some(w => w.id === c.elapsed_window) && !ANTIGRAVITY_DEFAULT_WINDOWS.some(w => c.provider_id === "antigravity" && w.id === c.elapsed_window) && (
                         <option value={c.elapsed_window}>{c.elapsed_window}（已配置 · 等待读数）</option>
                       )}
-                      {timedWindows.map(w => <option key={w.id} value={w.id}>{w.name} — {resetText(w.resets_at)}</option>)}
+                      {timedWindows.length > 0
+                        ? timedWindows.map(w => <option key={w.id} value={w.id}>{w.name} — {resetText(w.resets_at)}</option>)
+                        : c.provider_id === "antigravity"
+                        ? ANTIGRAVITY_DEFAULT_WINDOWS.map(w => <option key={w.id} value={w.id}>{w.name}</option>)
+                        : null}
                     </select>
                   </Field>
                   <Row title="圆环颜色" subtitle="自定义颜色用于正常区间；达到琥珀/红色阈值或服务商报告耗尽时仍按预警色显示。">
@@ -511,14 +539,20 @@ export function SettingsWindow({ initialSettings, usages, onSaved }: { initialSe
                     </div>
                   )}
                   <Field label="第二额度内环（可选）" hint={!reading || !reading.windows || reading.windows.length <= 1
-                    ? "在主环内侧用细环显示所选额度；连接成功并获取多项额度后可在此开启双环显示。"
+                    ? c.provider_id === "antigravity"
+                      ? "在主环内侧用细环显示所选额度（如 5小时与每周限额同时显示）。"
+                      : "在主环内侧用细环显示所选额度；连接成功并获取多项额度后可在此开启双环显示。"
                     : "在主环内侧用细环显示所选额度；选择“关闭”即完全清除内环。"}>
                     <select className={selectCls} value={c.secondary_window || ""} onChange={e => patch(id, { secondary_window: e.target.value || null })}>
                       <option value="">关闭</option>
-                      {c.secondary_window && !reading?.windows?.some(w => w.id === c.secondary_window) && (
+                      {c.secondary_window && !reading?.windows?.some(w => w.id === c.secondary_window) && !ANTIGRAVITY_DEFAULT_WINDOWS.some(w => c.provider_id === "antigravity" && w.id === c.secondary_window) && (
                         <option value={c.secondary_window}>{c.secondary_window}（已配置 · 等待读数）</option>
                       )}
-                      {reading?.windows?.map(w => <option key={w.id} value={w.id}>{w.name} — 已使用 {w.used_percent.toFixed(1)}%</option>)}
+                      {reading?.windows && reading.windows.length > 0
+                        ? reading.windows.map(w => <option key={w.id} value={w.id}>{w.name} — 已使用 {w.used_percent.toFixed(1)}%</option>)
+                        : c.provider_id === "antigravity"
+                        ? ANTIGRAVITY_DEFAULT_WINDOWS.map(w => <option key={w.id} value={w.id}>{w.name}</option>)
+                        : null}
                     </select>
                   </Field>
                   {c.provider_id === "antigravity" && (
