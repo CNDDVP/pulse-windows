@@ -1,4 +1,4 @@
-import { detailViewportReady } from "./detailLayout";
+import { detailViewportReady, waitForDetailLayout } from "./detailLayout";
 import {useEffect,useState} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {listen} from "@tauri-apps/api/event";
@@ -55,21 +55,11 @@ function DetailOverlay() {
   const detailContentReady = !!settings && usages !== null;
   useEffect(()=>{
     if(!layout||!detailContentReady)return;
-    let stopped=false,stable=0,attempts=0;
-    let timer:ReturnType<typeof setTimeout>;
-    const check=()=>{
-      if(stopped)return;
-      stable=detailViewportReady(window.innerWidth,window.innerHeight,window.devicePixelRatio,layout.width,layout.height)?stable+1:0;
-      if(stable>=2 || attempts>=20){
-        void invoke("detail_layout_ready",{requestId:layout.request_id}).catch(console.error);
-        return;
-      }
-      attempts++;
-      timer=setTimeout(check,attempts<=2?16:30);
-    };
-    // Hidden WebViews may suspend rAF: use bounded checks until resize has settled.
-    timer=setTimeout(check,0);
-    return()=>{stopped=true;clearTimeout(timer)};
+    return waitForDetailLayout(
+      () => detailViewportReady(window.innerWidth,window.innerHeight,window.devicePixelRatio,layout.width,layout.height),
+      () => invoke<boolean>("detail_layout_ready",{requestId:layout.request_id}),
+      () => console.warn("详情布局未就绪，保持隐藏；重新悬停可重试"),
+    );
   },[layout,detailContentReady]);
   const justifyClass=placement==="left"?"justify-end":placement==="right"?"justify-start":"justify-center";
   // 窗口在 rail 正下/正上时内容贴边渲染，否则卡片矮时垂直居中会在窗口顶留出大片透明，

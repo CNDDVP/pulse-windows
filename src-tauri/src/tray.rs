@@ -1,7 +1,7 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager,
+    AppHandle, Manager,
 };
 
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -34,7 +34,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                             let _ = w.show();
                             let _ = w.unminimize();
                             let _ = w.set_focus();
-                            let _ = app.emit("reveal-rail", ());
+                            crate::reveal_rail(app);
                             let app_c = app.clone();
                             tauri::async_runtime::spawn(async move {
                                 let s = app_c.state::<crate::AppState>().settings.lock().await.clone();
@@ -74,7 +74,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                         let _ = w.unminimize();
                         let _ = w.set_focus();
                     }
-                    let _ = app.emit("reveal-rail", ());
+                    crate::reveal_rail(app);
                     let app_c = app.clone();
                     tauri::async_runtime::spawn(async move {
                         let s = app_c.state::<crate::AppState>().settings.lock().await.clone();
