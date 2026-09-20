@@ -105,6 +105,8 @@ pub struct AppSettings {
     pub token_spend_enabled: bool,
     pub authorized_providers: Vec<String>,
     pub network_proxy: NetworkProxySettings,
+    pub collapsed_bar_color_mode: String,
+    pub collapsed_bar_color: Option<String>,
     pub notifications: NotificationSettings,
     pub hotkeys: HotkeySettings,
     pub providers: BTreeMap<String, ProviderConfig>,
@@ -120,6 +122,7 @@ impl Default for AppSettings {
             warning_threshold:90, show_rail:true, reduce_motion:false, start_behavior:"rail".into(),
             monitoring_setup_completed:false, token_spend_enabled:false, authorized_providers:vec![],
             network_proxy:NetworkProxySettings::default(),
+            collapsed_bar_color_mode:"auto".into(), collapsed_bar_color:None,
             notifications:NotificationSettings::default(), hotkeys:HotkeySettings::default(), providers }
     }
 }
@@ -142,6 +145,14 @@ impl AppSettings {
         }
         if !["auto", "manual_http", "manual_socks5"].contains(&self.network_proxy.mode.as_str()) {
             return Err("代理模式无效".into());
+        }
+        if !["auto", "rainbow", "custom"].contains(&self.collapsed_bar_color_mode.as_str()) {
+            return Err("折叠条颜色模式无效".into());
+        }
+        if let Some(ref c) = self.collapsed_bar_color {
+            if !c.is_empty() && (!c.starts_with('#') || c.len() != 7) {
+                return Err("折叠条自定义颜色格式无效，需为 #RRGGBB".into());
+            }
         }
         if self.network_proxy.mode != "auto" {
             if self.network_proxy.host.is_empty() || self.network_proxy.host.len() > 255 || self.network_proxy.port == 0 {

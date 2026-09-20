@@ -343,11 +343,35 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   const readings=ordered.filter(u=>["live","stale"].includes(u.state));
   const maxPressure=readings.length?readings.reduce((max,u)=>Math.max(max,u.primary_percent??0),0):(ordered.length?Number.NaN:0);
   const red=settings.warning_threshold,amber=red-15;
-  const glowClass=Number.isNaN(maxPressure)?"bg-zinc-500 shadow-[0_0_8px_#71717a]":maxPressure>=red?"bg-red-500 shadow-[0_0_10px_#ef4444]":maxPressure>=amber?"bg-amber-400 shadow-[0_0_8px_#f59e0b]":"bg-emerald-400 shadow-[0_0_8px_#10b981]";
+
+  const colorMode = settings.collapsed_bar_color_mode || "auto";
+  let barGlowClass = "rail-breathe";
+  let barColorStyle: React.CSSProperties = {};
+
+  if (colorMode === "rainbow") {
+    barGlowClass = "rail-rainbow";
+  } else if (colorMode === "custom" && settings.collapsed_bar_color) {
+    const custom = settings.collapsed_bar_color;
+    barGlowClass = "rail-breathe";
+    barColorStyle = {
+      backgroundColor: custom,
+      boxShadow: `0 0 5px ${custom}, 0 0 14px ${custom}d9, 0 0 28px ${custom}66`,
+    };
+  } else {
+    // auto mode: according to quota pressure
+    const pressureClass = Number.isNaN(maxPressure)
+      ? "rail-glow-zinc"
+      : maxPressure >= red
+      ? "rail-glow-red"
+      : maxPressure >= amber
+      ? "rail-glow-amber"
+      : "rail-glow-emerald";
+    barGlowClass = `rail-breathe ${pressureClass}`;
+  }
   const lookX=left?1:free?0:-1;
 
   return <div
-    className={`relative w-full h-full flex ${top?"flex-col items-center":left?"flex-row items-center":"flex-row-reverse items-center"} select-none overflow-hidden`}
+    className={`relative w-full h-full flex ${top?"flex-col items-center":left?"flex-row items-center":"flex-row-reverse items-center"} select-none ${collapsed ? "" : "overflow-hidden"}`}
     onMouseEnter={enter}
     onMouseLeave={exit}
     onContextMenu={e=>{e.preventDefault();void invoke("rail_menu_cmd").catch(()=>{})}}
@@ -391,15 +415,15 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     </div>
     {/* Collapsed edge hint: 4 dip visual (expanding to 6 dip on hover with gentle breathing pulse),
         flush to the docked edge, exactly as tall/wide as the rail. The hover hit area is the
-        whole (10 dip) window. Right-click opens rail menu; double-click expands. */}
+        whole window. Right-click opens rail menu; double-click expands. */}
     {collapsed && (
       <div
         aria-label="展开 Pulse"
         onMouseEnter={enter}
         onDoubleClick={() => { setCollapsed(false); }}
         onContextMenu={e=>{e.preventDefault();void invoke("rail_menu_cmd").catch(()=>{})}}
-        className={`absolute cursor-pointer rounded-full transition-all duration-200 ease-out hover:rail-breathe ${top ? "top-0 left-1/2 -translate-x-1/2 h-1 hover:h-1.5" : left ? "left-0 top-1/2 -translate-y-1/2 w-1 hover:w-1.5" : "right-0 top-1/2 -translate-y-1/2 w-1 hover:w-1.5"} ${glowClass}`}
-        style={top ? { width: railBox?.w ?? "100%" } : { height: railBox?.h ?? "100%" }}
+        className={`absolute cursor-pointer rounded-full transition-all duration-200 ease-out hover:brightness-125 ${top ? "top-0 left-1/2 -translate-x-1/2 h-1 hover:h-1.5" : left ? "left-0 top-1/2 -translate-y-1/2 w-1 hover:w-1.5" : "right-0 top-1/2 -translate-y-1/2 w-1 hover:w-1.5"} ${barGlowClass}`}
+        style={{ ...barColorStyle, ...(top ? { width: railBox?.w ?? "100%" } : { height: railBox?.h ?? "100%" }) }}
       />
     )}
   </div>;

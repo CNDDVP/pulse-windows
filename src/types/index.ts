@@ -45,6 +45,8 @@ export interface AppSettings {
   warning_threshold: number; show_rail: boolean; reduce_motion: boolean; start_behavior: string;
   monitoring_setup_completed: boolean; token_spend_enabled: boolean;
   authorized_providers: string[]; network_proxy: NetworkProxySettings;
+  collapsed_bar_color_mode?: "auto" | "rainbow" | "custom";
+  collapsed_bar_color?: string | null;
   notifications: NotificationSettings; hotkeys: HotkeySettings;
   providers: Record<string, ProviderConfig>;
 }
