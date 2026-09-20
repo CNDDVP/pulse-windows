@@ -92,6 +92,293 @@ mod imp {
         }
     }
 
+    /// Detects Windows WinINet system proxy from HKCU Internet Settings.
+    pub fn detect_windows_system_proxy() -> Option<String> {
+        let sub = wide(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings");
+        let val_enable = wide("ProxyEnable");
+        let val_server = wide("ProxyServer");
+        let mut enabled = 0u32;
+        let mut len = 4u32;
+        unsafe {
+            if RegGetValueW(HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), PCWSTR(val_enable.as_ptr()), RRF_RT_REG_DWORD, None, Some(&mut enabled as *mut u32 as *mut _), Some(&mut len)) != ERROR_SUCCESS || enabled == 0 {
+                return None;
+            }
+            let mut str_len = 0u32;
+            if RegGetValueW(HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), PCWSTR(val_server.as_ptr()), RRF_RT_REG_SZ, None, None, Some(&mut str_len)) != ERROR_SUCCESS || str_len <= 2 {
+                return None;
+            }
+            let mut buf = vec![0u16; (str_len as usize / 2).max(1)];
+            if RegGetValueW(HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), PCWSTR(val_server.as_ptr()), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr() as *mut _), Some(&mut str_len)) != ERROR_SUCCESS {
+                return None;
+            }
+            let s = String::from_utf16_lossy(&buf).trim_end_matches('\0').trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        }
+    }
+
+    pub const APP_AUMID: &str = "com.cnddvp.pulse";
+    pub const APP_NAME: &str = "Pulse";
+
+    pub fn start_menu_shortcut_path() -> Option<std::path::PathBuf> {
+        dirs::data_dir().map(|d| d.join(r"Microsoft\Windows\Start Menu\Programs\Pulse.lnk"))
+    }
+
+
+    pub fn check_notification_identity() -> (String, Option<String>, Option<String>) {
+        use windows::core::Interface;
+        let Some(shortcut) = start_menu_shortcut_path() else {
+            return ("missing_shortcut".into(), None, None);
+        };
+        let shortcut_str = shortcut.display().to_string();
+        if !shortcut.exists() {
+            return ("missing_shortcut".into(), Some(shortcut_str), None);
+        }
+
+        let Ok(current_exe) = std::env::current_exe() else {
+            return ("missing_shortcut".into(), Some(shortcut_str), None);
+        };
+        let current_exe_str = current_exe.display().to_string();
+
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+            let link_res: windows::core::Result<windows::Win32::UI::Shell::IShellLinkW> =
+                windows::Win32::System::Com::CoCreateInstance(
+                    &windows::Win32::UI::Shell::ShellLink,
+                    None,
+                    windows::Win32::System::Com::CLSCTX_INPROC_SERVER,
+                );
+            let Ok(link) = link_res else {
+                return ("missing_shortcut".into(), Some(shortcut_str), None);
+            };
+
+            let persist_res: windows::core::Result<windows::Win32::System::Com::IPersistFile> = link.cast();
+            let Ok(persist) = persist_res else {
+                return ("missing_shortcut".into(), Some(shortcut_str), None);
+            };
+
+            let shortcut_w = wide(&shortcut_str);
+            if persist.Load(PCWSTR(shortcut_w.as_ptr()), windows::Win32::System::Com::STGM_READ).is_err() {
+                return ("missing_shortcut".into(), Some(shortcut_str), None);
+            }
+
+            let mut path_buf = [0u16; 1024];
+            let _ = link.GetPath(&mut path_buf, std::ptr::null_mut(), 0);
+            let target_path = String::from_utf16_lossy(&path_buf).trim_end_matches('\0').trim().to_string();
+
+            if !target_path.is_empty() && !target_path.eq_ignore_ascii_case(&current_exe_str) {
+                return ("moved".into(), Some(shortcut_str), Some(target_path));
+            }
+
+            let store_res: windows::core::Result<windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore> = link.cast();
+            if let Ok(store) = store_res {
+                let pkey = windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY {
+                    fmtid: windows::core::GUID::from_values(0x9F4C2855, 0x9F79, 0x4B39, [0xA8, 0xE0, 0xE1, 0xB3, 0xD2, 0xF4, 0x79, 0xD0]),
+                    pid: 5,
+                };
+                if let Ok(propvar) = store.GetValue(&pkey) {
+                    let s = propvar.to_string();
+                    if !s.eq_ignore_ascii_case(APP_AUMID) {
+                        return ("missing_aumid".into(), Some(shortcut_str), Some(target_path));
+                    }
+                } else {
+                    return ("missing_aumid".into(), Some(shortcut_str), Some(target_path));
+                }
+            } else {
+                return ("missing_aumid".into(), Some(shortcut_str), Some(target_path));
+            }
+
+            let reg_sub = wide(&format!(r"Software\Classes\AppUserModelId\{APP_AUMID}"));
+            let mut hkey = HKEY::default();
+            if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(reg_sub.as_ptr()), 0, KEY_READ, &mut hkey) != ERROR_SUCCESS {
+                return ("unregistered".into(), Some(shortcut_str), Some(target_path));
+            }
+            let _ = RegCloseKey(hkey);
+
+            ("registered".into(), Some(shortcut_str), Some(target_path))
+        }
+    }
+
+    pub fn register_notification_identity() -> Result<(), String> {
+        use windows::core::Interface;
+        let shortcut = start_menu_shortcut_path().ok_or("无法解析开始菜单路径")?;
+        if let Some(parent) = shortcut.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let current_exe = std::env::current_exe().map_err(|e| format!("获取程序路径失败: {e}"))?;
+        let current_exe_str = current_exe.display().to_string();
+        let shortcut_str = shortcut.display().to_string();
+
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+            let link: windows::Win32::UI::Shell::IShellLinkW =
+                windows::Win32::System::Com::CoCreateInstance(
+                    &windows::Win32::UI::Shell::ShellLink,
+                    None,
+                    windows::Win32::System::Com::CLSCTX_INPROC_SERVER,
+                ).map_err(|e| format!("创建 ShellLink COM 失败: {e}"))?;
+
+            let exe_w = wide(&current_exe_str);
+            link.SetPath(PCWSTR(exe_w.as_ptr())).map_err(|e| format!("设置目标路径失败: {e}"))?;
+
+            if let Some(parent) = current_exe.parent() {
+                let parent_w = wide(&parent.display().to_string());
+                let _ = link.SetWorkingDirectory(PCWSTR(parent_w.as_ptr()));
+            }
+
+            let _ = link.SetIconLocation(PCWSTR(exe_w.as_ptr()), 0);
+            let desc_w = wide("Pulse - AI 配额监控");
+            let _ = link.SetDescription(PCWSTR(desc_w.as_ptr()));
+
+            let store: windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore =
+                link.cast().map_err(|e| format!("获取 PropertyStore 失败: {e}"))?;
+
+            let pkey = windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY {
+                fmtid: windows::core::GUID::from_values(0x9F4C2855, 0x9F79, 0x4B39, [0xA8, 0xE0, 0xE1, 0xB3, 0xD2, 0xF4, 0x79, 0xD0]),
+                pid: 5,
+            };
+            let propvar = windows::core::PROPVARIANT::from(APP_AUMID);
+            store.SetValue(&pkey, &propvar).map_err(|e| format!("设置 AUMID 属性失败: {e}"))?;
+            store.Commit().map_err(|e| format!("提交 PropertyStore 失败: {e}"))?;
+
+            let persist: windows::Win32::System::Com::IPersistFile =
+                link.cast().map_err(|e| format!("获取 IPersistFile 失败: {e}"))?;
+            let shortcut_w = wide(&shortcut_str);
+            persist.Save(PCWSTR(shortcut_w.as_ptr()), true).map_err(|e| format!("保存快捷方式失败: {e}"))?;
+
+            let reg_sub = wide(&format!(r"Software\Classes\AppUserModelId\{APP_AUMID}"));
+            let mut hkey = HKEY::default();
+            let res = RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR(reg_sub.as_ptr()),
+                0,
+                PCWSTR(std::ptr::null()),
+                REG_OPTION_NON_VOLATILE,
+                KEY_ALL_ACCESS,
+                None,
+                &mut hkey,
+                None,
+            );
+            if res != ERROR_SUCCESS {
+                return Err(format!("创建注册表项失败 (错误码: {:?})", res.0));
+            }
+
+            let name_w = wide(APP_NAME);
+            let val_name = wide("DisplayName");
+            let _ = RegSetValueExW(hkey, PCWSTR(val_name.as_ptr()), 0, REG_SZ, Some(std::slice::from_raw_parts(name_w.as_ptr() as *const u8, name_w.len() * 2)));
+
+            let val_icon = wide("IconUri");
+            let _ = RegSetValueExW(hkey, PCWSTR(val_icon.as_ptr()), 0, REG_SZ, Some(std::slice::from_raw_parts(exe_w.as_ptr() as *const u8, exe_w.len() * 2)));
+
+            let val_settings = wide("ShowInSettings");
+            let one: u32 = 1;
+            let _ = RegSetValueExW(hkey, PCWSTR(val_settings.as_ptr()), 0, REG_DWORD, Some(std::slice::from_raw_parts(&one as *const u32 as *const u8, 4)));
+
+            let _ = RegCloseKey(hkey);
+        }
+
+        Ok(())
+    }
+
+    pub fn unregister_notification_identity() -> Result<(), String> {
+        if let Some(shortcut) = start_menu_shortcut_path() {
+            if shortcut.exists() {
+                let _ = std::fs::remove_file(&shortcut);
+            }
+        }
+        let reg_sub = wide(&format!(r"Software\Classes\AppUserModelId\{APP_AUMID}"));
+        unsafe {
+            let _ = RegDeleteTreeW(HKEY_CURRENT_USER, PCWSTR(reg_sub.as_ptr()));
+        }
+        Ok(())
+    }
+
+    pub fn sync_portable_notification_identity() {
+        if !crate::config::is_portable() { return; }
+        let (status, _, _) = check_notification_identity();
+        if status == "moved" {
+            let _ = register_notification_identity();
+            if let Ok(exe) = std::env::current_exe() {
+                eprintln!("Pulse 便携版：检测到运行路径变化，已自动修复通知快捷方式: {}", exe.display());
+            }
+        }
+    }
+
+    pub fn get_app_notification_setting() -> String {
+        if let Ok(notifier) = windows::UI::Notifications::ToastNotificationManager::CreateToastNotifierWithId(
+            &windows::core::HSTRING::from(APP_AUMID)
+        ) {
+            match notifier.Setting() {
+                Ok(windows::UI::Notifications::NotificationSetting::Enabled) => "enabled".into(),
+                Ok(windows::UI::Notifications::NotificationSetting::DisabledForApplication) => "disabled_for_app".into(),
+                Ok(windows::UI::Notifications::NotificationSetting::DisabledForUser) => "disabled_for_user".into(),
+                Ok(windows::UI::Notifications::NotificationSetting::DisabledByGroupPolicy) => "disabled_by_policy".into(),
+                Ok(windows::UI::Notifications::NotificationSetting::DisabledByManifest) => "disabled_by_manifest".into(),
+                _ => "unknown".into(),
+            }
+        } else {
+            "unknown".into()
+        }
+    }
+
+    pub fn send_native_toast(title: &str, body: &str) -> Result<crate::commands::NotificationSendResult, String> {
+        let (id_status, _, _) = check_notification_identity();
+        let hint = match id_status.as_str() {
+            "missing_shortcut" | "unregistered" => Some("提示：检测到尚未初始化 Windows 通知身份，请在设置中点击「启用 Windows 通知」以确保横幅正常弹出".into()),
+            "moved" => Some("提示：便携版路径已改变，请在设置中点击「修复通知路径」".into()),
+            _ => None,
+        };
+
+        let xml_str = format!(
+            r#"<toast><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual></toast>"#,
+            super::xml_escape(title),
+            super::xml_escape(body)
+        );
+
+        let xml = windows::Data::Xml::Dom::XmlDocument::new().map_err(|e| format!("创建 XML 失败: {e}"))?;
+        xml.LoadXml(&windows::core::HSTRING::from(xml_str)).map_err(|e| format!("加载 Toast XML 失败: {e}"))?;
+
+        let toast = windows::UI::Notifications::ToastNotification::CreateToastNotification(&xml)
+            .map_err(|e| format!("创建 ToastNotification 失败: {e}"))?;
+
+        let notifier = windows::UI::Notifications::ToastNotificationManager::CreateToastNotifierWithId(
+            &windows::core::HSTRING::from(APP_AUMID)
+        ).map_err(|e| format!("创建 ToastNotifier 失败: {e}"))?;
+
+        let setting = notifier.Setting().unwrap_or(windows::UI::Notifications::NotificationSetting::Enabled);
+        let setting_str = match setting {
+            windows::UI::Notifications::NotificationSetting::Enabled => "enabled",
+            windows::UI::Notifications::NotificationSetting::DisabledForApplication => "disabled_for_app",
+            windows::UI::Notifications::NotificationSetting::DisabledForUser => "disabled_for_user",
+            windows::UI::Notifications::NotificationSetting::DisabledByGroupPolicy => "disabled_by_policy",
+            windows::UI::Notifications::NotificationSetting::DisabledByManifest => "disabled_by_manifest",
+            _ => "unknown",
+        };
+
+        if setting == windows::UI::Notifications::NotificationSetting::DisabledForApplication {
+            return Err("通知提交被系统阻止：Windows 设置中已禁用 Pulse 的通知（请在「Windows 设置 → 系统 → 通知」中允许 Pulse）".into());
+        }
+        if setting == windows::UI::Notifications::NotificationSetting::DisabledForUser {
+            return Err("通知提交被系统阻止：Windows 全局通知开关已关闭（请在「Windows 设置 → 系统 → 通知」中开启总开关）".into());
+        }
+        if setting == windows::UI::Notifications::NotificationSetting::DisabledByGroupPolicy {
+            return Err("通知提交被系统阻止：Windows 组策略已禁用通知".into());
+        }
+        if setting == windows::UI::Notifications::NotificationSetting::DisabledByManifest {
+            return Err("通知提交被系统阻止：Windows 未识别 Pulse 通知身份（请先点击「启用 Windows 通知」）".into());
+        }
+
+        notifier.Show(&toast).map_err(|e| format!("Windows 提交通知失败 (HRESULT {:?}): {e}", e.code()))?;
+
+        Ok(crate::commands::NotificationSendResult {
+            success: true,
+            stage: "submitted".into(),
+            setting: setting_str.into(),
+            test_id: "".into(),
+            error: None,
+            hint,
+        })
+    }
+
     pub fn is_webview2_available() -> bool {
         let keys = [
             (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-6E3A4A77C2DB}"),
@@ -242,6 +529,19 @@ mod imp {
     pub fn toasts_enabled() -> Option<bool> { None }
     pub fn is_webview2_available() -> bool { true }
     pub fn show_missing_webview2_dialog() {}
+    pub fn detect_windows_system_proxy() -> Option<String> { None }
+
+    pub fn start_menu_shortcut_path() -> Option<std::path::PathBuf> { None }
+    pub fn check_notification_identity() -> (String, Option<String>, Option<String>) {
+        ("unregistered".into(), None, None)
+    }
+    pub fn register_notification_identity() -> Result<(), String> { Err("仅支持 Windows".into()) }
+    pub fn unregister_notification_identity() -> Result<(), String> { Ok(()) }
+    pub fn sync_portable_notification_identity() {}
+    pub fn get_app_notification_setting() -> String { "unknown".into() }
+    pub fn send_native_toast(_title: &str, _body: &str) -> Result<crate::commands::NotificationSendResult, String> {
+        Err("仅支持 Windows".into())
+    }
 
     pub struct SingleInstanceGuard;
     pub fn acquire_single_instance(_: &std::path::Path) -> Result<Option<SingleInstanceGuard>, String> {
@@ -250,6 +550,14 @@ mod imp {
 }
 pub use imp::*;
 
+pub fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 /// Enabled only when the Run entry points at this very executable, so a stale entry from a
 /// moved install reads as "off" and toggling it on repairs the path.
 pub fn startup_enabled() -> bool {
@@ -257,3 +565,33 @@ pub fn startup_enabled() -> bool {
     let Ok(exe) = std::env::current_exe() else { return false };
     cmd.trim_matches('"').eq_ignore_ascii_case(&exe.display().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_xml_escape() {
+        assert_eq!(xml_escape("Hello <World> & '\"'"), "Hello &lt;World&gt; &amp; &apos;&quot;&apos;");
+    }
+
+    #[test]
+    fn test_start_menu_shortcut_path() {
+        if cfg!(windows) {
+            let path = start_menu_shortcut_path();
+            assert!(path.is_some());
+            let p = path.unwrap();
+            assert!(p.to_string_lossy().ends_with(r"Microsoft\Windows\Start Menu\Programs\Pulse.lnk"));
+        }
+    }
+
+    #[test]
+    fn test_check_notification_identity_structure() {
+        let (status, shortcut_path, _) = check_notification_identity();
+        assert!(["registered", "moved", "missing_shortcut", "missing_aumid", "unregistered"].contains(&status.as_str()));
+        if cfg!(windows) {
+            assert!(shortcut_path.is_some());
+        }
+    }
+}
+

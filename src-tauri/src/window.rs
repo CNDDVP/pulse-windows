@@ -14,9 +14,24 @@ pub fn get_cursor_screen_pos() -> Option<(i32, i32)> {
         }
     }
 }
+#[cfg(windows)]
+pub fn is_cursor_over_window(window: &tauri::WebviewWindow) -> bool {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let Some((cx, cy)) = get_cursor_screen_pos() else { return false };
+    let Ok(hwnd) = window.hwnd() else { return false };
+    unsafe {
+        let mut rect = RECT::default();
+        if GetWindowRect(HWND(hwnd.0), &mut rect).is_ok() {
+            cx >= rect.left && cx < rect.right && cy >= rect.top && cy < rect.bottom
+        } else {
+            false
+        }
+    }
+}
 #[cfg(not(windows))]
-pub fn get_cursor_screen_pos() -> Option<(i32, i32)> {
-    None
+pub fn is_cursor_over_window(_window: &tauri::WebviewWindow) -> bool {
+    false
 }
 
 /// GDI device name (`\\.\DISPLAY1`) → the monitor name Windows Settings shows

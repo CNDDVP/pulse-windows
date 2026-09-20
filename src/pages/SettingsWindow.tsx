@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { AppSettings, HotkeySettings, MonitorOption, ProviderConfig, ProviderUsage, RefreshSummary } from "../types";
 import { ProviderIcon } from "../components/icons/ProviderIcons";
+import { UsageRing } from "../components/UsageRing";
 const BOT_PERSONAS: [string,string][]=[["calm","沉稳"],["eager","热切"],["steady","踏实"],["curious","好奇"],["sleepy","瞌睡"],["playful","顽皮"],["stoic","淡漠"],["proud","骄傲"]];
 const BOT_SHAPES: [string,string][]=[["blob","圆团"],["pebble","卵石"],["bean","豆子"],["egg","蛋"],["squircle","方圆"],["tablet","平板"],["capsule","胶囊"],["cylinder","圆柱"],["hex","六边"],["gem","宝石"],["crystal","晶体"],["wedge","楔形"],["shield","盾牌"],["dome","穹顶"],["arch","拱门"],["cloud","云朵"],["teardrop","泪滴"],["leaf","叶片"]];
 const ANTIGRAVITY_DEFAULT_WINDOWS = [
@@ -42,7 +43,18 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
   const [localUsages, setLocalUsages] = useState<ProviderUsage[]>(externalUsages);
   useEffect(() => { setLocalUsages(externalUsages); }, [externalUsages]);
   const usages = localUsages;
+  const [isPortable, setIsPortable] = useState(false);
+  useEffect(() => {
+    invoke<boolean>("is_portable_mode").then(setIsPortable).catch(() => {});
+  }, []);
   const [view, setView] = useState<View>({ kind: "accounts" });
+  useEffect(() => {
+    invoke<ProviderUsage[]>("get_usages")
+      .then(u => {
+        if (u && u.length > 0) setLocalUsages(u);
+      })
+      .catch(() => {});
+  }, [view]);
   const [search, setSearch] = useState("");
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
@@ -425,7 +437,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
             <svg className="w-4 h-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg>
           </div>
           <div>
-            <div className="flex items-center gap-2"><h1 className="text-sm font-bold text-white tracking-wide">Pulse</h1><span className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-mono border border-zinc-700/50">v{__APP_VERSION__}</span></div>
+            <div className="flex items-center gap-2"><h1 className="text-sm font-bold text-white tracking-wide">Pulse</h1><span className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-mono border border-zinc-700/50">v{__APP_VERSION__}</span>{isPortable && <span className="text-[10px] bg-emerald-950 text-emerald-400 px-1.5 py-0.5 rounded font-mono border border-emerald-800/50">便携版</span>}</div>
             <p className="text-[11px] text-zinc-400">AI 配额监控 · 本地使用审计</p>
           </div>
         </div>
@@ -520,6 +532,8 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
             const id = view.id, c = current, reading = usages.find(u => u.account_id === id), routes = ROUTES[c.provider_id] ?? {};
             const isTesting = testingId === id, timedWindows = reading?.windows.filter(w => w.window_seconds && w.resets_at) ?? [];
             const position = railOrder.indexOf(id) + 1;
+            const effectivePrimaryWindow = c.primary_window || reading?.windows?.reduce((max, w) => (!max || w.used_percent > max.used_percent ? w : max), reading?.windows[0])?.id || null;
+            const isDuplicateInner = !!(c.secondary_window && effectivePrimaryWindow && c.secondary_window === effectivePrimaryWindow);
             return (
               <div className="space-y-5 max-w-3xl">
                 <section className="p-5 rounded-2xl bg-zinc-900/40 border border-white/10 flex items-center justify-between gap-4">
@@ -575,6 +589,56 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                 </Section>
 
                 <Section title="悬浮栏" icon="◎" subtitle="保存后即刻生效。">
+                  {(() => {
+                    const previewSettings: AppSettings = {
+                      ...settings,
+                      providers: { ...settings.providers, [id]: c },
+                    };
+                    const previewUsage: ProviderUsage = reading ? {
+                      ...reading,
+                      display_name: c.label || providerName(c.provider_id),
+                    } : {
+                      account_id: id,
+                      provider_id: c.provider_id,
+                      display_name: c.label || providerName(c.provider_id),
+                      state: "live",
+                      checked_at: new Date().toISOString(),
+                      last_success_at: new Date().toISOString(),
+                      primary_percent: 42,
+                      plan_name: null,
+                      is_active: false,
+                      retry_after_seconds: null,
+                      duration_ms: null,
+                      windows: c.provider_id === "antigravity" ? [
+                        { id: "0-0", name: "Gemini 模型 · 每周限额", used_fraction: 0.25, used_percent: 25, resets_at: new Date(Date.now() + 86400000 * 5).toISOString(), window_seconds: 604800, exhausted: false },
+                        { id: "0-1", name: "Gemini 模型 · 5小时限额", used_fraction: 0.42, used_percent: 42, resets_at: new Date(Date.now() + 3600000 * 3).toISOString(), window_seconds: 18000, exhausted: false },
+                        { id: "1-0", name: "Claude 与 GPT 模型 · 每周限额", used_fraction: 0.1, used_percent: 10, resets_at: new Date(Date.now() + 86400000 * 6).toISOString(), window_seconds: 604800, exhausted: false },
+                        { id: "1-1", name: "Claude 与 GPT 模型 · 5小时限额", used_fraction: 0.68, used_percent: 68, resets_at: new Date(Date.now() + 3600000 * 2).toISOString(), window_seconds: 18000, exhausted: false },
+                      ] : [
+                        { id: "primary", name: "主要限额", used_fraction: 0.35, used_percent: 35, resets_at: new Date(Date.now() + 3600000 * 4).toISOString(), window_seconds: 18000, exhausted: false },
+                      ],
+                      balances: [],
+                      error_message: null,
+                      error_code: null,
+                      source: "预览模式",
+                    };
+                    return (
+                      <div className="p-3 bg-zinc-950/50 rounded-xl border border-white/5 flex items-center justify-between gap-4">
+                        <div className="space-y-0.5 min-w-0">
+                          <div className="text-xs font-semibold text-zinc-300">悬浮栏效果实时预览</div>
+                          <p className="text-[11px] text-zinc-500">即时预览主圆环、第二内环、时间外环与机器人外观设置</p>
+                        </div>
+                        <div className="p-1.5 bg-zinc-900/90 rounded-xl border border-zinc-800 shrink-0 flex items-center justify-center">
+                          <UsageRing
+                            usage={previewUsage}
+                            settings={previewSettings}
+                            onHover={() => {}}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   <Field label="主圆环显示的额度" hint={reading?.windows && reading.windows.length > 0 ? "圆环以该窗口的使用率与重置倒计时为准。" : c.provider_id === "antigravity" ? "支持选择 Antigravity 预设额度窗口；连接成功后将显示实时用量与重置倒计时。" : "尚未获取该账号的额度数据；配置凭据并连接成功后，可在此下拉指定具体的额度窗口。"}>
                     <select className={selectCls} value={c.primary_window || ""} onChange={e => patch(id, { primary_window: e.target.value || null })}>
                       <option value="">自动选择最高使用率（默认）</option>
@@ -588,7 +652,8 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                         : null}
                     </select>
                   </Field>
-                  <Field label="外圈时间环跟随的周期" hint={reading?.windows && reading.windows.length > 0
+
+                  <Field label="此账号时间外环使用的周期" hint={reading?.windows && reading.windows.length > 0
                     ? timedWindows.length === 0
                       ? "该账号的额度窗口未报告周期长度，外圈暂不可用。"
                       : settings.show_elapsed ? "外圈细线表示所选周期已流逝的比例；默认跟随倒计时最短的周期。" : "外圈已在通用设置中关闭。"
@@ -607,6 +672,23 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                         : null}
                     </select>
                   </Field>
+
+                  {!settings.show_elapsed && (
+                    <div className="p-2.5 rounded-xl bg-zinc-900/90 border border-zinc-700/60 text-xs text-zinc-300 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-amber-400">ℹ️</span>
+                        <span>时间外环目前在全局已关闭。开启后，所有账号均可显示倒计时进度环。</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => update({ show_elapsed: true }, "已开启全局时间外环")}
+                        className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-medium cursor-pointer shrink-0"
+                      >
+                        开启时间外环（所有账号）
+                      </button>
+                    </div>
+                  )}
+
                   <Row title="圆环颜色" subtitle="自定义颜色用于正常区间；达到琥珀/红色阈值或服务商报告耗尽时仍按预警色显示。">
                     <div className="flex items-center gap-2">
                       <select className={selectCls} value={c.ring_color ? "custom" : "auto"} onChange={e => patch(id, { ring_color: e.target.value === "custom" ? (c.ring_color ?? (c.provider_id === "kimi" ? "#7AA5FF" : "#10b981")) : null })} aria-label="圆环颜色模式"><option value="auto">自动（按用量压力）</option><option value="custom">自定义</option></select>
@@ -626,6 +708,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                       </div></Field>
                     </div>
                   )}
+
                   <Field label="第二额度内环（可选）" hint={!reading || !reading.windows || reading.windows.length <= 1
                     ? c.provider_id === "antigravity"
                       ? "在主环内侧用细环显示所选额度（如 5小时与每周限额同时显示）。"
@@ -637,12 +720,64 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                         <option value={c.secondary_window}>{c.secondary_window}（已配置 · 等待读数）</option>
                       )}
                       {reading?.windows && reading.windows.length > 0
-                        ? reading.windows.map(w => <option key={w.id} value={w.id}>{w.name} — 已使用 {w.used_percent.toFixed(1)}%</option>)
+                        ? reading.windows.map(w => {
+                            const isPrimary = w.id === effectivePrimaryWindow;
+                            return (
+                              <option key={w.id} value={w.id} disabled={isPrimary}>
+                                {w.name} {isPrimary ? "（已被主环占用）" : `— 已使用 ${w.used_percent.toFixed(1)}%`}
+                              </option>
+                            );
+                          })
                         : c.provider_id === "antigravity"
-                        ? ANTIGRAVITY_DEFAULT_WINDOWS.map(w => <option key={w.id} value={w.id}>{w.name}</option>)
+                        ? ANTIGRAVITY_DEFAULT_WINDOWS.map(w => {
+                            const isPrimary = w.id === effectivePrimaryWindow;
+                            return (
+                              <option key={w.id} value={w.id} disabled={isPrimary}>
+                                {w.name} {isPrimary ? "（已被主环占用）" : ""}
+                              </option>
+                            );
+                          })
                         : null}
                     </select>
                   </Field>
+
+                  {isDuplicateInner && (
+                    <div className="p-2.5 rounded-xl bg-amber-950/60 border border-amber-800/60 text-xs text-amber-200 space-y-1.5">
+                      <div className="flex items-center gap-2 font-medium">
+                        <span>⚠️</span>
+                        <span>第二内环与主圆环选择了相同额度，悬浮栏将自动隐藏重复内环。</span>
+                      </div>
+                      <p className="text-[11px] text-amber-300/80">
+                        内环用于同时对比另一额度（例如同时观察“5小时”和“每周”限额）。
+                      </p>
+                      {c.provider_id === "antigravity" && (
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const alt = effectivePrimaryWindow?.endsWith("-1")
+                                ? effectivePrimaryWindow.replace("-1", "-0")
+                                : effectivePrimaryWindow?.endsWith("-0")
+                                ? effectivePrimaryWindow.replace("-0", "-1")
+                                : "0-0";
+                              patch(id, { secondary_window: alt });
+                            }}
+                            className="px-2.5 py-1 rounded bg-amber-800/80 hover:bg-amber-700 text-amber-100 text-[11px] cursor-pointer"
+                          >
+                            切换内环为另一个周期（如每周限额）
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => patch(id, { secondary_window: null })}
+                            className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[11px] cursor-pointer"
+                          >
+                            关闭第二内环
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {c.provider_id === "antigravity" && (
                     <Row title="按模型组拆分展示" subtitle="Gemini 与 Claude/GPT 各占一个悬浮栏位置；点击任一项仍刷新同一账号。">
                       <Switch checked={c.split_model_groups} onChange={v => patch(id, { split_model_groups: v })} label="按模型组拆分展示" />
@@ -684,13 +819,48 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                   </Section>
                 )}
 
-                <Section title="诊断" icon="🩺" subtitle="来自最近一次刷新；报告文本不含账号名与凭据。">
+                <Section title="诊断" icon="🩺" subtitle="来自最近一次刷新；报告文本不含账号名与凭据。"
+                  aside={<div className="flex gap-2">
+                    <button disabled={locked} onClick={() => void test(id)} className={btnGhost} title="重新同步当前账号">
+                      {isTesting ? "同步中…" : "重新同步"}
+                    </button>
+                    <button disabled={locked} onClick={() => {
+                      const summaryLines = [
+                        `=== Pulse 账号诊断摘要 ===`,
+                        `时间: ${new Date().toISOString()}`,
+                        `服务商: ${c.provider_id}`,
+                        `状态: ${reading?.state ?? "未连接"}`,
+                        `凭据已配置: ${c.credential_configured ? "是" : "否"}`,
+                        `本机工具读取: ${c.use_local ? "是" : "否"}`,
+                        `主额度窗口: ${c.primary_window || "自动"}`,
+                        `第二内环: ${c.secondary_window || "关闭"}`,
+                        `时间外环: ${c.elapsed_window || "自动"} (全局开启: ${settings.show_elapsed ? "是" : "否"})`,
+                        `数据源: ${reading?.source || "无"}`,
+                        `耗时: ${reading?.duration_ms != null ? `${reading.duration_ms}ms` : "无"}`,
+                        `错误分类: ${reading?.error_code || "无"}`,
+                        `错误信息: ${reading?.error_message || "无"}`,
+                        `额度窗口数量: ${reading?.windows?.length ?? 0}`,
+                        ...(reading?.windows?.map(w => `  - [${w.id}] ${w.name}: ${w.used_percent.toFixed(1)}% (重置: ${w.resets_at || "无"})`) || []),
+                        `余额数量: ${reading?.balances?.length ?? 0}`,
+                        ...(reading?.balances?.map(b => `  - ${b.currency}: ${b.amount}`) || []),
+                      ];
+                      void navigator.clipboard.writeText(summaryLines.join("\n"));
+                      showToast("success", "已复制安全诊断摘要至剪贴板");
+                    }} className={btnGhost} title="复制不含敏感信息的诊断摘要">
+                      复制诊断摘要
+                    </button>
+                  </div>}>
                   {reading ? (
                     <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5 text-xs">
                       {accountRows(reading, c).map(([k, v]) => <div key={k} className="contents"><dt className="text-zinc-500">{k}</dt><dd className="text-zinc-200 break-all">{v}</dd></div>)}
                     </dl>
                   ) : <p className="text-xs text-zinc-500">{c.enabled ? "尚未获得读数，保存后等待下一次刷新或点击“保存并测试连接”。" : "账号已停用，不参与刷新。"}</p>}
-                  {reading?.error_code === "auth" && <p className="text-[11px] text-amber-300">下一步：凭据已失效——在上方“连接”重新保存凭据，或在本机工具中重新登录后再测试。</p>}
+                  {reading?.error_code === "auth" && <p className="text-[11px] text-amber-300">下一步：凭据已失效或过期——在上方重新输入并保存新凭据，或在对应本地客户端重新登录后再测试。</p>}
+                  {reading?.error_code === "forbidden" && <p className="text-[11px] text-amber-300">下一步：访问被服务商拒绝 (403)——请检查 API Key 权限、账户账单状态、服务商区域限制或网络代理出口 IP。</p>}
+                  {reading?.error_code === "proxy" && <p className="text-[11px] text-amber-300">下一步：网络代理连接失败——请在“通用设置”中检查网络代理配置，或开启“自动探测”。</p>}
+                  {reading?.error_code === "dns" && <p className="text-[11px] text-amber-300">下一步：DNS 域名解析失败——请检查系统网络连接或 DNS 设置。</p>}
+                  {reading?.error_code === "tls" && <p className="text-[11px] text-amber-300">下一步：TLS / HTTPS 安全握手失败——请检查系统根证书或代理抓包证书配置。</p>}
+                  {reading?.error_code === "timeout" && <p className="text-[11px] text-amber-300">下一步：连接服务商超时——请检查网络延迟或代理连接状态。</p>}
                   {reading?.error_code === "missing_credentials" && <p className="text-[11px] text-amber-300">下一步：未找到可用凭据——保存手动凭据，或登录对应的本机工具并开启“读取本机工具登录”。</p>}
                 </Section>
               </div>

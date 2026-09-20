@@ -124,7 +124,13 @@ pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppStat
             }
         });
     }
-    let mode=state.window_mode.lock().await.clone();
+    let mut mode=state.window_mode.lock().await.clone();
+    if new_settings.auto_collapse_seconds == 0 && mode == "collapsed" {
+        mode = "rail".into();
+        *state.window_mode.lock().await = "rail".into();
+        let _ = app.emit("window-state-changed", "rail");
+    }
+    *state.last_cursor_over.lock().unwrap() = std::time::Instant::now();
     crate::window::position(&app,&new_settings,&mode);Ok(new_settings)
 }
 #[tauri::command]
@@ -162,6 +168,9 @@ pub async fn test_account(account_id:String,state:State<'_,AppState>,app:AppHand
 pub async fn set_window_state(state:String,app:AppHandle)->Result<(),String>{
     if !["collapsed","rail","expanded"].contains(&state.as_str()){return Err("窗口状态无效".into())}
     *app.state::<AppState>().window_mode.lock().await=state.clone();
+    if state == "rail" {
+        *app.state::<AppState>().last_cursor_over.lock().unwrap() = std::time::Instant::now();
+    }
     if app.state::<AppState>().dragging.load(Ordering::Relaxed){return Ok(())}
     let settings=app.state::<AppState>().settings.lock().await.clone();crate::window::position(&app,&settings,&state);Ok(())
 }
@@ -346,16 +355,107 @@ pub async fn diagnostics(state:State<'_,AppState>)->Result<String,String>{
 pub fn startup_enabled()->bool{crate::platform::startup_enabled()}
 #[tauri::command]
 pub fn set_startup(enable:bool)->Result<bool,String>{crate::platform::set_startup(enable)?;Ok(crate::platform::startup_enabled())}
-#[derive(serde::Serialize)]
-pub struct NotificationStatus{pub system_toasts:Option<bool>,pub permission:String}
-#[tauri::command]
-pub fn notification_status(app:AppHandle)->NotificationStatus{
-    use tauri_plugin_notification::NotificationExt;
-    let permission=match app.notification().permission_state(){Ok(p)=>format!("{p:?}").to_lowercase(),Err(_)=>"unknown".into()};
-    NotificationStatus{system_toasts:crate::platform::toasts_enabled(),permission}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NotificationSendResult {
+    pub success: bool,
+    pub stage: String,
+    pub setting: String,
+    pub test_id: String,
+    pub error: Option<String>,
+    pub hint: Option<String>,
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NotificationFullStatus {
+    pub identity_status: String,
+    pub shortcut_path: Option<String>,
+    pub shortcut_target: Option<String>,
+    pub current_exe: String,
+    pub windows_toasts_enabled: Option<bool>,
+    pub app_notification_setting: String,
+    pub is_portable: bool,
+    pub plugin_permission: String,
+    pub last_error: Option<String>,
+}
+
+static TEST_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
 #[tauri::command]
-pub fn test_notification(app:AppHandle)->Result<(),String>{crate::notify(&app,"Pulse 测试通知","如果你看到这条消息，Windows 通知链路正常。")}
+pub fn get_notification_status(app: AppHandle) -> NotificationFullStatus {
+    use tauri_plugin_notification::NotificationExt;
+    let plugin_permission = match app.notification().permission_state() {
+        Ok(p) => format!("{p:?}").to_lowercase(),
+        Err(_) => "unknown".into(),
+    };
+    let (identity_status, shortcut_path, shortcut_target) = crate::platform::check_notification_identity();
+    let current_exe = std::env::current_exe().map(|e| e.display().to_string()).unwrap_or_default();
+    let windows_toasts_enabled = crate::platform::toasts_enabled();
+    let app_notification_setting = crate::platform::get_app_notification_setting();
+    let is_portable = crate::config::is_portable();
+
+    NotificationFullStatus {
+        identity_status,
+        shortcut_path,
+        shortcut_target,
+        current_exe,
+        windows_toasts_enabled,
+        app_notification_setting,
+        is_portable,
+        plugin_permission,
+        last_error: None,
+    }
+}
+
+#[tauri::command]
+pub fn notification_status(app: AppHandle) -> NotificationFullStatus {
+    get_notification_status(app)
+}
+
+#[tauri::command]
+pub fn register_notification_identity(app: AppHandle) -> Result<NotificationFullStatus, String> {
+    crate::platform::register_notification_identity()?;
+    Ok(get_notification_status(app))
+}
+
+#[tauri::command]
+pub fn unregister_notification_identity(app: AppHandle) -> Result<NotificationFullStatus, String> {
+    crate::platform::unregister_notification_identity()?;
+    Ok(get_notification_status(app))
+}
+
+#[tauri::command]
+pub fn test_notification(_app: AppHandle) -> Result<NotificationSendResult, String> {
+    let count = TEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let now = chrono::Local::now().format("%H:%M:%S").to_string();
+    let test_id = format!("#{count} ({now})");
+    let title = format!("Pulse 测试通知 {test_id}");
+    let body = "如果你看到这条通知横幅，说明 Windows 原生通知链路正常。";
+
+    #[cfg(windows)]
+    {
+        match crate::platform::send_native_toast(&title, body) {
+            Ok(mut res) => {
+                res.test_id = test_id;
+                Ok(res)
+            }
+            Err(e) => {
+                Err(format!("通知提交失败：{e}"))
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        crate::notify(&app, &title, body)?;
+        Ok(NotificationSendResult {
+            success: true,
+            stage: "submitted".into(),
+            setting: "enabled".into(),
+            test_id,
+            error: None,
+            hint: None,
+        })
+    }
+}
 
 #[tauri::command]
 pub fn begin_free_drag(app:AppHandle)->Result<(),String>{
@@ -579,6 +679,63 @@ pub fn set_detail_hover(app:AppHandle,hovered:bool)->Result<(),String>{
 #[tauri::command]
 pub fn is_portable()->bool{
     crate::config::is_portable()
+}
+
+#[tauri::command]
+pub async fn detect_network_proxy(state: State<'_, AppState>) -> Result<crate::providers::ProxyDetection, String> {
+    let settings = state.settings.lock().await;
+    Ok(crate::providers::detect_proxy(&settings.network_proxy))
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NetworkTestResult {
+    pub ok: bool,
+    pub target: String,
+    pub status: Option<u16>,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub async fn test_network_connection(state: State<'_, AppState>, target: Option<String>) -> Result<NetworkTestResult, String> {
+    let url = target.unwrap_or_else(|| "https://chatgpt.com".to_string());
+    let http = state.http.read().await.clone();
+    let start = std::time::Instant::now();
+    let res = http.get(&url).send().await;
+    let duration_ms = start.elapsed().as_millis() as u64;
+    match res {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            Ok(NetworkTestResult {
+                ok: resp.status().is_success() || status == 401 || status == 403,
+                target: url,
+                status: Some(status),
+                duration_ms,
+                error: None,
+            })
+        }
+        Err(e) => {
+            let err_str = e.to_string();
+            let detail = if e.is_timeout() {
+                "连接超时"
+            } else if err_str.contains("proxy") {
+                "代理端口无法连接"
+            } else if err_str.contains("dns") || err_str.contains("resolve") {
+                "DNS 解析失败"
+            } else if err_str.contains("tls") || err_str.contains("certificate") {
+                "TLS 握手/证书验证失败"
+            } else {
+                "无法建立连接"
+            };
+            Ok(NetworkTestResult {
+                ok: false,
+                target: url,
+                status: None,
+                duration_ms,
+                error: Some(format!("{detail}: {e}")),
+            })
+        }
+    }
 }
 
 #[tauri::command]
