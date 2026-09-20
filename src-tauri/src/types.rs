@@ -89,6 +89,50 @@ impl Default for NetworkProxySettings {
 pub const SCHEMA_VERSION: u32 = 4;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+pub struct RailWarnings {
+    pub scope: String,
+    pub account_ids: Vec<String>,
+    pub custom_thresholds: bool,
+    pub yellow: f64,
+    pub red: f64,
+    pub accounts: BTreeMap<String, RailAccountRule>,
+}
+impl Default for RailWarnings {
+    fn default()->Self { Self { scope:"all".into(),account_ids:vec![],custom_thresholds:false,yellow:75.0,red:90.0,accounts:BTreeMap::new() } }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RailAccountRule {
+    pub mode: String,
+    pub window_id: Option<String>,
+    pub balances: BTreeMap<String, RailBalanceRule>,
+}
+impl Default for RailAccountRule {
+    fn default()->Self { Self { mode:"primary".into(),window_id:None,balances:BTreeMap::new() } }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RailBalanceRule { pub yellow:f64, pub red:f64 }
+impl RailWarnings {
+    pub fn validate(&self)->Result<(),String> {
+        if !["all","selected"].contains(&self.scope.as_str()) || self.account_ids.len()>64 || self.accounts.len()>128
+            || !self.yellow.is_finite() || !self.red.is_finite() || !(0.0<self.yellow && self.yellow<self.red && self.red<=100.0)
+            || self.account_ids.iter().any(|id|!valid_id(id)) { return Err("收纳条预警范围或百分比阈值无效".into()); }
+        for (id,rule) in &self.accounts {
+            if !valid_id(id) || !["primary","all","window"].contains(&rule.mode.as_str())
+                || (rule.mode=="window" && rule.window_id.as_deref().is_none_or(|w|w.is_empty()||w.len()>256)) || rule.balances.len()>16 {return Err("收纳条额度选择无效".into());}
+            for (currency, threshold) in &rule.balances {
+                if currency.len()!=3 || !currency.bytes().all(|b|b.is_ascii_uppercase())
+                    || !threshold.yellow.is_finite() || !threshold.red.is_finite() || threshold.red<0.0 || threshold.red>=threshold.yellow {
+                    return Err("余额阈值需满足 0 ≤ 红色 < 黄色，币种为三位大写代码".into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct AppSettings {
     pub schema_version: u32, pub generation: u64, pub dock_side: String, pub auto_collapse_seconds: u64,
     pub theme: String, pub refresh_interval_seconds: u64, pub display_mode: String,
@@ -107,6 +151,7 @@ pub struct AppSettings {
     pub network_proxy: NetworkProxySettings,
     pub collapsed_bar_color_mode: String,
     pub collapsed_bar_color: Option<String>,
+    pub rail_warnings: RailWarnings,
     pub notifications: NotificationSettings,
     pub hotkeys: HotkeySettings,
     pub providers: BTreeMap<String, ProviderConfig>,
@@ -123,11 +168,13 @@ impl Default for AppSettings {
             monitoring_setup_completed:false, token_spend_enabled:false, authorized_providers:vec![],
             network_proxy:NetworkProxySettings::default(),
             collapsed_bar_color_mode:"auto".into(), collapsed_bar_color:None,
+            rail_warnings:RailWarnings::default(),
             notifications:NotificationSettings::default(), hotkeys:HotkeySettings::default(), providers }
     }
 }
 impl AppSettings {
     pub fn validate(&self) -> Result<(),String> {
+        self.rail_warnings.validate()?;
         if !(2..=SCHEMA_VERSION).contains(&self.schema_version) || !["left","right","top","free"].contains(&self.dock_side.as_str())
             || !["obsidian","translucent"].contains(&self.theme.as_str())
             || !["used","remaining"].contains(&self.display_mode.as_str())

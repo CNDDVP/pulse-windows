@@ -2,6 +2,14 @@ use std::sync::atomic::Ordering;
 use crate::{types::{AppSettings,ProviderUsage},secrets::{SecretStore,WindowsSecrets},AppState};
 use tauri::{AppHandle,Emitter,State,Manager};
 #[tauri::command]
+pub fn publish_rail_warning(window:tauri::Window,app:AppHandle,snapshot:serde_json::Value)->Result<(),String>{
+    if window.label()!="main" || snapshot.to_string().len()>65536 {return Err("收纳条状态来源无效".into());}
+    app.emit_to("settings","rail-warning-state",snapshot).map_err(|_|"收纳条状态同步失败".into())
+}
+fn needs_initial_refresh(old:Option<&crate::types::ProviderConfig>,next:&crate::types::ProviderConfig,has_reading:bool)->bool {
+    next.enabled && !has_reading && old.is_none_or(|previous|!previous.enabled || previous.use_local!=next.use_local)
+}
+#[tauri::command]
 pub async fn token_spend(days:u32,state:State<'_,AppState>)->Result<crate::ledger::Summary,String>{
     {
         let s = state.settings.lock().await;
@@ -112,7 +120,7 @@ pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppStat
     } else {
         let cached = state.cached_usages.lock().await;
         new_settings.providers.iter()
-            .filter(|(id, cfg)| cfg.enabled && !cached.iter().any(|u| &u.account_id == *id))
+            .filter(|(id, cfg)| needs_initial_refresh(old.providers.get(*id), cfg, cached.iter().any(|u| &u.account_id == *id)))
             .map(|(id, _)| id.clone())
             .collect()
     };
@@ -859,6 +867,15 @@ pub async fn import_installed_config(state: State<'_, AppState>, app: AppHandle,
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn appearance_saves_do_not_trigger_missing_account_requests() {
+        let mut account=crate::types::ProviderConfig::default();account.enabled=true;
+        assert!(!super::needs_initial_refresh(Some(&account),&account,false));
+        assert!(super::needs_initial_refresh(None,&account,false));
+        let mut disabled=account.clone();disabled.enabled=false;
+        assert!(super::needs_initial_refresh(Some(&disabled),&account,false));
+        assert!(!super::needs_initial_refresh(None,&account,true));
+    }
     use super::*;
 
     #[test]
