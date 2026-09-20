@@ -3,6 +3,7 @@ import {invoke} from "@tauri-apps/api/core";
 import {listen} from "@tauri-apps/api/event";
 import {UsageRing} from "./UsageRing";
 import {orderedIds} from "../ordering";
+import {providerName} from "../pages/settings/constants";
 import type {AppSettings,ProviderUsage} from "../types";
 export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:AppSettings}){
   // 拖动中的停靠边预览：Rust 在光标进出吸附带时已同步 resize 窗口，布局必须同时切换，
@@ -245,8 +246,33 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   };
 
   // The rail follows the account order from settings, not the arrival order of readings.
-  const rank=new Map(orderedIds(settings.providers).map((id,i)=>[id,i]));
-  const ordered=[...usages].sort((a,b)=>(rank.get(a.account_id)??Number.MAX_SAFE_INTEGER)-(rank.get(b.account_id)??Number.MAX_SAFE_INTEGER));
+  const enabledIds = useMemo(() => orderedIds(settings.providers).filter(id => settings.providers[id]?.enabled), [settings.providers]);
+  const ordered = useMemo(() => {
+    return enabledIds.map(id => {
+      const cfg = settings.providers[id];
+      const existing = usages.find(u => u.account_id === id);
+      if (existing) return existing;
+      const placeholder: ProviderUsage = {
+        account_id: id,
+        provider_id: cfg.provider_id,
+        display_name: cfg.label || providerName(cfg.provider_id),
+        state: "loading",
+        primary_percent: null,
+        plan_name: null,
+        is_active: false,
+        windows: [],
+        balances: [],
+        error_code: null,
+        error_message: null,
+        source: "等待查询",
+        checked_at: null,
+        last_success_at: null,
+        retry_after_seconds: null,
+        duration_ms: null,
+      };
+      return placeholder;
+    });
+  }, [enabledIds, usages, settings.providers]);
 
   // Rail slots: an Antigravity account with split_model_groups renders one ring per model
   // group (same account, same refresh); everyone else is a single slot.

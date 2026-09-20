@@ -364,7 +364,7 @@ pub async fn refresh_usages_and_emit(app:&AppHandle,manual:bool)->Result<Refresh
 
 /// Apply one freshly fetched reading with the same reconcile/schedule/emit semantics as
 /// the scheduled stream.
-async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderUsage,expected_gen:Option<u64>)->Result<(),String>{
+pub async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderUsage,expected_gen:Option<u64>)->Result<(),String>{
     let state=app.state::<AppState>();
     let current_settings=state.settings.lock().await.clone();
     // 通知判断用 reconcile 前的原始读数（与定时轮 passed 语义一致，A10）。
