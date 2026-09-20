@@ -1,3 +1,4 @@
+import { connectCloseBridge, type CloseRequest } from "../closeBridge";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -273,9 +274,8 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
   const handleUserClose = async () => {
     try {
       await invoke("request_close_settings", { source: "button" });
-    } catch {
-      // 降级兜底
-      void invoke("confirm_close_settings", { requestId: 0, action: "discard_and_hide" });
+    } catch (error) {
+      showToast("error", `关闭请求失败，草稿已保留: ${String(error)}`);
     }
   };
 
@@ -331,42 +331,24 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
     return () => window.removeEventListener("keydown", onKey);
   }, [closeModal]);
 
-  // 原生 X / Alt+F4 / 按钮 / Esc 统一走后端的 settings-close-requested 定向通道
-  useEffect(() => {
-    let alive = true;
-    const webview = getCurrentWebviewWindow();
-    const p = webview.listen<{ request_id: number; source: string }>("settings-close-requested", async e => {
-      if (!alive) return;
-      const reqId = e.payload.request_id;
+  // Events are the fast path; IPC recovers missing delivery without losing drafts.
+  useEffect(() => connectCloseBridge({
+    listen: handler => getCurrentWebviewWindow().listen<CloseRequest>(
+      "settings-close-requested", e => handler(e.payload)),
+    ready: () => invoke("settings_window_ready"),
+    pending: () => invoke<CloseRequest | null>("pending_settings_close"),
+    handle: async ({ request_id: requestId }) => {
       const hasDraft = anyDirtyRef.current || Object.values(secretsRef.current).some(s => s && s.trim().length > 0);
-      try {
-        await invoke("acknowledge_close", { requestId: reqId, hasDraft });
-      } catch (err) {
-        console.error("acknowledge_close 异常:", err);
-      }
-      if (!hasDraft) {
+      await invoke("acknowledge_close", { requestId, hasDraft });
+      if (hasDraft) setCloseModal({ isOpen: true, requestId });
+      else {
+        await invoke("confirm_close_settings", { requestId, action: "hide" });
         setSecrets({});
         setShowSecrets({});
-        try {
-          await invoke("confirm_close_settings", { requestId: reqId, action: "hide" });
-        } catch (err) {
-          console.error("confirm_close_settings 异常:", err);
-        }
-      } else {
-        setCloseModal({ isOpen: true, requestId: reqId });
       }
-    });
-
-    // 通知后端监听已就绪
-    void invoke("settings_window_ready").catch(err => {
-      console.error("settings_window_ready 异常:", err);
-    });
-
-    return () => {
-      alive = false;
-      void p.then(f => f());
-    };
-  }, []);
+    },
+    error: error => console.error("关闭通道异常:", error),
+  }), []);
 
   // Search covers pages (title + keywords) and accounts (label + provider name/id).
   const q = search.trim().toLowerCase();

@@ -81,13 +81,14 @@ impl SettingsCloseCoordinator {
 
     pub async fn request_close(self: &Arc<Self>, app: &AppHandle, source: &str) -> u64 {
         let mut p = self.phase.lock().await;
-        if *p == ClosePhase::Confirming || *p == ClosePhase::Hiding {
+        if *p != ClosePhase::Idle {
             // Already in progress, do not duplicate
             return self.current_request_id.load(Ordering::SeqCst);
         }
         let req_id = self.request_counter.fetch_add(1, Ordering::SeqCst);
         self.current_request_id.store(req_id, Ordering::SeqCst);
 
+        *p = ClosePhase::AwaitingFrontend;
         if !self.frontend_ready.load(Ordering::SeqCst) {
             self.log_diag(req_id, source, "queued_not_ready", None).await;
             let mut pending = self.pending_requests.lock().await;
@@ -105,10 +106,12 @@ impl SettingsCloseCoordinator {
     async fn dispatch_request(self: &Arc<Self>, app: &AppHandle, req_id: u64, source: &str) {
         self.log_diag(req_id, source, "dispatching", None).await;
         if let Some(w) = app.get_webview_window("settings") {
-            let _ = w.emit("settings-close-requested", CloseRequestPayload {
+            if let Err(error) = app.emit_to(tauri::EventTarget::WebviewWindow { label: w.label().into() }, "settings-close-requested", CloseRequestPayload {
                 request_id: req_id,
                 source: source.to_string(),
-            });
+            }) {
+                self.log_diag(req_id, source, "dispatch_failed", Some(error.to_string())).await;
+            }
         }
 
         // 2-second timeout protection
@@ -118,19 +121,23 @@ impl SettingsCloseCoordinator {
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
             if this.current_request_id.load(Ordering::SeqCst) == req_id {
-                let mut p = this.phase.lock().await;
+                let p = this.phase.lock().await;
                 if *p == ClosePhase::AwaitingFrontend {
                     this.log_diag(req_id, &src_string, "timeout_fallback", Some("Frontend did not acknowledge in 2s".into())).await;
+                    // Never hold the state lock while a native modal waits for input.
+                    drop(p);
                     #[cfg(windows)]
                     {
                         use windows::core::PCWSTR;
                         use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_OKCANCEL, MB_ICONWARNING, IDOK};
                         let title: Vec<u16> = "Pulse - 设置窗口未响应\0".encode_utf16().collect();
                         let msg: Vec<u16> = "设置窗口响应关闭请求超时。\n\n点击“确定”将保留当前草稿并直接隐藏设置窗口；\n点击“取消”将保持设置窗口打开。\0".encode_utf16().collect();
-                        let res = unsafe {
+                        let res = tauri::async_runtime::spawn_blocking(move || unsafe {
                             MessageBoxW(None, PCWSTR(msg.as_ptr()), PCWSTR(title.as_ptr()), MB_OKCANCEL | MB_ICONWARNING)
-                        };
-                        if res == IDOK {
+                        }).await;
+                        let mut p = this.phase.lock().await;
+                        if this.current_request_id.load(Ordering::SeqCst) != req_id || *p != ClosePhase::AwaitingFrontend { return; }
+                        if res.ok() == Some(IDOK) {
                             *p = ClosePhase::Hiding;
                             drop(p);
                             let _ = this.execute_hide(&app_clone, req_id).await;
@@ -140,11 +147,20 @@ impl SettingsCloseCoordinator {
                     }
                     #[cfg(not(windows))]
                     {
-                        *p = ClosePhase::Idle;
+                        *this.phase.lock().await = ClosePhase::Idle;
                     }
                 }
             }
         });
+    }
+
+    pub async fn pending_close(&self) -> Option<CloseRequestPayload> {
+        let phase = self.phase.lock().await;
+        if *phase != ClosePhase::AwaitingFrontend { return None; }
+        Some(CloseRequestPayload {
+            request_id: self.current_request_id.load(Ordering::SeqCst),
+            source: "ipc_recovery".into(),
+        })
     }
 
     pub async fn acknowledge_close(&self, req_id: u64, has_draft: bool) -> Result<(), String> {
@@ -182,9 +198,13 @@ impl SettingsCloseCoordinator {
 
     pub async fn execute_hide(&self, app: &AppHandle, req_id: u64) -> Result<(), String> {
         let w = app.get_webview_window("settings").ok_or("设置窗口不存在")?;
-        w.hide().map_err(|e| format!("隐藏设置窗口失败: {e}"))?;
+        if let Err(error) = w.hide() {
+            *self.phase.lock().await = ClosePhase::Idle;
+            return Err(format!("隐藏设置窗口失败: {error}"));
+        }
         if w.is_visible().unwrap_or(false) {
             self.log_diag(req_id, "backend", "hide_failed", Some("Window still visible".into())).await;
+            *self.phase.lock().await = ClosePhase::Idle;
             return Err("窗口 hide 调用已执行，但窗口依然可见".into());
         }
         let mut p = self.phase.lock().await;
@@ -199,6 +219,20 @@ impl SettingsCloseCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pending_request_is_recoverable_only_until_acknowledged() {
+        let coord = SettingsCloseCoordinator::default();
+        assert!(coord.pending_close().await.is_none());
+        coord.current_request_id.store(42, Ordering::SeqCst);
+        *coord.phase.lock().await = ClosePhase::AwaitingFrontend;
+        assert_eq!(coord.pending_close().await.unwrap().request_id, 42);
+        coord.acknowledge_close(41, false).await.unwrap();
+        assert!(coord.pending_close().await.is_some());
+        coord.acknowledge_close(42, true).await.unwrap();
+        assert!(coord.pending_close().await.is_none());
+        assert_eq!(*coord.phase.lock().await, ClosePhase::Confirming);
+    }
 
     #[tokio::test]
     async fn test_close_coordinator_state_transitions() {
