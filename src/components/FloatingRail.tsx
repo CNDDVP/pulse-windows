@@ -1,3 +1,4 @@
+import {useRailWarnings} from "../useRailWarnings";
 import {useState,useEffect,useRef,useMemo,useCallback} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {listen} from "@tauri-apps/api/event";
@@ -380,17 +381,14 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     return out;
   },[ordered,settings.providers]);
 
-  // Only real readings drive the pressure glow; an account in an error state is "unknown".
-  const readings=ordered.filter(u=>["live","stale"].includes(u.state));
-  const maxPressure=readings.length?readings.reduce((max,u)=>Math.max(max,u.primary_percent??0),0):(ordered.length?Number.NaN:0);
-  const red=settings.warning_threshold,amber=red-15;
+  const railWarning = useRailWarnings(settings, usages);
 
   const colorMode = settings.collapsed_bar_color_mode || "auto";
   let barGlowClass = "rail-breathe";
   let barColorStyle: React.CSSProperties = {};
 
   if (colorMode === "rainbow") {
-    barGlowClass = "rail-rainbow";
+    barGlowClass = "rail-rainbow rail-glow-emerald";
   } else if (colorMode === "custom" && settings.collapsed_bar_color) {
     const custom = settings.collapsed_bar_color;
     barGlowClass = "rail-breathe";
@@ -400,13 +398,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     };
   } else {
     // auto mode: according to quota pressure
-    const pressureClass = Number.isNaN(maxPressure)
-      ? "rail-glow-zinc"
-      : maxPressure >= red
-      ? "rail-glow-red"
-      : maxPressure >= amber
-      ? "rail-glow-amber"
-      : "rail-glow-emerald";
+    const pressureClass = {unknown:"rail-glow-zinc",green:"rail-glow-emerald",yellow:"rail-glow-amber",red:"rail-glow-red"}[railWarning.level];
     barGlowClass = `rail-breathe ${pressureClass}`;
   }
   const lookX=left?1:free?0:-1;
@@ -476,6 +468,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
         whole window. Right-click opens rail menu; double-click expands. */}
     {!free && (
       <div
+        title={colorMode === "auto" ? (railWarning.shortReason || railWarning.reason) : colorMode === "custom" ? "固定颜色（不表示额度风险）" : "彩虹颜色（不表示额度风险）"}
         aria-label="展开 Pulse"
         onMouseEnter={enter}
         onDoubleClick={handleExpand}

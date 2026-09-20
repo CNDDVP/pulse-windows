@@ -214,6 +214,11 @@ pub fn parse_settings_readonly(path:&Path,store:&dyn SecretStore)->Result<AppSet
         for cfg in providers.values_mut(){cfg.as_object_mut().ok_or("账号设置无效")?.remove("api_key");}
     }
     let mut settings:AppSettings=serde_json::from_value(cleaned).map_err(|_|"设置结构无效；原文件未修改")?;
+    if root.get("rail_warnings").is_none() {
+        settings.rail_warnings.red = settings.warning_threshold as f64;
+        settings.rail_warnings.yellow = settings.warning_threshold.saturating_sub(15) as f64;
+        settings.rail_warnings.custom_thresholds = settings.warning_threshold != 90;
+    }
     if !settings.monitoring_setup_completed && settings.providers.values().any(|p| p.enabled) {
         settings.monitoring_setup_completed = true;
         let mut auth: Vec<String> = settings.providers.values().filter(|p| p.enabled).map(|p| p.provider_id.clone()).collect();
@@ -256,6 +261,11 @@ pub fn load_from(path:&Path,store:&dyn SecretStore)->Result<AppSettings,String>{
         for cfg in providers.values_mut(){cfg.as_object_mut().ok_or("账号设置无效")?.remove("api_key");}
     }
     let mut settings:AppSettings=serde_json::from_value(cleaned).map_err(|_|"设置结构无效；原文件未修改")?;
+    if root.get("rail_warnings").is_none() {
+        settings.rail_warnings.red = settings.warning_threshold as f64;
+        settings.rail_warnings.yellow = settings.warning_threshold.saturating_sub(15) as f64;
+        settings.rail_warnings.custom_thresholds = settings.warning_threshold != 90;
+    }
     if !settings.monitoring_setup_completed && settings.providers.values().any(|p| p.enabled) {
         settings.monitoring_setup_completed = true;
         let mut auth: Vec<String> = settings.providers.values().filter(|p| p.enabled).map(|p| p.provider_id.clone()).collect();
@@ -529,6 +539,32 @@ fn import_config_transaction(
 #[cfg(test)] mod tests {
     use super::*; use std::{cell::RefCell,collections::HashMap};
     #[derive(Default)] struct Memory(RefCell<HashMap<String,String>>,bool);
+    #[test]
+    fn rail_warning_legacy_migration_preserves_actual_threshold_and_colour() {
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("settings.json");
+        let mut root=serde_json::to_value(AppSettings::default()).unwrap();
+        root.as_object_mut().unwrap().remove("rail_warnings");root["warning_threshold"]=80.into();
+        root["collapsed_bar_color_mode"]="custom".into();root["collapsed_bar_color"]="#123456".into();
+        fs::write(&p,serde_json::to_vec(&root).unwrap()).unwrap();
+        for s in [load_from(&p,&Memory::default()).unwrap(),parse_settings_readonly(&p,&Memory::default()).unwrap()] {
+            assert_eq!(s.rail_warnings.yellow,65.0);assert_eq!(s.rail_warnings.red,80.0);
+            assert!(s.rail_warnings.custom_thresholds);assert_eq!(s.collapsed_bar_color_mode,"custom");
+            assert_eq!(s.collapsed_bar_color.as_deref(),Some("#123456"));
+            save_to(&p,&s).unwrap();let roundtrip=load_from(&p,&Memory::default()).unwrap();
+            assert_eq!(roundtrip.rail_warnings.red,80.0);
+        }
+    }
+    #[test]
+    fn rail_warning_invalid_values_cannot_replace_saved_file() {
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("settings.json");
+        let mut s=AppSettings::default();save_to(&p,&s).unwrap();let before=fs::read(&p).unwrap();
+        s.rail_warnings.yellow=95.0;assert!(save_to(&p,&s).is_err());assert_eq!(fs::read(&p).unwrap(),before);
+        s.rail_warnings=Default::default();
+        let mut rule=crate::types::RailAccountRule::default();
+        rule.balances.insert("CNY".into(),crate::types::RailBalanceRule{yellow:5.0,red:20.0});
+        s.rail_warnings.accounts.insert("fixture".into(),rule);
+        assert!(save_to(&p,&s).is_err());assert_eq!(fs::read(&p).unwrap(),before);
+    }
     #[test]
     fn import_uuid_accounts_and_legacy_secrets_without_touching_source() {
         let d = tempfile::tempdir().unwrap();

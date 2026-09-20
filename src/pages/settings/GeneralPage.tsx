@@ -1,8 +1,9 @@
+import {RailWarningSettings} from "./RailWarningSettings";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, MonitorOption, ProviderUsage, ProxyDetection, NetworkTestResult } from "../../types";
 import { Section, Row, Field, Switch } from "./shared";
-import { selectCls, inputCls, btnGhost, timeText, PROVIDERS } from "./constants";
+import { selectCls, btnGhost, timeText, PROVIDERS } from "./constants";
 
 export function GeneralPage({ settings, update, screens, usages, busy, onRefreshAll, toast }: {
   settings: AppSettings; update: (patch: Partial<AppSettings>) => void; screens: MonitorOption[];
@@ -85,64 +86,9 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
             <Switch checked={settings.hide_fullscreen} onChange={v => update({ hide_fullscreen: v })} label="全屏应用运行时隐藏" />
           </Row>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-white/5">
-          <Field label="收纳条颜色模式" hint="自定义折叠贴边细线的发光与颜色。">
-            <select
-              className={selectCls}
-              value={settings.collapsed_bar_color_mode || "auto"}
-              onChange={e => update({ collapsed_bar_color_mode: e.target.value as "auto" | "rainbow" | "custom" })}
-            >
-              <option value="auto">自动（按额度健康度：绿/黄/红）</option>
-              <option value="rainbow">🌈 炫彩幻光（五颜六色自动缓慢循环）</option>
-              <option value="custom">🎨 自定义颜色</option>
-            </select>
-          </Field>
-          {settings.collapsed_bar_color_mode === "custom" && (
-            <Field label="自定义颜色" hint="支持选择预设或输入 Hex 颜色代码。">
-              <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  value={settings.collapsed_bar_color || "#7AA5FF"}
-                  onChange={e => update({ collapsed_bar_color: e.target.value })}
-                  className="w-8 h-8 rounded-lg cursor-pointer border border-zinc-700 bg-transparent shrink-0"
-                  aria-label="选择颜色"
-                />
-                <input
-                  type="text"
-                  value={settings.collapsed_bar_color || "#7AA5FF"}
-                  onChange={e => update({ collapsed_bar_color: e.target.value })}
-                  className={`${inputCls} font-mono uppercase w-24`}
-                  placeholder="#7AA5FF"
-                  maxLength={7}
-                  aria-label="十六进制颜色代码"
-                />
-                <div className="flex items-center gap-1.5 shrink-0 ml-auto">
-                  {[
-                    { color: "#7AA5FF", title: "Kimi 蓝" },
-                    { color: "#10B981", title: "翡翠绿" },
-                    { color: "#8B5CF6", title: "极光紫" },
-                    { color: "#EC4899", title: "樱花粉" },
-                    { color: "#F97316", title: "活力橙" },
-                    { color: "#38BDF8", title: "冰川蓝" },
-                  ].map(p => (
-                    <button
-                      key={p.color}
-                      type="button"
-                      onClick={() => update({ collapsed_bar_color: p.color })}
-                      style={{ backgroundColor: p.color }}
-                      title={p.title}
-                      className={`w-5 h-5 rounded-full border border-white/20 transition-transform cursor-pointer ${
-                        settings.collapsed_bar_color === p.color ? "scale-125 ring-2 ring-white" : "hover:scale-110"
-                      }`}
-                      aria-label={`选择${p.title}`}
-                    />
-                  ))}
-                </div>
-              </div>
-            </Field>
-          )}
-        </div>
       </Section>
+
+      <RailWarningSettings settings={settings} usages={usages} update={update} busy={busy} onRefreshAll={onRefreshAll}/>
 
       <Section title="外观与指标" icon="🎨">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

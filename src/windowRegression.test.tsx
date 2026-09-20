@@ -7,7 +7,7 @@ import type {AppSettings} from './types';
 
 const api=vi.hoisted(()=>({invoke:vi.fn(),listeners:new Map<string,(e:{payload:unknown})=>void>()}));
 vi.mock('@tauri-apps/api/core',()=>({invoke:api.invoke}));
-vi.mock('@tauri-apps/api/event',()=>({listen:vi.fn(async(name:string,handler:(e:{payload:unknown})=>void)=>{
+vi.mock('@tauri-apps/api/event',()=>({emit:vi.fn(async()=>{}),listen:vi.fn(async(name:string,handler:(e:{payload:unknown})=>void)=>{
   api.listeners.set(name,handler);return()=>{if(api.listeners.get(name)===handler)api.listeners.delete(name)};
 })}));
 vi.mock('./components/UsageRing',()=>({UsageRing:()=>null}));

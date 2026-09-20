@@ -37,6 +37,7 @@ export interface NetworkProxySettings {
   port: number;
 }
 export interface AppSettings {
+  rail_warnings?: RailWarnings;
   schema_version: number; generation?: number; dock_side: "right" | "left" | "top" | "free";
   auto_collapse_seconds: number; theme: "obsidian" | "translucent";
   refresh_interval_seconds: number; display_mode: "used" | "remaining";
@@ -49,6 +50,16 @@ export interface AppSettings {
   collapsed_bar_color?: string | null;
   notifications: NotificationSettings; hotkeys: HotkeySettings;
   providers: Record<string, ProviderConfig>;
+}
+
+export interface RailAccountRule {
+  mode: 'primary' | 'all' | 'window';
+  window_id: string | null;
+  balances: Record<string, {yellow:number;red:number}>;
+}
+export interface RailWarnings {
+  scope:'all'|'selected'; account_ids:string[]; custom_thresholds:boolean;
+  yellow:number; red:number; accounts:Record<string,RailAccountRule>;
 }
 
 /** 一次全量刷新的结果（A07）：读数快照 + 实际发起/被冷却跳过的账号数。 */
@@ -89,4 +100,3 @@ export interface NotificationFullStatus {
   plugin_permission: string;
   last_error: string | null;
 }
-
