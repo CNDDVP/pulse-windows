@@ -427,10 +427,24 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
     }
 
     const pct = u.primary_percent != null ? Math.round(u.primary_percent) : null;
+    const balances = u.balances.filter(b => Number.isFinite(b.amount) && b.currency.trim());
+    if (pct == null && balances.length > 0 && (u.state === "live" || u.state === "stale")) {
+      const stale = u.state === "stale";
+      const amounts = balances.map(b => `${b.currency} ${b.amount.toFixed(2)}`);
+      return (
+        <span
+          className={`inline-flex flex-col items-end px-1.5 py-0.5 rounded text-[10px] font-mono border shrink-0 max-w-[120px] ${stale ? "bg-amber-950/40 text-amber-300 border-amber-800/40" : "bg-emerald-950/40 text-emerald-300 border-emerald-800/40"}`}
+          title={`${stale ? "上次余额（缓存，待刷新）" : "当前剩余余额"}: ${amounts.join("；")}`}
+          aria-label={`${stale ? "缓存余额" : "剩余余额"}: ${amounts.join("；")}`}
+        >
+          {amounts.map((amount, index) => <span key={index} className="max-w-full truncate">{amount}{stale ? "*" : ""}</span>)}
+        </span>
+      );
+    }
     if (pct == null) {
       return (
         <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-zinc-800/60 text-zinc-400 border border-zinc-700/40 shrink-0">
-          --%
+          待读数
         </span>
       );
     }

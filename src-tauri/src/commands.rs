@@ -167,6 +167,16 @@ pub async fn test_account(account_id:String,state:State<'_,AppState>,app:AppHand
 #[tauri::command]
 pub async fn set_window_state(state:String,app:AppHandle)->Result<(),String>{
     if !["collapsed","rail","expanded"].contains(&state.as_str()){return Err("窗口状态无效".into())}
+    if state == "collapsed" {
+        let app_state = app.state::<AppState>();
+        let settings = app_state.settings.lock().await.clone();
+        let interacting = app_state.dragging.load(Ordering::Relaxed) || ["main", "detail"].iter().any(|label|
+            app.get_webview_window(label).is_some_and(|w| w.is_visible().unwrap_or(false) && crate::window::is_cursor_over_window(&w)));
+        if !crate::rail_state::may_collapse(&settings, *app_state.rail_pin_until.lock().unwrap(), std::time::Instant::now(), interacting) {
+            let _ = app.emit("window-state-changed", "rail");
+            return Ok(());
+        }
+    }
     *app.state::<AppState>().window_mode.lock().await=state.clone();
     if state == "rail" {
         *app.state::<AppState>().last_cursor_over.lock().unwrap() = std::time::Instant::now();
@@ -519,20 +529,27 @@ pub fn get_detail_layout() -> Option<DetailLayout> {
 }
 
 #[tauri::command]
-pub fn detail_layout_ready(app:AppHandle, request_id:u64)->Result<(),String>{
+pub async fn detail_layout_ready(app:AppHandle, request_id:u64)->Result<bool,String>{
     let handle=app.clone();
+    let (send, receive) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
-        let Ok(layout)=DETAIL_LAYOUT.lock() else{return};
-        if !layout.as_ref().is_some_and(|v|v.request_id==request_id)||DETAIL_PRESENTED.load(Ordering::SeqCst)==request_id{return}
+        let present = || {
+        let Ok(layout)=DETAIL_LAYOUT.lock() else{return false};
+        if !layout.as_ref().is_some_and(|v|v.request_id==request_id){return false}
+        if DETAIL_PRESENTED.load(Ordering::SeqCst)==request_id{return true}
         let state=handle.state::<AppState>();
-        if state.dragging.load(Ordering::Relaxed)||state.user_hidden.load(Ordering::Relaxed){return}
+        if state.dragging.load(Ordering::Relaxed)||state.user_hidden.load(Ordering::Relaxed){return false}
         if let Ok(settings)=state.settings.try_lock(){
-            if !settings.show_rail || (settings.hide_fullscreen && crate::window::fullscreen_other(&handle)){return}
-        } else {return}
+            if !settings.show_rail || (settings.hide_fullscreen && crate::window::fullscreen_other(&handle)){return false}
+        } else {return false}
         if let Some(w)=handle.get_webview_window("detail") {
-            if w.show().is_ok(){DETAIL_PRESENTED.store(request_id,Ordering::SeqCst);}
+            if w.show().is_ok(){DETAIL_PRESENTED.store(request_id,Ordering::SeqCst);return true;}
         }
-    }).map_err(|e|e.to_string())
+        false
+        };
+        let _ = send.send(present());
+    }).map_err(|e|e.to_string())?;
+    receive.await.map_err(|_| "详情显示确认中断".into())
 }
 
 /// The detail card is its own topmost overlay so showing it never resizes or flickers the rail.
@@ -618,7 +635,6 @@ pub async fn show_detail(
         account_id: account_id.clone(), placement:placement.into(),
         width:dw as u32, height:dh as u32,
     };
-    let fallback_req = layout.request_id;
     *state.detail_account.lock().map_err(|_|"状态锁损坏")?=Some(account_id);
     *DETAIL_LAYOUT.lock().map_err(|_|"详情布局锁损坏")?=Some(layout.clone());
     let handle=app.clone();
@@ -627,37 +643,17 @@ pub async fn show_detail(
     app.run_on_main_thread(move || {
         let Ok(current)=DETAIL_LAYOUT.lock() else{return};
         if !current.as_ref().is_some_and(|v|v.request_id==layout.request_id){return}
-        let already_visible = window.is_visible().unwrap_or(false);
+
         let result=(|| -> tauri::Result<()> {
+            window.hide()?;
             crate::window::place_at(&window, target_x, target_y, layout.width, layout.height);
             window.set_always_on_top(true)?;
             handle.emit("detail-layout", &layout)?;
-            if already_visible {
-                DETAIL_PRESENTED.store(layout.request_id, Ordering::SeqCst);
-            }
             Ok(())
         })();
         if let Err(error)=result {eprintln!("Pulse detail layout: {error}");}
     }).map_err(|e|format!("详情定位失败: {e}"))?;
 
-    // Fallback timer: if frontend doesn't confirm layout within 260ms, show anyway
-    let handle_fallback = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(260)).await;
-        let h = handle_fallback.clone();
-        let _ = handle_fallback.run_on_main_thread(move || {
-            let Ok(current) = DETAIL_LAYOUT.lock() else { return };
-            if !current.as_ref().is_some_and(|v| v.request_id == fallback_req) || DETAIL_PRESENTED.load(Ordering::SeqCst) == fallback_req { return }
-            let state = h.state::<AppState>();
-            if state.dragging.load(Ordering::Relaxed) || state.user_hidden.load(Ordering::Relaxed) { return }
-            if let Ok(settings) = state.settings.try_lock() {
-                if !settings.show_rail || (settings.hide_fullscreen && crate::window::fullscreen_other(&h)) { return }
-            } else { return }
-            if let Some(w) = h.get_webview_window("detail") {
-                if w.show().is_ok() { DETAIL_PRESENTED.store(fallback_req, Ordering::SeqCst); }
-            }
-        });
-    });
     Ok(())
 }
 #[tauri::command]

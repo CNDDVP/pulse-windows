@@ -408,7 +408,11 @@ pub fn import_installed_config(mode: ImportMode) -> Result<AppSettings, String> 
                 let target: Vec<u16> = format!("PulseWindows/{}/{id}\0", &self.old_profile_id).encode_utf16().collect();
                 unsafe {
                     let mut ptr = std::ptr::null_mut();
-                    if CredReadW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, 0, &mut ptr).is_ok() {
+                    let read = CredReadW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, 0, &mut ptr);
+                    if let Err(ref error) = read {
+                        if error.code().0 as u32 != 0x80070490 { return Err("无法读取来源凭据".into()); }
+                    }
+                    if read.is_ok() {
                         let bytes = std::slice::from_raw_parts((*ptr).CredentialBlob, (*ptr).CredentialBlobSize as usize);
                         let result = String::from_utf8(bytes.to_vec()).map_err(|_| "凭据编码无效".into());
                         CredFree(ptr.cast());
@@ -418,11 +422,15 @@ pub fn import_installed_config(mode: ImportMode) -> Result<AppSettings, String> 
                     let scope = format!("{:x}", Sha256::digest(self.old_dir.to_string_lossy().as_bytes()));
                     let leg: Vec<u16> = format!("PulseWindows/{}/{id}\0", &scope[..24]).encode_utf16().collect();
                     let mut leg_ptr = std::ptr::null_mut();
-                    if CredReadW(PCWSTR(leg.as_ptr()), CRED_TYPE_GENERIC, 0, &mut leg_ptr).is_ok() {
+                    let read = CredReadW(PCWSTR(leg.as_ptr()), CRED_TYPE_GENERIC, 0, &mut leg_ptr);
+                    if let Err(ref error) = read {
+                        if error.code().0 as u32 != 0x80070490 { return Err("无法读取来源旧凭据".into()); }
+                    }
+                    if read.is_ok() {
                         let bytes = std::slice::from_raw_parts((*leg_ptr).CredentialBlob, (*leg_ptr).CredentialBlobSize as usize);
-                        let secret = String::from_utf8(bytes.to_vec()).map_err(|_| "凭据编码无效".to_string())?;
+                        let secret = String::from_utf8(bytes.to_vec()).map_err(|_| "凭据编码无效".to_string());
                         CredFree(leg_ptr.cast());
-                        return Ok(Some(secret));
+                        return secret.map(Some);
                     }
                     Ok(None)
                 }
@@ -440,71 +448,186 @@ pub fn import_installed_config(mode: ImportMode) -> Result<AppSettings, String> 
         old_dir: installed_dir,
     };
 
-    // W04: 只读解析源配置，绝不写回或污染源目录
-    let source_settings = parse_settings_readonly(&installed_settings_path, &old_store)?;
-
-    // W06: 覆盖模式先备份，追加模式遇到冲突则分配新唯一 ID
-    let mut current_settings = load_settings().unwrap_or_default();
-    if mode == ImportMode::Overwrite {
-        backup_settings()?;
-        current_settings.providers.clear();
+    let target = get_config_dir().join("settings.json");
+    // WindowsSecrets::get may migrate a legacy target. Import snapshots must be read-only.
+    struct TargetStore(OldStore);
+    impl SecretStore for TargetStore {
+        fn get(&self,id:&str)->Result<Option<String>,String>{self.0.get(id)}
+        fn put(&self,id:&str,value:&str)->Result<(),String>{WindowsSecrets.put(id,value)}
+        fn delete(&self,id:&str)->Result<(),String>{WindowsSecrets.delete(id)}
     }
+    let target_store = TargetStore(OldStore { old_profile_id: get_profile_id(), old_dir: get_config_dir() });
+    import_config_transaction(&installed_settings_path, &target, &old_store, &target_store, mode,
+        |settings| { backup_file(&target)?; save_to(&target, settings) })
+}
 
-    let mut written_keys: Vec<String> = Vec::new();
+// Parse without migration side effects. Secrets stay separate from the IPC settings DTO.
+fn import_snapshot(path: &Path, store: &dyn SecretStore)
+    -> Result<(AppSettings, std::collections::HashMap<String, String>), String> {
+    let settings = parse_settings_readonly(path, store)?;
+    let root: serde_json::Value = match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "设置 JSON 损坏")?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Value::Null,
+        Err(_) => return Err("无法读取导入配置".into()),
+    };
+    let mut secrets = std::collections::HashMap::new();
+    for id in settings.providers.keys() {
+        let secret = store.get(id)?.or_else(|| root.get("providers").and_then(|v| v.get(id))
+            .and_then(|v| v.get("api_key")).and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty()).map(str::to_owned));
+        if let Some(secret) = secret { secrets.insert(id.clone(), secret); }
+    }
+    Ok((settings, secrets))
+}
 
-    let merge_result: Result<(), String> = (|| {
-        let mut max_order = current_settings.providers.values().map(|c| c.order).max().unwrap_or(0);
-        for (src_id, mut cfg) in source_settings.providers {
-            let target_id = if current_settings.providers.contains_key(&src_id) {
-                format!("{}_{}", src_id, &uuid::Uuid::new_v4().simple().to_string()[..6])
-            } else {
-                src_id.clone()
-            };
-
-            // W05: 迁移凭据并校验 (Read-after-Write)
-            if let Ok(Some(secret)) = old_store.get(&src_id) {
-                WindowsSecrets.put(&target_id, &secret)
-                    .map_err(|e| format!("写入凭据失败 ({target_id}): {e}"))?;
-                written_keys.push(target_id.clone());
-
-                let readback = WindowsSecrets.get(&target_id)
-                    .map_err(|e| format!("读回凭据校验异常 ({target_id}): {e}"))?;
-                if readback.as_deref() != Some(&secret) {
-                    return Err(format!("凭据读回校验不一致 ({target_id})"));
-                }
-                cfg.credential_configured = true;
-            } else {
-                cfg.credential_configured = false;
-            }
-
-            max_order += 1;
-            cfg.order = max_order;
-            cfg.provider_id = target_id.clone();
-            current_settings.providers.insert(target_id, cfg);
+fn import_config_transaction(
+    source: &Path, target: &Path, source_store: &dyn SecretStore, target_store: &dyn SecretStore,
+    mode: ImportMode, save: impl FnOnce(&AppSettings) -> Result<(), String>,
+) -> Result<AppSettings, String> {
+    let (source_settings, source_secrets) = import_snapshot(source, source_store)?;
+    // Never substitute defaults for a malformed/unreadable existing target.
+    let (mut settings, mut secrets) = import_snapshot(target, target_store)?;
+    if mode == ImportMode::Overwrite { settings.providers.clear(); secrets.clear(); }
+    let mut order = settings.providers.values().map(|c| c.order).max().unwrap_or(0);
+    for (source_id, mut cfg) in source_settings.providers {
+        // New identity also prevents overwriting orphaned or existing target credentials.
+        let id = loop {
+            let id = uuid::Uuid::new_v4().to_string();
+            if !settings.providers.contains_key(&id) && target_store.get(&id)?.is_none() { break id; }
+        };
+        if let Some(secret) = source_secrets.get(&source_id) { secrets.insert(id.clone(), secret.clone()); }
+        cfg.credential_configured = secrets.contains_key(&id);
+        order = order.checked_add(1).ok_or("账号排序溢出")?;
+        cfg.order = order;
+        // provider_id is a service type, never an account key.
+        settings.providers.insert(id, cfg);
+    }
+    settings.validate()?;
+    let mut originals = Vec::new();
+    let result = (|| {
+        for (id, secret) in &secrets {
+            let old = target_store.get(id)?;
+            if old.as_deref() == Some(secret.as_str()) { continue; }
+            // Record BEFORE put: a store may fail after the write has happened.
+            originals.push((id.clone(), old));
+            target_store.put(id, secret).map_err(|_| "导入凭据写入失败")?;
+            if target_store.get(id)?.as_deref() != Some(secret.as_str()) { return Err("导入凭据校验失败".into()); }
         }
-        Ok(())
+        save(&settings)
     })();
-
-    if let Err(e) = merge_result {
-        // 发生错误时回滚所有已写入的目标凭据
-        for key in &written_keys {
-            let _ = WindowsSecrets.delete(key);
+    if let Err(error) = result {
+        let mut failed = false;
+        for (id, old) in originals.iter().rev() {
+            let restored = match old { Some(value) => target_store.put(id, value), None => target_store.delete(id) };
+            if restored.is_err() || target_store.get(id).ok().as_ref() != Some(old) { failed = true; }
         }
-        return Err(format!("导入失败已回滚凭据: {e}"));
+        return Err(if failed { "导入失败，部分凭据回滚失败；原配置未提交，请保留目录并重试恢复".into() }
+            else { format!("导入失败，凭据已恢复：{error}") });
     }
-
-    save_settings(&current_settings)?;
-    Ok(current_settings)
+    Ok(settings)
 }
 #[cfg(test)] mod tests {
     use super::*; use std::{cell::RefCell,collections::HashMap};
     #[derive(Default)] struct Memory(RefCell<HashMap<String,String>>,bool);
+    #[test]
+    fn import_uuid_accounts_and_legacy_secrets_without_touching_source() {
+        let d = tempfile::tempdir().unwrap();
+        let source = d.path().join("source.json"); let target = d.path().join("target.json");
+        let mut s = AppSettings::default(); s.providers.clear();
+        s.providers.insert(uuid::Uuid::new_v4().to_string(), crate::types::ProviderConfig {
+            provider_id: "codex".into(), ..Default::default()
+        });
+        let id = s.providers.keys().next().unwrap().clone();
+        let mut json = serde_json::to_value(&s).unwrap();
+        json["providers"][&id]["api_key"] = "fixture-only".into();
+        let bytes = serde_json::to_vec(&json).unwrap(); fs::write(&source, &bytes).unwrap();
+        let store = Memory::default();
+        for mode in [ImportMode::Append, ImportMode::Overwrite] {
+            let result = import_config_transaction(&source, &target, &Memory::default(), &store, mode,
+                |s| save_to(&target, s)).unwrap();
+            let imported = result.providers.iter().find(|(key,c)| **key != id && c.credential_configured).unwrap();
+            assert_eq!(imported.1.provider_id, "codex");
+            assert_eq!(store.get(imported.0).unwrap().as_deref(), Some("fixture-only"));
+            assert!(!fs::read_to_string(&target).unwrap().contains("fixture-only"));
+            assert_eq!(fs::read(&source).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn import_save_failure_preserves_credentials_and_target_bytes() {
+        let d = tempfile::tempdir().unwrap();
+        let source = d.path().join("source.json"); let target = d.path().join("target.json");
+        let settings = AppSettings::default();
+        save_to(&source, &settings).unwrap(); save_to(&target, &settings).unwrap();
+        let before = fs::read(&target).unwrap();
+        let src = Memory::default(); src.put("codex-default", "new-fixture").unwrap();
+        let dst = Memory::default(); dst.put("codex", "original-fixture").unwrap();
+        let original = dst.0.borrow().clone();
+        for mode in [ImportMode::Append, ImportMode::Overwrite] {
+            assert!(import_config_transaction(&source, &target, &src, &dst, mode,
+                |_| Err("injected disk failure".into())).is_err());
+            assert_eq!(*dst.0.borrow(), original);
+            assert_eq!(fs::read(&target).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn import_damaged_target_never_saves_or_writes_secrets() {
+        let d = tempfile::tempdir().unwrap();
+        let source = d.path().join("source.json"); let target = d.path().join("target.json");
+        save_to(&source, &AppSettings::default()).unwrap(); fs::write(&target, b"broken").unwrap();
+        let store = Memory::default();
+        assert!(import_config_transaction(&source, &target, &store, &store, ImportMode::Append,
+            |_| panic!("must not commit corrupted target")).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"broken"); assert!(store.0.borrow().is_empty());
+    }
+
+    #[test]
+    fn import_partial_write_failure_removes_only_new_credentials() {
+        struct FailAfterWrite { memory: Memory, puts: std::cell::Cell<u32> }
+        impl SecretStore for FailAfterWrite {
+            fn get(&self,id:&str)->Result<Option<String>,String>{ self.memory.get(id) }
+            fn put(&self,id:&str,value:&str)->Result<(),String>{
+                self.memory.put(id,value)?; self.puts.set(self.puts.get()+1);
+                if self.puts.get()==2 { Err("injected post-write failure".into()) } else { Ok(()) }
+            }
+            fn delete(&self,id:&str)->Result<(),String>{ self.memory.delete(id) }
+        }
+        let d=tempfile::tempdir().unwrap(); let source=d.path().join("source.json"); let target=d.path().join("target.json");
+        save_to(&source,&AppSettings::default()).unwrap();
+        let src=Memory::default(); src.put("codex-default","fixture-a").unwrap();src.put("kimi-default","fixture-b").unwrap();
+        let dst=FailAfterWrite{memory:Memory::default(),puts:std::cell::Cell::new(0)};
+        dst.memory.put("codex","original").unwrap();
+        assert!(import_config_transaction(&source,&target,&src,&dst,ImportMode::Overwrite,
+            |_| panic!("must not commit failed credentials")).is_err());
+        assert_eq!(dst.memory.0.borrow().len(),1);
+        assert_eq!(dst.get("codex").unwrap().as_deref(),Some("original"));
+        assert!(!target.exists());
+    }
     impl SecretStore for Memory {
         fn get(&self,id:&str)->Result<Option<String>,String>{Ok(self.0.borrow().get(id).cloned())}
         fn put(&self,id:&str,key:&str)->Result<(),String>{if self.1{return Err("failure".into())} self.0.borrow_mut().insert(id.into(),key.into());Ok(())}
         fn delete(&self,id:&str)->Result<(),String>{self.0.borrow_mut().remove(id);Ok(())}
     }
     #[test] fn damaged_file_is_unchanged(){let d=tempfile::tempdir().unwrap();let p=d.path().join("settings.json");fs::write(&p,b"broken").unwrap();assert!(load_from(&p,&Memory::default()).is_err());assert_eq!(fs::read(p).unwrap(),b"broken");}
+    #[test]
+    fn import_readback_failure_rolls_back_and_source_store_wins_over_plaintext() {
+        struct WrongReadback(Memory);
+        impl SecretStore for WrongReadback {
+            fn get(&self,id:&str)->Result<Option<String>,String>{Ok(self.0.get(id)?.map(|_|"wrong".into()))}
+            fn put(&self,id:&str,value:&str)->Result<(),String>{self.0.put(id,value)}
+            fn delete(&self,id:&str)->Result<(),String>{self.0.delete(id)}
+        }
+        let d=tempfile::tempdir().unwrap();let source=d.path().join("source.json");let target=d.path().join("target.json");
+        fs::write(&source,r#"{"providers":{"codex":{"enabled":true,"order":0,"api_key":"plain-fixture"}}}"#).unwrap();
+        let src=Memory::default();src.put("codex","secure-fixture").unwrap();
+        let (_,snapshot)=import_snapshot(&source,&src).unwrap();
+        assert_eq!(snapshot["codex"],"secure-fixture");
+        let dst=WrongReadback(Memory::default());
+        assert!(import_config_transaction(&source,&target,&src,&dst,ImportMode::Overwrite,
+            |_|panic!("readback mismatch cannot commit")).is_err());
+        assert!(dst.0.0.borrow().is_empty());assert!(!target.exists());
+    }
     #[test] fn migrates_only_after_verified_store(){
         let d=tempfile::tempdir().unwrap();let p=d.path().join("settings.json");
         let old=r#"{"providers":{"claude":{"enabled":true,"order":0,"api_key":"fixture-secret"}}}"#;

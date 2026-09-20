@@ -1,4 +1,4 @@
-import {useState,useEffect,useRef,useMemo} from "react";
+import {useState,useEffect,useRef,useMemo,useCallback} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {listen} from "@tauri-apps/api/event";
 import {UsageRing} from "./UsageRing";
@@ -45,8 +45,15 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     }
   };
 
-  const startCollapse = () => {
-    if (free || insideRef.current || pinned || settings.auto_collapse_seconds === 0) return;
+  const cancelCollapse = useCallback(() => {
+    if (collapseTimer.current) clearTimeout(collapseTimer.current);
+    collapseTimer.current = null;
+    setCollapsing(false);
+  }, []);
+
+  const startCollapse = useCallback(() => {
+    if (free || insideRef.current || detailPointer.current || draggingRef.current || pinned || settings.auto_collapse_seconds === 0) return;
+    if (collapseTimer.current) return;
     if (settings.reduce_motion) {
       setCollapsed(true);
       setCollapsing(false);
@@ -54,16 +61,17 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       return;
     }
     setCollapsing(true);
-    if (collapseTimer.current) clearTimeout(collapseTimer.current);
     collapseTimer.current = setTimeout(() => {
+      collapseTimer.current = null;
+      if (insideRef.current || detailPointer.current || draggingRef.current) { setCollapsing(false); return; }
       setCollapsing(false);
       setCollapsed(true);
       void invoke("set_window_state", { state: "collapsed" });
     }, 280);
-  };
+  }, [free, pinned, settings.auto_collapse_seconds, settings.reduce_motion]);
 
   const handleExpand = () => {
-    if (collapseTimer.current) clearTimeout(collapseTimer.current);
+    if (collapseTimer.current) clearTimeout(collapseTimer.current); collapseTimer.current = null;
     setCollapsing(false);
     setCollapsed(false);
     insideRef.current = true;
@@ -75,7 +83,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     let alive=true;
     const stop=listen("reveal-rail",()=>{
       if(alive){
-        if (collapseTimer.current) clearTimeout(collapseTimer.current);
+        if (collapseTimer.current) clearTimeout(collapseTimer.current); collapseTimer.current = null;
         setCollapsing(false);
         setPinned(true);
         setCollapsed(false);
@@ -97,7 +105,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     const stop=listen<string>("window-state-changed",e=>{
       if(alive){
         if (e.payload === "rail") {
-          if (collapseTimer.current) clearTimeout(collapseTimer.current);
+          if (collapseTimer.current) clearTimeout(collapseTimer.current); collapseTimer.current = null;
           setCollapsing(false);
           setCollapsed(false);
         } else if (e.payload === "collapsed") {
@@ -117,7 +125,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       }
     });
     return () => { alive = false; void stop.then(f => f()); };
-  }, [settings.auto_collapse_seconds, pinned, free]);
+  }, [startCollapse, settings.auto_collapse_seconds, pinned, free]);
 
   useEffect(()=>{
     const onBlur=()=>{
@@ -138,29 +146,13 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
     };
   },[]);
 
-  useEffect(()=>{
-    if(draggingRef.current)return;
-    if(free){
-      if (collapseTimer.current) clearTimeout(collapseTimer.current);
-      setCollapsed(false);
-      setCollapsing(false);
-      return;
-    }
-    if(inside||pinned||settings.auto_collapse_seconds===0){
-      if(settings.auto_collapse_seconds===0){
-        if (collapseTimer.current) clearTimeout(collapseTimer.current);
-        setCollapsed(false);
-        setCollapsing(false);
-      }
-      return;
-    }
-    const t=setTimeout(()=>{
-      setHovered(null);
-      void invoke("hide_detail");
-      startCollapse();
-    },settings.auto_collapse_seconds*1000);
-    return()=>clearTimeout(t);
-  },[inside,pinned,free,settings.auto_collapse_seconds]);
+  // Rust owns inactivity timing and includes the separate detail window.
+  // Changing animation policy cancels the old transition; the next request uses it.
+  useEffect(() => {
+    cancelCollapse();
+    if (free || settings.auto_collapse_seconds === 0) setCollapsed(false);
+    return cancelCollapse;
+  }, [free, settings.auto_collapse_seconds, settings.reduce_motion, cancelCollapse]);
 
   useEffect(()=>{
     const stop=listen<{account_id:string;request_id:number;phase:string}>("refresh-state",e=>{
@@ -225,6 +217,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   useEffect(()=>{
     const stop=listen<boolean>("detail-pointer",e=>{
       detailPointer.current=e.payload;
+      if (e.payload) cancelCollapse();
       if(!e.payload&&!insideRef.current){
         if(leave.current)clearTimeout(leave.current);
         leave.current=setTimeout(()=>{
@@ -236,7 +229,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       }
     });
     return()=>{void stop.then(f=>f())};
-  },[]);
+  },[cancelCollapse]);
 
   useEffect(()=>{
     if(!hovered)return;
