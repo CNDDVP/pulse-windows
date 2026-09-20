@@ -2,7 +2,7 @@
 
 基线：上游 tag `v1.2.1`（commit `68fa829fcec85e3d44dd53801447809db714cde7`，2026-09-18）。
 本地对应：dev 仓库 master（对齐开始于 v0.3.1，HEAD `d2389da` 之后；当前版本见仓库根 CHANGELOG）。
-上游克隆：`（上游克隆）`（浅克隆，固定 tag）。
+上游克隆：`D:i-programs\Pulse-upstream`（浅克隆，固定 tag）。
 
 ## 差异清单（持续更新）
 
