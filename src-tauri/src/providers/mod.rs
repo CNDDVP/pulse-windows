@@ -18,6 +18,10 @@ pub const IMPLEMENTED:&[&str]=&[
     "volcengine","command-code","devin","ollama","xiaomi"
 ];
 
+pub fn is_network_error(code: &str) -> bool {
+    matches!(code, "timeout" | "dns" | "proxy" | "tls" | "connect" | "network")
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProxyDetection {
     pub mode: String,
@@ -333,6 +337,22 @@ mod tests {
             port: 1080,
         };
         assert!(client_with_proxy(&socks_cfg).is_ok());
+    }
+
+    #[test]
+    fn test_is_network_error() {
+        assert!(is_network_error("timeout"));
+        assert!(is_network_error("dns"));
+        assert!(is_network_error("proxy"));
+        assert!(is_network_error("tls"));
+        assert!(is_network_error("connect"));
+        assert!(is_network_error("network"));
+
+        assert!(!is_network_error("rate_limited"));
+        assert!(!is_network_error("auth"));
+        assert!(!is_network_error("forbidden"));
+        assert!(!is_network_error("server"));
+        assert!(!is_network_error("schema"));
     }
 }
 

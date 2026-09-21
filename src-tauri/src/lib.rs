@@ -65,16 +65,23 @@ impl AppState {
         if settings.monitoring_setup_completed && !settings.authorized_providers.contains(&cfg.provider_id) {
             return Err(format!("服务商 {} 未授权监控；请在常规设置中开启授权", cfg.provider_id));
         }
-        // Honour the provider's backoff window from the last failed attempt.
+        // Honour the provider's backoff window from the last failed attempt (only for rate_limited,
+        // while network connectivity errors allow immediate manual retry from the rail).
         {
             let schedule=state.schedule.lock().await;
             if let Some((at,failures))=schedule.get(account_id){
                 if *failures>0 && *at>Instant::now(){
-                    let left=at.duration_since(Instant::now()).as_secs().max(1);
-                    let msg=format!("服务商限流/退避中，约 {} 秒后可重试",left);
-                    // B20：退避拒绝也发 finished 事件，前端/诊断能看到点击不是无响应。
-                    let _=app.emit("refresh-state",serde_json::json!({"account_id":account_id,"request_id":0,"phase":"finished","ok":false,"kind":"backoff","message":msg}));
-                    return Err(msg);
+                    let is_rate_limited = {
+                        let cached = state.cached_usages.lock().await;
+                        cached.iter().find(|u| u.account_id == account_id).and_then(|u| u.error_code.as_deref()) == Some("rate_limited")
+                    };
+                    if is_rate_limited {
+                        let left=at.duration_since(Instant::now()).as_secs().max(1);
+                        let msg=format!("服务商限流/退避中，约 {} 秒后可重试",left);
+                        // B20：退避拒绝也发 finished 事件，前端/诊断能看到点击不是无响应。
+                        let _=app.emit("refresh-state",serde_json::json!({"account_id":account_id,"request_id":0,"phase":"finished","ok":false,"kind":"backoff","message":msg}));
+                        return Err(msg);
+                    }
                 }
             }
         }
@@ -255,8 +262,12 @@ pub async fn refresh_usages_and_emit(app:&AppHandle,manual:bool)->Result<Refresh
         // 手动刷新在途的账号由该请求负责写回，定时轮不再重复发起。
         if inflight.contains_key(id){cfg.enabled=false}
         else if manual {
-            // 手动刷新（A07）：仅在服务商限流/退避窗口内跳过，其余已启用账号立即发起
-            if schedule.get(id).is_some_and(|(at,failures)|*failures>0 && *at>now){cfg.enabled=false}
+            // 手动刷新（A07）：仅在服务商 429 限流窗口内跳过，其余已启用账号（含网络错误）立即发起
+            let is_rate_limited = {
+                let cached = state.cached_usages.lock().await;
+                cached.iter().find(|u| &u.account_id == id).and_then(|u| u.error_code.as_deref()) == Some("rate_limited")
+            };
+            if is_rate_limited && schedule.get(id).is_some_and(|(at,failures)|*failures>0 && *at>now){cfg.enabled=false}
         } else if schedule.get(id).is_some_and(|(at,_)|*at>now){
             // 定时轮调度：正常刷新周期未到期则跳过
             cfg.enabled=false
@@ -333,7 +344,18 @@ pub async fn refresh_usages_and_emit(app:&AppHandle,manual:bool)->Result<Refresh
 
         let previous=cached.iter().find(|u|u.account_id==id);
         let failures=if fresh.state=="live"{0}else{schedule.get(&id).map(|v|v.1).unwrap_or(0).saturating_add(1)};
-        let delay=if failures==0{current_settings.refresh_interval_seconds}else{fresh.retry_after_seconds.unwrap_or((30u64.saturating_mul(1u64<<failures.min(6))).min(1800)).max(current_settings.refresh_interval_seconds)};
+        let is_net_err=fresh.error_code.as_deref().is_some_and(providers::is_network_error);
+        let delay=if failures==0{
+            current_settings.refresh_interval_seconds
+        } else if is_net_err {
+            fresh.retry_after_seconds.unwrap_or_else(|| match failures {
+                1 => 15,
+                2 => 30,
+                _ => 60,
+            })
+        } else {
+            fresh.retry_after_seconds.unwrap_or((30u64.saturating_mul(1u64<<failures.min(6))).min(1800)).max(current_settings.refresh_interval_seconds)
+        };
         schedule.insert(id.clone(),(Instant::now()+Duration::from_secs(delay),failures));
         let pin=current_settings.providers.get(&id).and_then(|c|c.primary_window.as_deref());
         let result=cache::reconcile_with_pin(fresh.clone(),previous,pin,cache::now());
@@ -409,7 +431,18 @@ pub async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderU
     let mut schedule=state.schedule.lock().await;
     let previous=cached.iter().find(|u|u.account_id==account_id);
     let failures=if fresh.state=="live"{0}else{schedule.get(account_id).map(|v|v.1).unwrap_or(0).saturating_add(1)};
-    let delay=if failures==0{current_settings.refresh_interval_seconds}else{fresh.retry_after_seconds.unwrap_or((30u64.saturating_mul(1u64<<failures.min(6))).min(1800)).max(current_settings.refresh_interval_seconds)};
+    let is_net_err=fresh.error_code.as_deref().is_some_and(providers::is_network_error);
+    let delay=if failures==0{
+        current_settings.refresh_interval_seconds
+    } else if is_net_err {
+        fresh.retry_after_seconds.unwrap_or_else(|| match failures {
+            1 => 15,
+            2 => 30,
+            _ => 60,
+        })
+    } else {
+        fresh.retry_after_seconds.unwrap_or((30u64.saturating_mul(1u64<<failures.min(6))).min(1800)).max(current_settings.refresh_interval_seconds)
+    };
     schedule.insert(account_id.to_string(),(Instant::now()+Duration::from_secs(delay),failures));
     let pin=current_settings.providers.get(account_id).and_then(|c|c.primary_window.as_deref());
     let result=cache::reconcile_with_pin(fresh,previous,pin,cache::now());

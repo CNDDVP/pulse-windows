@@ -40,7 +40,11 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,onDoubleCli
   const secLive=sec&&["live","stale"].includes(usage.state)&&sec.id!==cfg?.primary_window;
   const secPct=sec?(settings.display_mode==="remaining"?Math.max(0,100-sec.used_percent):sec.used_percent):0;
   const secColor=sec?(sec.exhausted||sec.used_percent>=red?"#ef4444":sec.used_percent>=amber?"#f97316":"#10b981"):"#71717a";
-  return <button ref={ref} data-account={dataKey??usage.account_id} onClick={onClick} onDoubleClick={onDoubleClick} onMouseEnter={onHover} onFocus={onHover} title={`${usage.display_name} ${percentText(usage,settings.display_mode)}`} className="shrink-0 flex flex-col items-center p-1 text-xs rounded-lg focus:outline-none hover:scale-105 transition-transform duration-150">
+  const isErr=!["live","stale"].includes(usage.state);
+  const ringTitle=isErr
+    ?`${usage.display_name}（${usage.error_message||"连接异常"} · 点击重新测试连接）`
+    : `${usage.display_name} ${percentText(usage,settings.display_mode)}`;
+  return <button ref={ref} data-account={dataKey??usage.account_id} onClick={onClick} onDoubleClick={onDoubleClick} onMouseEnter={onHover} onFocus={onHover} title={ringTitle} className="shrink-0 flex flex-col items-center p-1 text-xs rounded-lg focus:outline-none hover:scale-105 transition-transform duration-150">
     <div className="relative w-11 h-11 flex items-center justify-center">
       <svg viewBox="0 0 44 44" className="w-11 h-11 -rotate-90">
         <circle cx="22" cy="22" r="18" fill="none" stroke={dark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.08)"} strokeWidth="2.8"/>
