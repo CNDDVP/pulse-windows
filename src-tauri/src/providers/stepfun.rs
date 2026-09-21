@@ -10,9 +10,9 @@ fn problem(code: &str, msg: &str) -> ProviderUsage {
 }
 
 fn extract_device_id(token: &str) -> Option<String> {
-    for part in token.split("...") {
+    for part in token.rsplit("...") {
         if let Some(c) = credentials::claims(part) {
-            if let Some(dev_id) = c.get("device_id").and_then(Value::as_str) {
+            if let Some(dev_id) = c.get("device_id").and_then(Value::as_str).filter(|s|!s.is_empty()) {
                 return Some(dev_id.to_string());
             }
         }
@@ -20,7 +20,7 @@ fn extract_device_id(token: &str) -> Option<String> {
     None
 }
 
-async fn request(req: reqwest::RequestBuilder, label: &str) -> Result<Value, ProviderUsage> {
+async fn request(req: reqwest::RequestBuilder, label: &str, plan_rpc: bool) -> Result<Value, ProviderUsage> {
     let response = req.send().await.map_err(|e| problem(if e.is_timeout() {"timeout"} else {"network"}, &format!("{label}：连接失败或超时")))?;
     let status=response.status().as_u16();
     if !response.status().is_success() {
@@ -30,8 +30,14 @@ async fn request(req: reqwest::RequestBuilder, label: &str) -> Result<Value, Pro
         return Err(error);
     }
     let value=response.json::<Value>().await.map_err(|_|problem("schema",&format!("{label}：响应格式无效")))?;
-    if !value.is_object() || value.get("status").is_some_and(|s| s.as_i64()!=Some(0) && s.as_str()!=Some("0")) {
-        return Err(problem("schema",&format!("{label}：服务未返回成功数据")));
+    validate_response(value,label,plan_rpc)
+}
+
+// Dashboard RPC success is 1. The cash REST endpoint has no such status contract.
+fn validate_response(value: Value,label: &str,plan_rpc: bool)->Result<Value,ProviderUsage> {
+    if !value.is_object() {return Err(problem("schema",&format!("{label}：响应格式无效")));}
+    if plan_rpc && !matches!(value.get("status"),Some(v) if v.as_i64()==Some(1)||v.as_str()==Some("1")) {
+        return Err(problem("server",&format!("{label}：控制台业务状态未成功")));
     }
     Ok(value)
 }
@@ -71,11 +77,11 @@ pub async fn fetch(secret: &str, http: &reqwest::Client) -> Result<Value, Provid
             .header("Oasis-Platform","web").header("Oasis-Token",token)
             .header("Origin","https://platform.stepfun.com").header("Referer","https://platform.stepfun.com/");
         let cookie=if let Some(device)=device {req=req.header("Oasis-Webid",&device);format!("Oasis-Token={token}; Oasis-Webid={device}")} else {format!("Oasis-Token={token}")};
-        Some(request(req.header("Cookie",cookie).json(&serde_json::json!({})),"套餐").await)
+        Some(request(req.header("Cookie",cookie).json(&serde_json::json!({})),"套餐",true).await)
     };
     let cash=async {
         let key=creds.api_key.as_ref()?;
-        Some(request(http.get("https://api.stepfun.com/v1/accounts").bearer_auth(key).header("Accept","application/json"),"API 余额").await)
+        Some(request(http.get("https://api.stepfun.com/v1/accounts").bearer_auth(key).header("Accept","application/json"),"API 余额",false).await)
     };
     let (plan,cash)=tokio::join!(plan,cash);
     merge(plan,cash)
@@ -94,6 +100,26 @@ pub fn source_label(secret: &str) -> &'static str {
 #[cfg(test)] mod tests {
     use super::*;
     use serde_json::json;
+    #[test] fn rpc_success_is_one_not_zero() {
+        for status in [json!(1),json!("1")] {
+            let mut value=plan();value["status"]=status;
+            let accepted=validate_response(value,"test",true).unwrap();
+            let merged=merge(Some(Ok(accepted)),None).unwrap();
+            assert_eq!(super::super::parsers::parse("stepfun",&merged,0).state,"live");
+        }
+        for status in [json!(0),json!("0"),json!(2),Value::Null,json!(false)] {
+            let mut value=plan();value["status"]=status;
+            assert!(validate_response(value,"test",true).is_err());
+        }
+        assert!(validate_response(json!({"balance":15}),"test",false).is_ok());
+        assert!(validate_response(json!({"balance":15}),"test",true).is_err());
+    }
+    #[test] fn refresh_device_claim_takes_precedence() {
+        use base64::{Engine,engine::general_purpose::URL_SAFE_NO_PAD};
+        let jwt=|id:&str| format!("e30.{}.test",URL_SAFE_NO_PAD.encode(json!({"device_id":id}).to_string()));
+        assert_eq!(extract_device_id(&format!("{}...{}",jwt("access"),jwt("refresh"))).as_deref(),Some("refresh"));
+        assert_eq!(extract_device_id(&jwt("single")).as_deref(),Some("single"));
+    }
     fn plan()->Value {json!({"plan_family":2,"plan_credit_rate_limit":{"subscription_credit_left_rate":0.9925,"subscription_credit_reset_time":"1792465684","credit_buckets":[{"credit_residual":1588018947.0}]}})}
     #[test] fn dual_results_keep_money_and_credit() {
         let v=merge(Some(Ok(plan())),Some(Ok(json!({"balance":15.0})))).unwrap();
