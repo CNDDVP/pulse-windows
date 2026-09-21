@@ -543,6 +543,24 @@ pub fn get_detail_layout() -> Option<DetailLayout> {
     DETAIL_LAYOUT.lock().ok().and_then(|v|v.clone())
 }
 
+/// 内容驱动的详情窗口高度自适应：前端测量卡片实际高度（逻辑像素）后调用。
+/// 顶边保持不动、向下伸缩；钳制在屏幕工作区高度的 90% 内，超限时内容走滚动。
+#[tauri::command]
+pub fn resize_detail(height:f64,app:AppHandle)->Result<(),String>{
+    let width=match DETAIL_LAYOUT.lock(){
+        Ok(g)=>g.as_ref().map(|l|l.width).unwrap_or(360),
+        Err(_)=>return Ok(()),
+    };
+    let Some(w)=app.get_webview_window("detail")else{return Ok(())};
+    let scale=w.scale_factor().unwrap_or(1.0);
+    let monitor=w.current_monitor().ok().flatten().or_else(||w.primary_monitor().ok().flatten());
+    let max_h=monitor.map(|m|((m.work_area().size.height as f64)*0.9).round() as u32).unwrap_or(1600);
+    let dh=((height*scale).round() as u32).clamp(120,max_h);
+    let pos=w.outer_position().map_err(|_|"无法读取详情窗口位置".to_string())?;
+    crate::window::place_at(&w,pos.x,pos.y,width,dh);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn detail_layout_ready(app:AppHandle, request_id:u64)->Result<bool,String>{
     let handle=app.clone();

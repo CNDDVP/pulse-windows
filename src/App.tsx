@@ -1,5 +1,5 @@
 import { detailViewportReady, waitForDetailLayout } from "./detailLayout";
-import {useEffect,useState} from "react";
+import {useEffect,useRef,useState} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {listen} from "@tauri-apps/api/event";
 import {getCurrentWebviewWindow} from "@tauri-apps/api/webviewWindow";
@@ -65,11 +65,26 @@ function DetailOverlay() {
   // 窗口在 rail 正下/正上时内容贴边渲染，否则卡片矮时垂直居中会在窗口顶留出大片透明，
   // 视觉上像"详情卡离悬浮栏很远"。
   const alignClass=placement==="top"?"items-start":placement==="bottom"?"items-end":"items-center";
+  // 高度自适应：测量卡片实际渲染高度（含容器 padding），窗口高随之伸缩（resize_detail
+  // 后端再按工作区钳制）。仅当目标高度与当前相差 >8px 时调用，避免与窗口变化互相触发循环。
+  const cardWrapRef=useRef<HTMLDivElement>(null);
+  const lastHeightRef=useRef(0);
+  useEffect(()=>{
+    const el=cardWrapRef.current;if(!el||!usage||!settings)return;
+    const target=Math.ceil(el.getBoundingClientRect().height)+16;
+    const current=window.innerHeight;
+    if(Math.abs(target-current)>8&&lastHeightRef.current!==target){
+      lastHeightRef.current=target;
+      void invoke("resize_detail",{height:target}).catch(()=>{});
+    }
+  },[usage,settings,layout,accountId]);
   return <div className={`w-full h-full p-2 flex ${justifyClass} ${alignClass}`}
     onMouseEnter={()=>void invoke("set_detail_hover",{hovered:true})}
     onMouseLeave={()=>void invoke("set_detail_hover",{hovered:false})}
     onContextMenu={e=>e.preventDefault()}>
+    <div ref={cardWrapRef} className="contents">
     {usage&&settings?<UsageDetailCard usage={usage} settings={settings} placement={placement}/>:null}
+    </div>
   </div>;
 }
 
