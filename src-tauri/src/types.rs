@@ -7,7 +7,7 @@ pub const PROVIDERS: &[(&str, &str)] = &[
     ("ollama", "Ollama Cloud"), ("zai", "z.ai"), ("zhipu", "Zhipu"),
     ("minimax", "MiniMax"), ("minimax-cn", "MiniMax CN"), ("volcengine", "Volcengine"),
     ("command-code", "Command Code"), ("deepseek", "DeepSeek"), ("devin", "Devin"),
-    ("xiaomi", "小米 Coding Plan"),
+    ("xiaomi", "小米 Coding Plan"), ("stepfun", "StepFun"),
 ];
 pub fn name(id: &str) -> String { PROVIDERS.iter().find(|p| p.0 == id).map(|p| p.1).unwrap_or(id).into() }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

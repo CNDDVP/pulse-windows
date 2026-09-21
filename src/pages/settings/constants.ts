@@ -4,8 +4,8 @@ export const PROVIDERS: [string, string][] = [
   ["kimi", "Kimi Code"], ["opencode", "OpenCode Go"], ["antigravity", "Antigravity"], ["claude", "Claude Code"],
   ["codex", "Codex"], ["cursor", "Cursor"], ["copilot", "GitHub Copilot"], ["deepseek", "DeepSeek"], ["grok", "Grok"],
   ["grok-bot", "Grok Bot"], ["ollama", "Ollama Cloud"], ["zai", "z.ai"], ["zhipu", "Zhipu (智谱)"], ["minimax", "MiniMax"],
-  ["minimax-cn", "MiniMax CN"], ["volcengine", "Volcengine (火山方舟)"], ["command-code", "Command Code"], ["devin", "Devin"],
-  ["xiaomi", "小米 Coding Plan"]
+  ["minimax-cn", "MiniMax CN"],  ["volcengine", "Volcengine (火山方舟)"], ["command-code", "Command Code"], ["devin", "Devin"],
+  ["xiaomi", "小米 Coding Plan"], ["stepfun", "StepFun (阶跃星辰)"]
 ];
 
 export const providerName = (id: string) => PROVIDERS.find(p => p[0] === id)?.[1] || id;
@@ -20,6 +20,7 @@ export const ROUTES: Record<string, { local?: string; manual?: string }> = {
   kimi: { local: "Kimi Code CLI 登录", manual: "Bearer / Refresh Token" },
   opencode: { local: "OpenCode 本地登录", manual: "API Key" },
   deepseek: { manual: "API Key（sk-…）" },
+  stepfun: { manual: "API Key (默认或 Step Plan 专属 Key)" },
   grok: { manual: "xAI Token" },
   "grok-bot": { local: "Cursor 编辑器登录（state.vscdb）", manual: "Cursor Session Token" },
   ollama: { manual: "Session Cookie（wos-session=…）" },
@@ -36,6 +37,7 @@ export const getPlaceholder = (pid: string) => {
     case "ollama": return "Session Cookie (如 wos-session=...)";
     case "devin": return "API Token [组织ID] 或留空读取 Windsurf";
     case "deepseek": return "sk-... (DeepSeek API Key)";
+    case "stepfun": return "输入 StepFun API Key（可前往 platform.stepfun.com 获取）";
     case "kimi": return "Bearer Token / Refresh Token";
     default: return "输入 API Key / Token 凭据";
   }

@@ -15,7 +15,7 @@ use serde_json::Value;
 pub const IMPLEMENTED:&[&str]=&[
     "claude","codex","antigravity","cursor","copilot","grok","grok-bot",
     "opencode","kimi","zai","zhipu","minimax","minimax-cn","deepseek",
-    "volcengine","command-code","devin","ollama","xiaomi"
+    "volcengine","command-code","devin","ollama","xiaomi","stepfun"
 ];
 
 pub fn is_network_error(code: &str) -> bool {
@@ -256,7 +256,9 @@ async fn fetch_inner(account:&str,cfg:&ProviderConfig,http:&reqwest::Client)->Pr
         "zhipu"=>"https://open.bigmodel.cn/api/monitor/usage/quota/limit",
         "minimax"=>"https://api.minimax.io/v1/token_plan/remains",
         "minimax-cn"=>"https://api.minimaxi.com/v1/token_plan/remains",
-        "deepseek"=>"https://api.deepseek.com/user/balance",_=>return ProviderUsage::problem(id,"unsupported","此 Provider 尚未配置服务地址")};
+        "deepseek"=>"https://api.deepseek.com/user/balance",
+        "stepfun"=>"https://api.stepfun.com/v1/accounts",
+        _=>return ProviderUsage::problem(id,"unsupported","此 Provider 尚未配置服务地址")};
     let mut request=if id=="grok-bot"{http.post(endpoint).json(&serde_json::json!({}))}else{http.get(endpoint)};
     if id=="cursor" || id=="grok-bot"{
         let Some(cookie)=credentials::cursor_cookie(&credential.token)else{return ProviderUsage::problem(id,"auth","Cursor 登录已失效或格式不匹配，请重新登录编辑器")};
@@ -269,6 +271,9 @@ async fn fetch_inner(account:&str,cfg:&ProviderConfig,http:&reqwest::Client)->Pr
     let mut answer=response(id,request.header("Accept","application/json")).await;
     if ["minimax","minimax-cn"].contains(&id) && answer.as_ref().err().and_then(|r|r.error_code.as_deref())==Some("not_found"){
         answer=response(id,http.get(endpoint.replace("/v1/token_plan/remains","/v1/api/openplatform/coding_plan/remains")).bearer_auth(&credential.token)).await;
+    }
+    if id=="stepfun" && answer.as_ref().err().and_then(|r|r.error_code.as_deref())==Some("not_found"){
+        answer=response(id,http.get("https://api.stepfun.com/step_plan/v1/accounts").bearer_auth(&credential.token).header("Accept","application/json")).await;
     }
     let mut r=match answer {Ok(v)=>parsers::parse(id,&v,chrono::Utc::now().timestamp()),Err(r)=>r};
     r.scope=scope_of(&credential.token);

@@ -250,6 +250,55 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
             if !reading.balances.is_empty(){reading.state="live".into();reading.error_code=None;reading.error_message=None;}
             return reading;
         }
+        "stepfun"=>{
+            let mut reading=ProviderUsage::reading(id,vec![]);
+            if let Some(limits)=v["limits"].as_array(){
+                for (i,l) in limits.iter().enumerate(){
+                    if let Some(p)=number(&l["percent"]).or_else(||number(&l["percentage"])){
+                        let name=l["name"].as_str().unwrap_or("Credit 额度");
+                        add(&mut w,window(&format!("limit-{i}"),name,p,&l["reset_at"],None));
+                    }
+                }
+            }
+            if let Some(plan)=v.get("token_plan").or_else(||v.get("step_plan")){
+                if let (Some(used),Some(total))=(number(&plan["used_credit"]).or_else(||number(&plan["used"])),number(&plan["total_credit"]).or_else(||number(&plan["total"]))){
+                    if total>0.0{add(&mut w,window("plan","Credit 套餐额度",(used/total*100.0).max(0.0),&plan["expire_at"],None));}
+                }
+            }
+            let total_balance=number(&v["balance"]);
+            let cash=number(&v["total_cash_balance"]);
+            let voucher=number(&v["total_voucher_balance"]);
+            let credits=number(&v["credits"]).or_else(||number(&v["credit"])).or_else(||number(&v["total_credit"]));
+
+            if let Some(amt)=total_balance{
+                reading.balances.push(Balance{currency:"CNY".into(),amount:amt});
+            }else if let (Some(c),Some(vo))=(cash,voucher){
+                reading.balances.push(Balance{currency:"CNY".into(),amount:c+vo});
+            }else if let Some(c)=cash{
+                reading.balances.push(Balance{currency:"CNY".into(),amount:c});
+            }else if let Some(vo)=voucher{
+                reading.balances.push(Balance{currency:"CNY".into(),amount:vo});
+            }
+
+            if let Some(c)=credits{
+                reading.balances.push(Balance{currency:"Credit".into(),amount:c});
+            }
+
+            if let Some(plan_name)=v.pointer("/plan/name").and_then(Value::as_str)
+                .or_else(||v.pointer("/token_plan/name").and_then(Value::as_str))
+                .or_else(||v["plan_name"].as_str()){
+                reading.plan_name=Some(normalize_plan_name(plan_name));
+            }
+
+            reading.windows=w;
+            reading.primary_percent=reading.windows.iter().map(|win|win.used_percent).reduce(f64::max);
+            if !reading.windows.is_empty()||!reading.balances.is_empty(){
+                reading.state="live".into();
+                reading.error_code=None;
+                reading.error_message=None;
+            }
+            return reading;
+        }
         _=>return ProviderUsage::problem(id,"unsupported","该数据路线尚未实现，不能报告额度"),
     }
     let mut reading=ProviderUsage::reading(id,w);
@@ -285,7 +334,40 @@ fn count_window(id:&str,name:&str,v:&Value,seconds:Option<i64>)->Option<UsageWin
 
 #[cfg(test)]mod tests{
     use super::*;use serde_json::json;
-    #[test]fn empty_is_not_zero(){for id in ["claude","codex","kimi","cursor","copilot","deepseek","grok-bot","zai","minimax","volcengine","command-code","devin","ollama"]{let r=parse(id,&json!({}),0);assert_ne!(r.state,"live","{id}");assert_eq!(r.primary_percent,None);}}
+    #[test]fn empty_is_not_zero(){for id in ["claude","codex","kimi","cursor","copilot","deepseek","grok-bot","zai","minimax","volcengine","command-code","devin","ollama","stepfun"]{let r=parse(id,&json!({}),0);assert_ne!(r.state,"live","{id}");assert_eq!(r.primary_percent,None);}}
+    #[test]fn stepfun_standard_account_balance(){
+        let v=json!({
+            "object":"account",
+            "type":"prepaid",
+            "balance":10.5,
+            "total_cash_balance":5.0,
+            "total_voucher_balance":5.5
+        });
+        let r=parse("stepfun",&v,0);
+        assert_eq!(r.state,"live");
+        assert_eq!(r.balances.len(),1);
+        assert_eq!(r.balances[0].currency,"CNY");
+        assert_eq!(r.balances[0].amount,10.5);
+    }
+    #[test]fn stepfun_credits_and_plan(){
+        let v=json!({
+            "credits":400000000.0,
+            "token_plan":{
+                "name":"Flash Plus",
+                "used_credit":40000000.0,
+                "total_credit":1600000000.0,
+                "expire_at":"2026-07-01T00:00:00Z"
+            }
+        });
+        let r=parse("stepfun",&v,0);
+        assert_eq!(r.state,"live");
+        assert_eq!(r.plan_name.as_deref(),Some("Flash Plus"));
+        assert_eq!(r.balances[0].currency,"Credit");
+        assert_eq!(r.balances[0].amount,400000000.0);
+        assert_eq!(r.windows.len(),1);
+        assert_eq!(r.windows[0].name,"Credit 套餐额度");
+        assert_eq!(r.windows[0].used_percent,2.5);
+    }
     #[test]fn claude_current_and_legacy(){assert_eq!(parse("claude",&json!({"five_hour":{"utilization":30.0}}),0).windows[0].used_percent,30.0);assert_eq!(parse("claude",&json!({"limits":[{"kind":"session","percent":42.0}]}),0).windows[0].used_percent,42.0);}
     #[test]fn cursor_percent_not_fraction(){let r=parse("cursor",&json!({"individualUsage":{"plan":{"autoPercentUsed":42.0}}}),0);assert_eq!(r.windows[0].used_percent,42.0);assert_eq!(r.windows[0].used_fraction,0.42);}
     #[test]fn kimi_string_counts_and_unknown_unit(){let r=parse("kimi",&json!({"usage":{"limit":"100","used":"42"}}),0);assert_eq!(r.windows[0].used_percent,42.0);assert_eq!(parse("kimi",&json!({"limits":[{"window":{"timeUnit":"TIME_UNIT_CENTURY","duration":1},"detail":{"limit":"100","used":"10"}}]}),0).windows.len(),0);}
