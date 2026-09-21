@@ -1,6 +1,7 @@
 import {useEffect,useState} from "react";
 import type {AppSettings,ProviderUsage} from "../types";
 import {resetText,forecast,forecastKind,timingWindows,balanceText,balanceLabel} from "../presentation";
+import {HourlyUsageChart} from "./HourlyUsageChart";
 export function UsageDetailCard({usage,settings,placement,cardRef}:{usage:ProviderUsage;settings:AppSettings;placement?: "left" | "right" | "top" | "bottom";cardRef?:React.Ref<HTMLElement>}){
   const [now,setNow]=useState(()=>Date.now());useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),10000);return()=>clearInterval(t)},[]);
   const timed=timingWindows(usage,settings.providers[usage.account_id]);
@@ -59,7 +60,19 @@ export function UsageDetailCard({usage,settings,placement,cardRef}:{usage:Provid
         </div>
       );
     })}
-    {usage.balances.map((b,i)=><p key={i} className="mt-3 text-base">{balanceLabel(usage.provider_id,b.currency)}：{balanceText(b.currency,b.amount)}</p>)}
+    {usage.balances.map((b,i)=>(
+      <div key={i} className="mt-3">
+        <p className="text-base font-medium">{balanceLabel(usage.provider_id,b.currency)}：{balanceText(b.currency,b.amount)}</p>
+        {b.expires_at && (
+          <p className="text-[11px] text-zinc-400 mt-0.5">
+            到期时间：{new Date(b.expires_at).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+          </p>
+        )}
+      </div>
+    ))}
+    {usage.hourly_usages && usage.hourly_usages.length > 0 && (
+      <HourlyUsageChart usages={usage.hourly_usages} compact={true} />
+    )}
     {!usage.windows.length&&!usage.balances.length&&!usage.error_message&&<p>尚无读数</p>}
     <p className="mt-3 text-[10px] text-zinc-500">{usage.source||"等待连接"}{usage.last_success_at&&` · 最近成功 ${new Date(usage.last_success_at).toLocaleString()}`}</p>
   </section>;

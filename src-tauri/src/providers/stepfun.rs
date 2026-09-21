@@ -34,57 +34,119 @@ async fn request(req: reqwest::RequestBuilder, label: &str, plan_rpc: bool) -> R
 }
 
 // Dashboard RPC success is 1. The cash REST endpoint has no such status contract.
-fn validate_response(value: Value,label: &str,plan_rpc: bool)->Result<Value,ProviderUsage> {
-    if !value.is_object() {return Err(problem("schema",&format!("{label}：响应格式无效")));}
-    if plan_rpc && !matches!(value.get("status"),Some(v) if v.as_i64()==Some(1)||v.as_str()==Some("1")) {
-        return Err(problem("server",&format!("{label}：控制台业务状态未成功")));
+fn validate_response(value: Value, label: &str, plan_rpc: bool) -> Result<Value, ProviderUsage> {
+    if !value.is_object() {
+        return Err(problem("schema", &format!("{label}：响应格式无效")));
+    }
+    if plan_rpc {
+        let is_ok = matches!(value.get("status"), Some(v) if v.as_i64() == Some(1) || v.as_str() == Some("1"));
+        if !is_ok {
+            let msg = value.get("message")
+                .or_else(|| value.get("msg"))
+                .or_else(|| value.get("error"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let msg_lower = msg.to_lowercase();
+            let (code, custom_msg) = if msg_lower.contains("embezzled") {
+                ("auth", "账号已在其他设备登录，当前 Token 已被踢出，请重新登录")
+            } else if msg_lower.contains("token expired") || msg_lower.contains("expired token") {
+                ("auth", "Token 已过期，请重新登录")
+            } else if msg_lower.contains("invalid credentials") || msg_lower.contains("invalid token") || msg_lower.contains("unauthorized") || msg_lower.contains("unauthenticated") {
+                ("auth", "登录凭据无效或未授权，请核对 Token")
+            } else if !msg.is_empty() {
+                ("server", msg)
+            } else {
+                ("server", "控制台业务状态未成功")
+            };
+            return Err(problem(code, &format!("{label}：{custom_msg}")));
+        }
     }
     Ok(value)
 }
 
-fn merge(plan: Option<Result<Value,ProviderUsage>>, cash: Option<Result<Value,ProviderUsage>>) -> Result<Value,ProviderUsage> {
-    let mut merged=serde_json::Map::new();
-    let mut warnings=Vec::new();
-    let mut failures=Vec::new();
-    let mut successes=0;
-    for (label,result,keys) in [
-        ("套餐",plan,vec!["plan_credit_rate_limit","five_hour_usage_left_rate","five_hour_usage_reset_time","weekly_usage_left_rate","weekly_usage_reset_time","plan_family","plan_name"]),
-        ("API 余额",cash,vec!["balance"])
+fn merge(
+    plan: Option<Result<Value, ProviderUsage>>,
+    cash: Option<Result<Value, ProviderUsage>>,
+    usages: Option<Result<Value, ProviderUsage>>,
+) -> Result<Value, ProviderUsage> {
+    let mut merged = serde_json::Map::new();
+    let mut warnings = Vec::new();
+    let mut failures = Vec::new();
+    let mut successes = 0;
+    for (label, result, keys) in [
+        ("套餐", plan, vec!["plan_credit_rate_limit","five_hour_usage_left_rate","five_hour_usage_reset_time","weekly_usage_left_rate","weekly_usage_reset_time","plan_family","plan_name"]),
+        ("API 余额", cash, vec!["balance"])
     ] {
         match result {
-            None=>warnings.push(format!("{label}：未配置对应凭据")),
-            Some(Err(e))=>{warnings.push(e.error_message.clone().unwrap_or_else(||format!("{label}：查询失败")));failures.push(e);},
-            Some(Ok(v))=>{
-                let selected:serde_json::Map<String,Value>=keys.into_iter().filter_map(|k|v.get(k).map(|v|(k.to_string(),v.clone()))).collect();
-                let parsed=super::parsers::parse("stepfun",&Value::Object(selected.clone()),0);
-                if parsed.state=="live" {merged.extend(selected);successes+=1;}
-                else {let e=problem("no_data",&format!("{label}：未返回可识别读数"));warnings.push(e.error_message.clone().unwrap());failures.push(e);}
+            None => warnings.push(format!("{label}：未配置对应凭据")),
+            Some(Err(e)) => { warnings.push(e.error_message.clone().unwrap_or_else(|| format!("{label}：查询失败"))); failures.push(e); },
+            Some(Ok(v)) => {
+                let selected: serde_json::Map<String, Value> = keys.into_iter().filter_map(|k| v.get(k).map(|v| (k.to_string(), v.clone()))).collect();
+                let parsed = super::parsers::parse("stepfun", &Value::Object(selected.clone()), 0);
+                if parsed.state == "live" { merged.extend(selected); successes += 1; }
+                else { let e = problem("no_data", &format!("{label}：未返回可识别读数")); warnings.push(e.error_message.clone().unwrap()); failures.push(e); }
             }
         }
     }
-    if successes==0 {return Err(failures.into_iter().next().unwrap_or_else(||problem("missing_credentials","未配置 StepFun 凭据")));}
-    if !warnings.is_empty(){merged.insert("token_warning".into(),Value::String(warnings.join("；")));}
+    if successes == 0 {
+        return Err(failures.into_iter().next().unwrap_or_else(|| problem("missing_credentials", "未配置 StepFun 凭据")));
+    }
+    if let Some(Ok(u)) = usages {
+        let list = u.get("usages").or_else(|| u.get("items")).or_else(|| u.get("records")).unwrap_or(&u);
+        if list.is_array() {
+            merged.insert("hourly_usages".into(), list.clone());
+        }
+    }
+    if !warnings.is_empty() {
+        merged.insert("token_warning".into(), Value::String(warnings.join("；")));
+    }
     Ok(Value::Object(merged))
 }
 
 pub async fn fetch(secret: &str, http: &reqwest::Client) -> Result<Value, ProviderUsage> {
-    let creds=credentials::parse_stepfun_credentials(secret);
-    let plan=async {
-        let token=creds.oasis_token.as_ref()?;
-        let device=extract_device_id(token);
-        let mut req=http.post("https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanRateLimit")
+    let creds = credentials::parse_stepfun_credentials(secret);
+    let plan = async {
+        let token = creds.oasis_token.as_ref()?;
+        let device = extract_device_id(token);
+        let mut req = http.post("https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanRateLimit")
             .header("Connect-Protocol-Version","1").header("Oasis-Appid","10300")
             .header("Oasis-Platform","web").header("Oasis-Token",token)
             .header("Origin","https://platform.stepfun.com").header("Referer","https://platform.stepfun.com/");
-        let cookie=if let Some(device)=device {req=req.header("Oasis-Webid",&device);format!("Oasis-Token={token}; Oasis-Webid={device}")} else {format!("Oasis-Token={token}")};
-        Some(request(req.header("Cookie",cookie).json(&serde_json::json!({})),"套餐",true).await)
+        let cookie = if let Some(device) = &device {
+            req = req.header("Oasis-Webid", device);
+            format!("Oasis-Token={token}; Oasis-Webid={device}")
+        } else {
+            format!("Oasis-Token={token}")
+        };
+        Some(request(req.header("Cookie", cookie).json(&serde_json::json!({})), "套餐", true).await)
     };
-    let cash=async {
-        let key=creds.api_key.as_ref()?;
-        Some(request(http.get("https://api.stepfun.com/v1/accounts").bearer_auth(key).header("Accept","application/json"),"API 余额",false).await)
+    let cash = async {
+        let key = creds.api_key.as_ref()?;
+        Some(request(http.get("https://api.stepfun.com/v1/accounts").bearer_auth(key).header("Accept","application/json"), "API 余额", false).await)
     };
-    let (plan,cash)=tokio::join!(plan,cash);
-    merge(plan,cash)
+    let usages = async {
+        let token = creds.oasis_token.as_ref()?;
+        let device = extract_device_id(token);
+        let from_time = chrono::Utc::now().timestamp().saturating_sub(86400);
+        let mut req = http.post("https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanUsages")
+            .header("Connect-Protocol-Version","1").header("Oasis-Appid","10300")
+            .header("Oasis-Platform","web").header("Oasis-Token",token)
+            .header("Origin","https://platform.stepfun.com").header("Referer","https://platform.stepfun.com/");
+        let cookie = if let Some(device) = &device {
+            req = req.header("Oasis-Webid", device);
+            format!("Oasis-Token={token}; Oasis-Webid={device}")
+        } else {
+            format!("Oasis-Token={token}")
+        };
+        let body = serde_json::json!({
+            "fromTime": from_time,
+            "pageSize": 200,
+            "page": 1
+        });
+        Some(request(req.header("Cookie", cookie).json(&body), "用量明细", true).await)
+    };
+    let (plan, cash, usages) = tokio::join!(plan, cash, usages);
+    merge(plan, cash, usages)
 }
 
 pub fn source_label(secret: &str) -> &'static str {
@@ -104,7 +166,7 @@ pub fn source_label(secret: &str) -> &'static str {
         for status in [json!(1),json!("1")] {
             let mut value=plan();value["status"]=status;
             let accepted=validate_response(value,"test",true).unwrap();
-            let merged=merge(Some(Ok(accepted)),None).unwrap();
+            let merged=merge(Some(Ok(accepted)),None,None).unwrap();
             assert_eq!(super::super::parsers::parse("stepfun",&merged,0).state,"live");
         }
         for status in [json!(0),json!("0"),json!(2),Value::Null,json!(false)] {
@@ -114,30 +176,44 @@ pub fn source_label(secret: &str) -> &'static str {
         assert!(validate_response(json!({"balance":15}),"test",false).is_ok());
         assert!(validate_response(json!({"balance":15}),"test",true).is_err());
     }
+    #[test] fn rpc_semantic_error_matching() {
+        let embezzled = json!({"status": 0, "message": "user session embezzled by another client"});
+        let err = validate_response(embezzled, "套餐", true).unwrap_err();
+        assert_eq!(err.error_code.as_deref(), Some("auth"));
+        assert!(err.error_message.unwrap().contains("账号已在其他设备登录"));
+
+        let expired = json!({"status": 0, "msg": "token expired"});
+        let err = validate_response(expired, "套餐", true).unwrap_err();
+        assert_eq!(err.error_code.as_deref(), Some("auth"));
+        assert!(err.error_message.unwrap().contains("Token 已过期"));
+    }
     #[test] fn refresh_device_claim_takes_precedence() {
         use base64::{Engine,engine::general_purpose::URL_SAFE_NO_PAD};
         let jwt=|id:&str| format!("e30.{}.test",URL_SAFE_NO_PAD.encode(json!({"device_id":id}).to_string()));
         assert_eq!(extract_device_id(&format!("{}...{}",jwt("access"),jwt("refresh"))).as_deref(),Some("refresh"));
         assert_eq!(extract_device_id(&jwt("single")).as_deref(),Some("single"));
     }
-    fn plan()->Value {json!({"plan_family":2,"plan_credit_rate_limit":{"subscription_credit_left_rate":0.9925,"subscription_credit_reset_time":"1792465684","credit_buckets":[{"credit_residual":1588018947.0}]}})}
-    #[test] fn dual_results_keep_money_and_credit() {
-        let v=merge(Some(Ok(plan())),Some(Ok(json!({"balance":15.0})))).unwrap();
+    fn plan()->Value {json!({"plan_family":2,"plan_credit_rate_limit":{"subscription_credit_left_rate":0.9925,"subscription_credit_reset_time":"1792465684","credit_buckets":[{"type":1,"credit_residual":1588018947.0},{"type":2,"credit_residual":500000.0,"expire_at":"2026-10-01T00:00:00Z"}]}})}
+    #[test] fn dual_results_keep_money_and_credit_and_topup() {
+        let v=merge(Some(Ok(plan())),Some(Ok(json!({"balance":15.0}))),None).unwrap();
         let r=super::super::parsers::parse("stepfun",&v,0);
-        assert_eq!(r.balances.len(),2);assert!(r.error_message.is_none());
+        assert_eq!(r.balances.len(),3);assert!(r.error_message.is_none());
         assert!(r.balances.iter().any(|b|b.currency=="CNY"&&b.amount==15.0));
+        assert!(r.balances.iter().any(|b|b.currency=="Credit"&&b.amount==1588018947.0));
+        assert!(r.balances.iter().any(|b|b.currency=="Credit-Topup"&&b.amount==500000.0&&b.expires_at.as_deref()==Some("2026-10-01T00:00:00+00:00")));
         assert_eq!(r.windows[0].used_percent,0.75);assert!(r.windows[0].resets_at.is_some());
         assert_eq!(r.windows[0].window_seconds,None);
     }
     #[test] fn partial_failure_keeps_other_source_and_actual_error() {
-        let v=merge(Some(Err(problem("network","套餐：网络失败"))),Some(Ok(json!({"balance":15.0})))).unwrap();
+        let v=merge(Some(Err(problem("network","套餐：网络失败"))),Some(Ok(json!({"balance":15.0}))),None).unwrap();
         assert_eq!(v["balance"],15.0);assert!(v["token_warning"].as_str().unwrap().contains("网络失败"));
-        let v=merge(Some(Ok(plan())),Some(Err(problem("auth","API 余额：凭据无效")))).unwrap();
+        let v=merge(Some(Ok(plan())),Some(Err(problem("auth","API 余额：凭据无效"))),None).unwrap();
         assert!(v.get("plan_credit_rate_limit").is_some());assert!(v["token_warning"].as_str().unwrap().contains("API 余额"));
     }
     #[test] fn zero_credit_and_missing_cash_are_distinct() {
         let mut p=plan();p["plan_credit_rate_limit"]["credit_buckets"][0]["credit_residual"]=json!(0);
-        let v=merge(Some(Ok(p)),Some(Ok(json!({"total_voucher_balance":26})))).unwrap();
+        p["plan_credit_rate_limit"]["credit_buckets"][1]["credit_residual"]=json!(0);
+        let v=merge(Some(Ok(p)),Some(Ok(json!({"total_voucher_balance":26}))),None).unwrap();
         let r=super::super::parsers::parse("stepfun",&v,0);
         assert_eq!(r.balances.len(),1);assert_eq!(r.balances[0].amount,0.0);
         assert!(r.error_message.unwrap().contains("API 余额"));

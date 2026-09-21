@@ -2,6 +2,7 @@ import {balanceText,balanceLabel} from "../presentation";
 import { connectCloseBridge, type CloseRequest } from "../closeBridge";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { AppSettings, HotkeySettings, MonitorOption, ProviderConfig, ProviderUsage, RefreshSummary } from "../types";
 import { ProviderIcon } from "../components/icons/ProviderIcons";
@@ -63,6 +64,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
   const [showStepfunApiKey, setShowStepfunApiKey] = useState<Record<string, boolean>>({});
   const [showStepfunOasisToken, setShowStepfunOasisToken] = useState<Record<string, boolean>>({});
   const [showStepfunHelp, setShowStepfunHelp] = useState(false);
+  const [webLoginLoading, setWebLoginLoading] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -79,6 +81,31 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
       invoke<boolean>("check_local_antigravity").then(setAntigravityDetected).catch(() => {});
     }
   }, [hasAntigravity]);
+
+  useEffect(() => {
+    const unlistenSuccess = listen<{ account_id: string }>("stepfun-login-success", event => {
+      const aid = event.payload.account_id;
+      setWebLoginLoading(s => ({ ...s, [aid]: false }));
+      showToast("success", "阶跃星辰登录成功，凭据已自动保存并更新！");
+      setStepfunCredentials(s => ({ ...s, [aid]: { apiKey: "", oasisToken: "" } }));
+      invoke<AppSettings>("get_settings")
+        .then(saved => {
+          markApplied(saved);
+          setSettings(saved);
+          onSaved(saved);
+        })
+        .catch(() => {});
+    });
+
+    const unlistenClosed = listen("stepfun-login-closed", () => {
+      setWebLoginLoading({});
+    });
+
+    return () => {
+      unlistenSuccess.then(fn => fn()).catch(() => {});
+      unlistenClosed.then(fn => fn()).catch(() => {});
+    };
+  }, [onSaved]);
 
   const handleQuickAddAntigravity = async () => {
     try {
@@ -293,6 +320,15 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
     setBusy(true);
     try { await invoke("delete_credential", { accountId: id }); showToast("info", "凭据已从 Windows 凭据管理器移除"); }
     catch (e) { showToast("error", `凭据删除失败: ${String(e)}`); } finally { setBusy(false); }
+  };
+  const handleStepfunWebLogin = async (accountId: string) => {
+    try {
+      setWebLoginLoading(s => ({ ...s, [accountId]: true }));
+      await invoke("open_stepfun_login", { accountId });
+    } catch (err) {
+      setWebLoginLoading(s => ({ ...s, [accountId]: false }));
+      showToast("error", `打开登录窗口失败: ${String(err)}`);
+    }
   };
   const test = async (id: string) => {
     setTestingId(id);
@@ -777,13 +813,24 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                           <div>
                             <div className="flex justify-between items-center text-xs text-zinc-300 mb-1">
                               <span>网页 Oasis-Token / Cookie（用于查询 Step Plan Credit 套餐与周期限额）</span>
-                              <button
-                                type="button"
-                                onClick={() => setShowStepfunHelp(v => !v)}
-                                className="text-[11px] text-emerald-400 hover:underline cursor-pointer flex items-center gap-1"
-                              >
-                                <span>💡 如何获取？</span>
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void handleStepfunWebLogin(id)}
+                                  disabled={locked || webLoginLoading[id]}
+                                  className="text-[11px] text-emerald-400 hover:text-emerald-300 hover:underline cursor-pointer flex items-center gap-1 font-medium disabled:opacity-40"
+                                  title="唤起网页登录窗口，扫码或验证码登录后自动提取 Token 并保存"
+                                >
+                                  <span>{webLoginLoading[id] ? "⏳ 等待登录…" : "🌐 网页扫码登录"}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setShowStepfunHelp(v => !v)}
+                                  className="text-[11px] text-zinc-400 hover:text-zinc-200 hover:underline cursor-pointer flex items-center gap-1"
+                                >
+                                  <span>💡 手动获取</span>
+                                </button>
+                              </div>
                             </div>
                             <div className="relative">
                               <input

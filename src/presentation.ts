@@ -50,11 +50,12 @@ export function forecast(w:UsageWindow,now=Date.now()):string|null{
 
 /** Monetary balances and plan credits are different units and never interchangeable. */
 export function balanceText(currency:string,amount:number):string {
-  if(currency==='Credit')return `${amount>=1e8?(amount/1e8).toFixed(2)+' 亿':amount>=1e4?(amount/1e4).toFixed(2)+' 万':amount.toLocaleString('zh-CN',{maximumFractionDigits:2})} Credit`;
+  if(currency==='Credit'||currency==='Credit-Topup')return `${amount>=1e8?(amount/1e8).toFixed(2)+' 亿':amount>=1e4?(amount/1e4).toFixed(2)+' 万':amount.toLocaleString('zh-CN',{maximumFractionDigits:2})} Credit`;
   if(currency==='CNY')return `¥${amount.toFixed(2)}`;
   return `${currency} ${amount.toFixed(2)}`;
 }
 export function balanceLabel(provider:string,currency:string):string {
+  if(currency==='Credit-Topup')return '加油包剩余';
   return currency==='Credit'?'套餐剩余':provider==='stepfun'?'API 可用余额':'可用余额';
 }
 

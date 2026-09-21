@@ -16,7 +16,27 @@ pub struct UsageWindow {
     pub resets_at: Option<String>, pub window_seconds: Option<i64>, pub exhausted: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Balance { pub currency: String, pub amount: f64 }
+pub struct Balance {
+    pub currency: String,
+    pub amount: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+}
+impl Balance {
+    pub fn new(currency: impl Into<String>, amount: f64) -> Self {
+        Self { currency: currency.into(), amount, expires_at: None }
+    }
+    pub fn with_expiry(currency: impl Into<String>, amount: f64, expires_at: Option<String>) -> Self {
+        Self { currency: currency.into(), amount, expires_at }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HourlyUsage {
+    pub timestamp: i64,
+    pub model_id: String,
+    pub calls: u64,
+    pub credit_consumed: f64,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderUsage {
     #[serde(skip)] pub scope: String,
@@ -27,6 +47,8 @@ pub struct ProviderUsage {
     pub last_success_at: Option<String>, pub retry_after_seconds: Option<u64>,
     /// Wall time of the fetch that produced this reading; feeds the per-account diagnostics.
     pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hourly_usages: Option<Vec<HourlyUsage>>,
 }
 impl ProviderUsage {
     pub fn problem(provider: &str, code: &str, message: &str) -> Self {

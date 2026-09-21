@@ -1241,3 +1241,186 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     }
     Ok(())
 }
+
+async fn save_stepfun_login_token(app: &tauri::AppHandle, account_id: &str, token: &str) -> Result<(), String> {
+    let had_cred = WindowsSecrets.get(account_id).unwrap_or(None);
+    let secret = crate::providers::credentials::merge_stepfun_credentials(
+        had_cred.as_deref().unwrap_or(""),
+        token,
+    );
+    let aid = account_id.to_string();
+    let sec = secret.clone();
+
+    // Save to WindowsSecrets
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        WindowsSecrets.put(&aid, sec.trim())
+    }).await.map_err(|_| "保存凭据失败")??;
+
+    // Update settings
+    let state = app.state::<AppState>();
+    {
+        let mut settings = state.settings.lock().await;
+        if let Some(cfg) = settings.providers.get_mut(account_id) {
+            cfg.credential_configured = true;
+        }
+        settings.generation = settings.generation.wrapping_add(1);
+        let _ = crate::config::save_settings(&settings);
+        let _ = app.emit("settings-updated", &*settings);
+    }
+    state.clear_config_error();
+    state.bump_account_gen(account_id).await;
+    state.schedule.lock().await.remove(account_id);
+
+    // Emit login success event to frontend
+    let _ = app.emit("stepfun-login-success", serde_json::json!({
+        "account_id": account_id,
+    }));
+
+    // Close the login window
+    if let Some(win) = app.get_webview_window("stepfun_login") {
+        let _ = win.close();
+    }
+
+    // Immediately refresh account
+    let app_clone = app.clone();
+    let aid = account_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let _ = AppState::refresh_account_now(&app_clone, &aid).await;
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn open_stepfun_login(app: tauri::AppHandle, account_id: String) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("stepfun_login") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+
+    let login_url: tauri::Url = "https://platform.stepfun.com/".parse().map_err(|e| format!("{e}"))?;
+
+    let injection = r#"
+(function() {
+    function notifyToken(token) {
+        if (token && typeof token === 'string' && token.length > 15 && !window.__pulse_token_sent) {
+            window.__pulse_token_sent = true;
+            window.location.href = "https://pulse.internal/auth?token=" + encodeURIComponent(token);
+        }
+    }
+
+    // 1. Intercept fetch
+    var origFetch = window.fetch;
+    window.fetch = function(input, init) {
+        try {
+            if (init && init.headers) {
+                var headers = init.headers;
+                if (headers instanceof Headers) {
+                    var t = headers.get('Oasis-Token') || headers.get('oasis-token');
+                    if (t) notifyToken(t);
+                } else if (typeof headers === 'object') {
+                    for (var k in headers) {
+                        if (/oasis[-_]?token/i.test(k)) {
+                            notifyToken(headers[k]);
+                        }
+                    }
+                }
+            }
+        } catch(e) {}
+        return origFetch.apply(this, arguments);
+    };
+
+    // 2. Intercept XMLHttpRequest
+    var origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+    XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
+        try {
+            if (/oasis[-_]?token/i.test(header)) {
+                notifyToken(value);
+            }
+        } catch(e) {}
+        return origSetHeader.apply(this, arguments);
+    };
+
+    // 3. Polling document.cookie, localStorage, sessionStorage
+    function scanStorage() {
+        try {
+            var match = document.cookie.match(/(?:^|;\s*)Oasis-Token=([^;]+)/i);
+            if (match && match[1]) {
+                notifyToken(decodeURIComponent(match[1]));
+                return;
+            }
+            if (window.localStorage) {
+                for (var i = 0; i < localStorage.length; i++) {
+                    var k = localStorage.key(i);
+                    if (k && /oasis[-_]?token/i.test(k)) {
+                        var v = localStorage.getItem(k);
+                        if (v && v.length > 15) { notifyToken(v); return; }
+                    }
+                }
+            }
+            if (window.sessionStorage) {
+                for (var j = 0; j < sessionStorage.length; j++) {
+                    var sk = sessionStorage.key(j);
+                    if (sk && /oasis[-_]?token/i.test(sk)) {
+                        var sv = sessionStorage.getItem(sk);
+                        if (sv && sv.length > 15) { notifyToken(sv); return; }
+                    }
+                }
+            }
+        } catch(e) {}
+    }
+
+    setInterval(scanStorage, 1000);
+    scanStorage();
+})();
+"#;
+
+    let app_handle = app.clone();
+    let aid = account_id.clone();
+    let success_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag_clone = success_flag.clone();
+
+    let window = tauri::WebviewWindowBuilder::new(&app, "stepfun_login", tauri::WebviewUrl::External(login_url))
+        .title("阶跃星辰 StepFun - 网页登录")
+        .inner_size(860.0, 720.0)
+        .center()
+        .resizable(true)
+        .initialization_script(injection)
+        .on_navigation({
+            let app = app_handle.clone();
+            let aid = aid.clone();
+            let flag = flag_clone.clone();
+            move |url| {
+                if url.host_str() == Some("pulse.internal") && url.path() == "/auth" {
+                    let token_opt = url.query_pairs().find(|(k, _)| k == "token").map(|(_, v)| v.to_string());
+                    if let Some(token) = token_opt {
+                        if !token.is_empty() {
+                            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                            let app_inner = app.clone();
+                            let account_id_inner = aid.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = save_stepfun_login_token(&app_inner, &account_id_inner, &token).await;
+                            });
+                        }
+                    }
+                    return false;
+                }
+                true
+            }
+        })
+        .build()
+        .map_err(|e| format!("无法创建登录窗口：{e}"))?;
+
+    let app_for_close = app.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Destroyed = event {
+            if !flag_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = app_for_close.emit("stepfun-login-closed", ());
+            }
+        }
+    });
+
+    Ok(())
+}

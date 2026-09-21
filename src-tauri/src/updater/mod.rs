@@ -119,14 +119,18 @@ impl UpdateService {
         if self.ready.lock().unwrap().is_some() {
             return Ok(());
         }
-        if self
-            .retry_until
-            .lock()
-            .unwrap()
-            .is_some_and(|t| t > Instant::now())
+        if !manual
+            && self
+                .retry_until
+                .lock()
+                .unwrap()
+                .is_some_and(|t| t > Instant::now())
         {
             self.stage(app, "rate_limited", "GitHub 请求限流，请稍后重试");
             return Ok(());
+        }
+        if manual {
+            *self.retry_until.lock().unwrap() = None;
         }
         if !manual
             && (!self.snapshot().preferences.automatic
@@ -149,16 +153,31 @@ impl UpdateService {
                 .await
                 .map_err(|_| "检查更新网络失败（不影响额度刷新）")?;
             if response.status().as_u16() == 429 || response.status().as_u16() == 403 {
-                let seconds = response
+                let reset_seconds = response
                     .headers()
-                    .get("retry-after")
+                    .get("x-ratelimit-reset")
                     .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(7200)
-                    .clamp(60, 86400);
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .map(|ts| {
+                        let now = chrono::Utc::now().timestamp();
+                        (ts - now).max(10) as u64
+                    });
+                let seconds = reset_seconds
+                    .or_else(|| {
+                        response
+                            .headers()
+                            .get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                    })
+                    .unwrap_or(1800)
+                    .clamp(10, 86400);
                 *self.retry_until.lock().unwrap() =
                     Some(Instant::now() + Duration::from_secs(seconds));
-                return Err("GitHub 请求限流，请稍后重试".to_string());
+                let wait_min = (seconds + 59) / 60;
+                return Err(format!(
+                    "GitHub 请求限流，预计 {wait_min} 分钟后恢复；可更换代理后重试，或点击手动下载"
+                ));
             }
             if !response.status().is_success() {
                 return Err(format!(
