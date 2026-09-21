@@ -539,6 +539,8 @@ static DETAIL_PRESENTED: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 static DETAIL_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// 上一次内容自适应后的详情窗口高度（物理像素）；0=尚未学习，用默认 360。
 static LAST_DETAIL_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// 各账号上次内容自适应后的高度记录（物理像素），使各账号悬停时初始高度更精准。
+static ACCOUNT_DETAIL_H: std::sync::Mutex<Option<std::collections::HashMap<String, u32>>> = std::sync::Mutex::new(None);
 
 #[tauri::command]
 pub fn get_detail_layout() -> Option<DetailLayout> {
@@ -546,7 +548,7 @@ pub fn get_detail_layout() -> Option<DetailLayout> {
 }
 
 /// 内容驱动的详情窗口高度自适应：前端测量卡片实际高度（逻辑像素）后调用。
-/// 顶边保持不动、向下伸缩；钳制在屏幕工作区高度的 90% 内，超限时内容走滚动。
+/// 钳制在屏幕工作区高度的 90% 内，超限时内容走滚动；若向下延伸超出屏幕底边则向上平移，避免被任务栏或屏幕裁切。
 #[tauri::command]
 pub fn resize_detail(height:f64,app:AppHandle)->Result<(),String>{
     let width=match DETAIL_LAYOUT.lock(){
@@ -556,11 +558,35 @@ pub fn resize_detail(height:f64,app:AppHandle)->Result<(),String>{
     let Some(w)=app.get_webview_window("detail")else{return Ok(())};
     let scale=w.scale_factor().unwrap_or(1.0);
     let monitor=w.current_monitor().ok().flatten().or_else(||w.primary_monitor().ok().flatten());
-    let max_h=monitor.map(|m|((m.work_area().size.height as f64)*0.9).round() as u32).unwrap_or(1600);
+    let max_h=monitor.as_ref().map(|m|((m.work_area().size.height as f64)*0.9).round() as u32).unwrap_or(1600);
     let dh=((height*scale).round() as u32).clamp(120,max_h);
     LAST_DETAIL_H.store(dh,Ordering::SeqCst);
+    if let Ok(mut g) = DETAIL_LAYOUT.lock() {
+        if let Some(ref mut l) = *g {
+            l.height = dh;
+            if let Ok(mut map) = ACCOUNT_DETAIL_H.lock() {
+                map.get_or_insert_with(std::collections::HashMap::new).insert(l.account_id.clone(), dh);
+            }
+        }
+    }
     let pos=w.outer_position().map_err(|_|"无法读取详情窗口位置".to_string())?;
-    crate::window::place_at(&w,pos.x,pos.y,width,dh);
+    let (new_x, new_y) = if let Some(ref m) = monitor {
+        let area = m.work_area();
+        let min_y = area.position.y + 4;
+        let max_y = (area.position.y + area.size.height as i32 - dh as i32 - 4).max(min_y);
+        let min_x = area.position.x + 4;
+        let max_x = (area.position.x + area.size.width as i32 - width as i32 - 4).max(min_x);
+        let cy = if pos.y + (dh as i32) > (area.position.y + area.size.height as i32 - 4) {
+            max_y
+        } else {
+            pos.y.max(min_y)
+        };
+        let cx = pos.x.clamp(min_x, max_x);
+        (cx, cy)
+    } else {
+        (pos.x, pos.y)
+    };
+    crate::window::place_at(&w,new_x,new_y,width,dh);
     Ok(())
 }
 
@@ -585,29 +611,7 @@ pub async fn detail_layout_ready(app:AppHandle, request_id:u64)->Result<bool,Str
         };
         let _ = send.send(present());
     }).map_err(|e|e.to_string())?;
-    receive.await.map_err(|_| String::from("详情显示确认中断"))?;
-    // 兜底（B06 复审后保留的折中）：前端视口测量可能因隐藏窗口节流而迟迟不确认，
-    // 1.2s 后强制显示（窗口位置已由 place_at 定位；request_id 复查防旧请求误开）。
-    let fallback=app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-        let state=fallback.state::<AppState>();
-        if state.dragging.load(Ordering::Relaxed)||state.user_hidden.load(Ordering::Relaxed){return}
-        if DETAIL_PRESENTED.load(Ordering::SeqCst)==request_id {return}
-        if let Ok(layout)=DETAIL_LAYOUT.lock(){
-            if !layout.as_ref().is_some_and(|v|v.request_id==request_id){return}
-        } else {return}
-        if let Ok(settings)=state.settings.try_lock(){
-            if !settings.show_rail || (settings.hide_fullscreen && crate::window::fullscreen_other(&fallback)){return}
-        } else {return}
-        let fallback2=fallback.clone();
-        let _=fallback.run_on_main_thread(move ||{
-            if let Some(w)=fallback2.get_webview_window("detail"){
-                if w.show().is_ok(){DETAIL_PRESENTED.store(request_id,Ordering::SeqCst);}
-            }
-        });
-    });
-    Ok(true)
+    receive.await.map_err(|_| String::from("详情显示确认中断"))
 }
 
 /// The detail card is its own topmost overlay so showing it never resizes or flickers the rail.
@@ -630,9 +634,24 @@ pub async fn show_detail(
     let max_w = (area.size.width as f64 - 8.0).max(100.0);
     let max_h = (area.size.height as f64 - 8.0).max(100.0);
     let dw = (340.0 * scale).min(max_w);
-    // 高度优先用上次内容自适应学习值（用户内容多时窗口保持加高），clamp 工作区。
-    let learned=LAST_DETAIL_H.load(Ordering::SeqCst) as f64;
-    let dh = if learned>0.0 { learned.min(max_h) } else { (360.0*scale).round().min(max_h) };
+    // 高度优先使用该账号的历史自适应高度，其次按窗口数预估，最后兜底 360
+    let account_learned = ACCOUNT_DETAIL_H.lock().ok().and_then(|m| m.as_ref().and_then(|h| h.get(&account_id).copied())).map(|h| h as f64);
+    let estimated = if let Some(h) = account_learned {
+        h
+    } else {
+        let base_id = account_id.split("::").next().unwrap_or(&account_id);
+        let win_count = state.cached_usages.try_lock().ok().and_then(|u| {
+            u.iter().find(|x| x.account_id == base_id).map(|x| x.windows.len())
+        }).unwrap_or(1);
+        let est_logical = match win_count {
+            0 | 1 => 200.0,
+            2 => 270.0,
+            3 => 350.0,
+            _ => 430.0,
+        };
+        (est_logical * scale).round()
+    };
+    let dh = estimated.min(max_h);
 
     let min_y = area.position.y as f64 + 4.0;
     let max_y = ((area.position.y + area.size.height as i32) as f64 - dh - 4.0).max(min_y);
@@ -695,6 +714,7 @@ pub async fn show_detail(
         account_id: account_id.clone(), placement:placement.into(),
         width:dw as u32, height:dh as u32,
     };
+    let fallback_req = layout.request_id;
     *state.detail_account.lock().map_err(|_|"状态锁损坏")?=Some(account_id);
     *DETAIL_LAYOUT.lock().map_err(|_|"详情布局锁损坏")?=Some(layout.clone());
     let handle=app.clone();
@@ -703,16 +723,41 @@ pub async fn show_detail(
     app.run_on_main_thread(move || {
         let Ok(current)=DETAIL_LAYOUT.lock() else{return};
         if !current.as_ref().is_some_and(|v|v.request_id==layout.request_id){return}
+        let already_visible = window.is_visible().unwrap_or(false);
 
         let result=(|| -> tauri::Result<()> {
-            window.hide()?;
+            if !already_visible {
+                window.hide()?;
+            }
             crate::window::place_at(&window, target_x, target_y, layout.width, layout.height);
             window.set_always_on_top(true)?;
             handle.emit("detail-layout", &layout)?;
+            if already_visible {
+                DETAIL_PRESENTED.store(layout.request_id, Ordering::SeqCst);
+            }
             Ok(())
         })();
         if let Err(error)=result {eprintln!("Pulse detail layout: {error}");}
     }).map_err(|e|format!("详情定位失败: {e}"))?;
+
+    // 兜底显示：如果前端视口测量未在 260ms 内完成，强制显示（窗口位置已由 place_at 定位好）
+    let handle_fallback = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(260)).await;
+        let h = handle_fallback.clone();
+        let _ = handle_fallback.run_on_main_thread(move || {
+            let Ok(current) = DETAIL_LAYOUT.lock() else { return };
+            if !current.as_ref().is_some_and(|v| v.request_id == fallback_req) || DETAIL_PRESENTED.load(Ordering::SeqCst) == fallback_req { return }
+            let state = h.state::<AppState>();
+            if state.dragging.load(Ordering::Relaxed) || state.user_hidden.load(Ordering::Relaxed) { return }
+            if let Ok(settings) = state.settings.try_lock() {
+                if !settings.show_rail || (settings.hide_fullscreen && crate::window::fullscreen_other(&h)) { return }
+            } else { return }
+            if let Some(w) = h.get_webview_window("detail") {
+                if w.show().is_ok() { DETAIL_PRESENTED.store(fallback_req, Ordering::SeqCst); }
+            }
+        });
+    });
 
     Ok(())
 }
@@ -953,7 +998,8 @@ pub fn drag_begin(app:AppHandle)->Result<(),String>{
     // Real system cursor: immune to the window moving under us and to per-monitor DPI math.
     let Some((px,py))=crate::window::get_cursor_screen_pos()else{return Ok(())};
     let pos=win.outer_position().map_err(|e|e.to_string())?;
-    *state.drag_grab.lock().unwrap()=(px-pos.x,py-pos.y);
+    let start_scale = win.current_monitor().ok().flatten().map(|m| m.scale_factor()).unwrap_or(1.0);
+    *state.drag_grab.lock().unwrap()=((px-pos.x) as f64 / start_scale, (py-pos.y) as f64 / start_scale);
     // Monitor enumeration is an expensive Win32 call: cache the list once per drag so
     // drag_move stays cheap enough to track the cursor tightly.
     let monitors=win.available_monitors().map_err(|e|e.to_string())?;
@@ -978,7 +1024,10 @@ pub fn drag_move(app:AppHandle)->Result<(),String>{
     // 布局若仍按旧 dock_side 渲染，横排内容会被裁成"只剩一个图标"的窄条。
     if side!=prev_side{use tauri::Emitter;let _=app.emit("drag-side",&side);}
     if side=="free"{
-        let (gx,gy)=*state.drag_grab.lock().unwrap();
+        let (gx_dip,gy_dip)=*state.drag_grab.lock().unwrap();
+        let cur_scale=m.scale_factor();
+        let gx=(gx_dip * cur_scale).round() as i32;
+        let gy=(gy_dip * cur_scale).round() as i32;
         // A docked preview may have resized the window: restore rail size for this monitor.
         let Some(settings)=state.settings.try_lock().ok().map(|s|s.clone())else{return Ok(())};
         let rect=crate::window::dock_rect(&settings,&m,"rail",(0.5,0.5));

@@ -23,6 +23,26 @@
   }
 }
 
+/* Custom scrollbar for detail card container when content overflows */
+.detail-scroll-container {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(156, 163, 175, 0.4) transparent;
+}
+.detail-scroll-container::-webkit-scrollbar {
+  display: block !important;
+  width: 4px;
+}
+.detail-scroll-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+.detail-scroll-container::-webkit-scrollbar-thumb {
+  background-color: rgba(156, 163, 175, 0.4);
+  border-radius: 9999px;
+}
+.detail-scroll-container::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(156, 163, 175, 0.7);
+}
+
 /* Crisp high-contrast styling without outer blurry shadow to eliminate WebView2 grey fringes */
 .glass-obsidian {
   background: #121216;

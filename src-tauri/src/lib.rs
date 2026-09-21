@@ -37,7 +37,7 @@ pub struct AppState {
     pub activity_watcher:std::sync::Mutex<activity::Watcher>,
     pub app_handle:std::sync::OnceLock<tauri::AppHandle>,
     pub dragging:AtomicBool,
-    pub drag_grab:std::sync::Mutex<(i32,i32)>,
+    pub drag_grab:std::sync::Mutex<(f64,f64)>,
     pub drag_side:std::sync::Mutex<String>,
     pub drag_ratio:std::sync::Mutex<(f64,f64)>,
     pub drag_monitors:std::sync::Mutex<Vec<tauri::Monitor>>,
@@ -622,7 +622,7 @@ pub fn run(){
     let (settings,error)=match config::load_settings(){Ok(s)=>(s,None),Err(e)=>(AppSettings::default(),Some(e))};
     let http=tokio::sync::RwLock::new(providers::client_with_proxy(&settings.network_proxy).expect("HTTP client initialization failed"));
     let settings_start_hidden=settings.start_behavior=="tray";
-    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),last_cursor_over:std::sync::Mutex::new(Instant::now()),rail_pin_until:std::sync::Mutex::new(None),ledger_gate:Mutex::new(()),ledger_scan_id:Arc::new(AtomicU64::new(0)),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None),settings_io:tokio::sync::Mutex::new(()),account_generations:Mutex::new(HashMap::new()),refresh_slots:Arc::new(Semaphore::new(4)),inflight:Mutex::new(HashMap::new()),request_counter:AtomicU64::new(0),activity:std::sync::Mutex::new(HashMap::new()),activity_watcher:std::sync::Mutex::new(activity::Watcher::new(activity::Watcher::system_roots())),app_handle:std::sync::OnceLock::new(),dragging:AtomicBool::new(false),drag_grab:std::sync::Mutex::new((0,0)),drag_side:std::sync::Mutex::new("free".into()),drag_ratio:std::sync::Mutex::new((0.5,0.5)),drag_monitors:std::sync::Mutex::new(Vec::new()),close_coordinator:Arc::new(settings_close::SettingsCloseCoordinator::default())};
+    let state=AppState{settings:Mutex::new(settings),cached_usages:Mutex::new(vec![]),refresh_gate:Mutex::new(()),schedule:Mutex::new(HashMap::new()),configuration_error:std::sync::Mutex::new(error),http,window_mode:Mutex::new("rail".into()),user_hidden:AtomicBool::new(settings_start_hidden),last_cursor_over:std::sync::Mutex::new(Instant::now()),rail_pin_until:std::sync::Mutex::new(None),ledger_gate:Mutex::new(()),ledger_scan_id:Arc::new(AtomicU64::new(0)),alerts:Mutex::new(alerts::load(&config::get_config_dir().join("alerts.json"))),detail_account:std::sync::Mutex::new(None),settings_io:tokio::sync::Mutex::new(()),account_generations:Mutex::new(HashMap::new()),refresh_slots:Arc::new(Semaphore::new(4)),inflight:Mutex::new(HashMap::new()),request_counter:AtomicU64::new(0),activity:std::sync::Mutex::new(HashMap::new()),activity_watcher:std::sync::Mutex::new(activity::Watcher::new(activity::Watcher::system_roots())),app_handle:std::sync::OnceLock::new(),dragging:AtomicBool::new(false),drag_grab:std::sync::Mutex::new((0.0,0.0)),drag_side:std::sync::Mutex::new("free".into()),drag_ratio:std::sync::Mutex::new((0.5,0.5)),drag_monitors:std::sync::Mutex::new(Vec::new()),close_coordinator:Arc::new(settings_close::SettingsCloseCoordinator::default())};
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

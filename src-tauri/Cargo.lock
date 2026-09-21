@@ -2868,7 +2868,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-windows"
-version = "0.6.1"
+version = "0.5.3"
 dependencies = [
  "base64 0.22.1",
  "chrono",

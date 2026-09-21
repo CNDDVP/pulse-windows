@@ -77,6 +77,7 @@ function DetailOverlay() {
     if(Math.abs(target-current)>8&&lastHeightRef.current!==target){
       lastHeightRef.current=target;
       void invoke("resize_detail",{height:target}).catch(()=>{});
+      setLayout(prev => prev ? { ...prev, height: Math.round(target * (window.devicePixelRatio || 1)) } : null);
     }
   },[usage,settings,layout,accountId]);
   return <div className={`w-full h-full p-2 flex ${justifyClass} ${alignClass}`}

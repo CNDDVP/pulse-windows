@@ -13,7 +13,7 @@ export function UsageDetailCard({usage,settings,placement,cardRef}:{usage:Provid
   const red = settings.warning_threshold, amber = red - 15;
 
   const animClass = isRightOfRail ? "card-animate-left" : "card-animate-right";
-  return <section ref={cardRef} className={`relative rounded-2xl p-4 max-h-full overflow-auto w-[290px] text-xs ${animClass} ${dark?"card-obsidian text-zinc-200":"card-translucent text-zinc-800"}`}>
+  return <section ref={cardRef} className={`detail-scroll-container relative rounded-2xl p-4 max-h-full overflow-y-auto overflow-x-hidden w-[290px] text-xs ${animClass} ${dark?"card-obsidian text-zinc-200":"card-translucent text-zinc-800"}`}>
     {sideways && (
       <div
         className={`absolute top-6 w-3 h-3 rotate-45 pointer-events-none ${

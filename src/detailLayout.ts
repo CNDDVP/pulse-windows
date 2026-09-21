@@ -1,9 +1,10 @@
 /** CSS viewport must match the requested physical bounds after monitor DPI settles. */
 export function detailViewportReady(width: number, height: number, scale: number, physicalWidth: number, physicalHeight: number) {
   if (scale <= 0) return false;
-  const tol = Math.max(3, scale * 1.5);
-  return Math.abs(width * scale - physicalWidth) <= tol
-    && Math.abs(height * scale - physicalHeight) <= tol;
+  const tolW = Math.max(3, scale * 1.5);
+  const tolH = Math.max(8, scale * 3);
+  return Math.abs(width * scale - physicalWidth) <= tolW
+    && Math.abs(height * scale - physicalHeight) <= tolH;
 }
 
 /** A timeout is failure, never permission to show a partially resized WebView. */
@@ -19,7 +20,7 @@ export function waitForDetailLayout(matches: () => boolean, present: () => Promi
     }
     if (stopped) return;
     if (Date.now() >= deadline) { timeout(); return; }
-    timer = setTimeout(() => { void check(); }, 50);
+    timer = setTimeout(() => { void check(); }, 20);
   };
   timer = setTimeout(() => { void check(); }, 0);
   return () => { stopped = true; clearTimeout(timer); };
