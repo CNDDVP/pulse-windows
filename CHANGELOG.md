@@ -77,6 +77,22 @@
 - **重置周期自愈**：离线缓存严格跟随每个额度窗口自身的重置时间戳——应用关闭期间到达重置点的周期自动识别为已重置，不再展示过期旧数据；移除原先 10 分钟的强制定时过期。
 - 安全边界：缓存复用仍受"凭据/身份变更即清缓存"守卫覆盖，复用时继承原数据血缘并诚实标注离线状态。
 
+## [0.6.4] - 2026-09-21
+
+### 新增：StepFun（阶跃星辰）/ Step Plan 供应商完整接入
+
+- **供应商接入**：`api.stepfun.com/v1/accounts` 端点（404 自动 fallback `step_plan/v1/accounts`）；CNY 余额（total/cash+voucher 多形态）、Credit 点数、套餐百分比窗口与 plan_name 解析；阶跃阶梯品牌图标与添加账号路由。
+- **网页扫码登录**：受控 Webview 弹窗登录，Windows 原生 `ICoreWebView2CookieManager` 穿透 HttpOnly 捕获 Oasis-Token，自动落盘凭据管理器并触发刷新——无需手动复制 Token。
+- **Token 30 分钟无感续期**：会话过期时自动用保存的完整会话 Cookie 在隐形窗口刷新捕获新 Token 并重试抓取，全程无感；续期失败静默返回原错误。
+- **加油包识别**：`bucket_type == 2` 独立为"加油包剩余"额度并展示到期时间，与套餐 Credit 并列。
+- **24h 积分图表**：详情卡底部紧凑柱状图 + Token Spend 页明细卡片，悬停显示时段调用次数与消耗 Credit。
+- **错误精细化**：`embezzled`（被踢下线）、Token 过期、凭据无效等 Connect-RPC 错误语义化中文提示。
+- **双凭据独立保留**：API Key 与 Oasis Token 分开保存，单独更新任一项不影响另一项；任一来源失败单独提示。
+
+### 修复
+
+- **设置页外链无响应**：WebView2 不处理 `target="_blank"`——新增 `open_external_url`（仅允许 https，ShellExecuteW 调系统浏览器），About 页与更新中心链接全部接通。
+
 ## [0.6.3] - 2026-09-21
 
 ### 修复
