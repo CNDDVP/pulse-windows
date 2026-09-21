@@ -1211,3 +1211,33 @@ pub async fn quick_add_antigravity_account(state: State<'_, AppState>, app: AppH
 
     Ok(saved)
 }
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("仅支持 HTTPS 链接".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let url_wide: Vec<u16> = std::ffi::OsStr::new(&url).encode_wide().chain(Some(0)).collect();
+        let op_wide: Vec<u16> = std::ffi::OsStr::new("open").encode_wide().chain(Some(0)).collect();
+        unsafe {
+            let res = ShellExecuteW(
+                None,
+                PCWSTR(op_wide.as_ptr()),
+                PCWSTR(url_wide.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+            if res.0 as usize <= 32 {
+                return Err("无法打开系统浏览器".into());
+            }
+        }
+    }
+    Ok(())
+}

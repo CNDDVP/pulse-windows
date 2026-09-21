@@ -67,7 +67,7 @@ export function UpdateCenter({hasDraft}: {hasDraft: () => boolean}) {
    {status.phase==="downloading"&&<button className={btnGhost} onClick={()=>void invoke("update_cancel").catch(e=>setError(String(e)))}>取消下载</button>}
    {status.phase==="ready"&&<button className={btnGhost} disabled={busy} onClick={()=>void act("update_apply")}>退出并更新到 v{status.offer?.version}</button>}
    {status.phase==="ready"&&<button className={btnGhost} disabled={busy} onClick={()=>void act("update_discard")}>取消本次升级</button>}
-   <a className={btnGhost} href="https://github.com/CNDDVP/pulse-windows/releases" target="_blank" rel="noreferrer">发布页面 / 手动下载</a>
+   <a className={btnGhost} href="https://github.com/CNDDVP/pulse-windows/releases" target="_blank" rel="noreferrer" onClick={e => { e.preventDefault(); void invoke("open_external_url", { url: "https://github.com/CNDDVP/pulse-windows/releases" }).catch(console.error); }}>发布页面 / 手动下载</a>
   </div>
   {status.offer&&<details className="mt-2 p-2 bg-zinc-900/40 rounded border border-white/5"><summary className="cursor-pointer font-medium text-zinc-300">v{status.offer.version} 更新说明</summary><pre className="whitespace-pre-wrap font-sans mt-2 text-zinc-400 text-xs">{status.offer.notes||"此版本未提供说明。"}</pre></details>}
   <p className="text-zinc-500">只自动检查；下载和安装由你确认。安装版会打开安装向导。包体通过 HTTPS 和 SHA256 校验，尚未配置独立发布签名。</p>

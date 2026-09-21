@@ -225,8 +225,8 @@ export function AboutPage({hasDraft}: {hasDraft: () => boolean}) {
       <Section title="更新与开源" icon="⬆️" subtitle="本项目遵循 Apache-2.0 许可证公开开源。"
         aside={
           <div className="flex gap-2">
-            <a className={btnGhost} href="https://github.com/CNDDVP/pulse-windows" target="_blank" rel="noreferrer">GitHub 仓库</a>
-            <a className={btnGhost} href="https://github.com/qunqin24/Pulse" target="_blank" rel="noreferrer">上游项目</a>
+            <a className={btnGhost} href="https://github.com/CNDDVP/pulse-windows" target="_blank" rel="noreferrer" onClick={e => { e.preventDefault(); void invoke("open_external_url", { url: "https://github.com/CNDDVP/pulse-windows" }).catch(console.error); }}>GitHub 仓库</a>
+            <a className={btnGhost} href="https://github.com/qunqin24/Pulse" target="_blank" rel="noreferrer" onClick={e => { e.preventDefault(); void invoke("open_external_url", { url: "https://github.com/qunqin24/Pulse" }).catch(console.error); }}>上游项目</a>
           </div>
         }>
         <UpdateCenter hasDraft={hasDraft} />
