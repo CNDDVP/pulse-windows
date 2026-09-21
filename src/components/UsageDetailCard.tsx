@@ -1,7 +1,7 @@
 import {useEffect,useState} from "react";
 import type {AppSettings,ProviderUsage} from "../types";
 import {resetText,forecast,forecastKind,timingWindows,balanceText,balanceLabel} from "../presentation";
-export function UsageDetailCard({usage,settings,placement}:{usage:ProviderUsage;settings:AppSettings;placement?: "left" | "right" | "top" | "bottom"}){
+export function UsageDetailCard({usage,settings,placement,cardRef}:{usage:ProviderUsage;settings:AppSettings;placement?: "left" | "right" | "top" | "bottom";cardRef?:React.Ref<HTMLElement>}){
   const [now,setNow]=useState(()=>Date.now());useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),10000);return()=>clearInterval(t)},[]);
   const timed=timingWindows(usage,settings.providers[usage.account_id]);
   const dark = settings.theme === "obsidian";
@@ -13,7 +13,7 @@ export function UsageDetailCard({usage,settings,placement}:{usage:ProviderUsage;
   const red = settings.warning_threshold, amber = red - 15;
 
   const animClass = isRightOfRail ? "card-animate-left" : "card-animate-right";
-  return <section className={`relative rounded-2xl p-4 max-h-full overflow-auto w-[290px] text-xs ${animClass} ${dark?"card-obsidian text-zinc-200":"card-translucent text-zinc-800"}`}>
+  return <section ref={cardRef} className={`relative rounded-2xl p-4 max-h-full overflow-auto w-[290px] text-xs ${animClass} ${dark?"card-obsidian text-zinc-200":"card-translucent text-zinc-800"}`}>
     {sideways && (
       <div
         className={`absolute top-6 w-3 h-3 rotate-45 pointer-events-none ${

@@ -537,6 +537,8 @@ pub struct DetailLayout {
 static DETAIL_LAYOUT: std::sync::Mutex<Option<DetailLayout>> = std::sync::Mutex::new(None);
 static DETAIL_PRESENTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static DETAIL_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// 上一次内容自适应后的详情窗口高度（物理像素）；0=尚未学习，用默认 360。
+static LAST_DETAIL_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 #[tauri::command]
 pub fn get_detail_layout() -> Option<DetailLayout> {
@@ -556,6 +558,7 @@ pub fn resize_detail(height:f64,app:AppHandle)->Result<(),String>{
     let monitor=w.current_monitor().ok().flatten().or_else(||w.primary_monitor().ok().flatten());
     let max_h=monitor.map(|m|((m.work_area().size.height as f64)*0.9).round() as u32).unwrap_or(1600);
     let dh=((height*scale).round() as u32).clamp(120,max_h);
+    LAST_DETAIL_H.store(dh,Ordering::SeqCst);
     let pos=w.outer_position().map_err(|_|"无法读取详情窗口位置".to_string())?;
     crate::window::place_at(&w,pos.x,pos.y,width,dh);
     Ok(())
@@ -582,7 +585,29 @@ pub async fn detail_layout_ready(app:AppHandle, request_id:u64)->Result<bool,Str
         };
         let _ = send.send(present());
     }).map_err(|e|e.to_string())?;
-    receive.await.map_err(|_| "详情显示确认中断".into())
+    receive.await.map_err(|_| String::from("详情显示确认中断"))?;
+    // 兜底（B06 复审后保留的折中）：前端视口测量可能因隐藏窗口节流而迟迟不确认，
+    // 1.2s 后强制显示（窗口位置已由 place_at 定位；request_id 复查防旧请求误开）。
+    let fallback=app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        let state=fallback.state::<AppState>();
+        if state.dragging.load(Ordering::Relaxed)||state.user_hidden.load(Ordering::Relaxed){return}
+        if DETAIL_PRESENTED.load(Ordering::SeqCst)==request_id {return}
+        if let Ok(layout)=DETAIL_LAYOUT.lock(){
+            if !layout.as_ref().is_some_and(|v|v.request_id==request_id){return}
+        } else {return}
+        if let Ok(settings)=state.settings.try_lock(){
+            if !settings.show_rail || (settings.hide_fullscreen && crate::window::fullscreen_other(&fallback)){return}
+        } else {return}
+        let fallback2=fallback.clone();
+        let _=fallback.run_on_main_thread(move ||{
+            if let Some(w)=fallback2.get_webview_window("detail"){
+                if w.show().is_ok(){DETAIL_PRESENTED.store(request_id,Ordering::SeqCst);}
+            }
+        });
+    });
+    Ok(true)
 }
 
 /// The detail card is its own topmost overlay so showing it never resizes or flickers the rail.
@@ -605,7 +630,9 @@ pub async fn show_detail(
     let max_w = (area.size.width as f64 - 8.0).max(100.0);
     let max_h = (area.size.height as f64 - 8.0).max(100.0);
     let dw = (340.0 * scale).min(max_w);
-    let dh = (360.0 * scale).min(max_h);
+    // 高度优先用上次内容自适应学习值（用户内容多时窗口保持加高），clamp 工作区。
+    let learned=LAST_DETAIL_H.load(Ordering::SeqCst) as f64;
+    let dh = if learned>0.0 { learned.min(max_h) } else { (360.0*scale).round().min(max_h) };
 
     let min_y = area.position.y as f64 + 4.0;
     let max_y = ((area.position.y + area.size.height as i32) as f64 - dh - 4.0).max(min_y);
