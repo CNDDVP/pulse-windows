@@ -539,8 +539,8 @@ static DETAIL_PRESENTED: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 static DETAIL_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// 上一次内容自适应后的详情窗口高度（物理像素）；0=尚未学习，用默认 360。
 static LAST_DETAIL_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-/// 各账号上次内容自适应后的高度记录（物理像素），使各账号悬停时初始高度更精准。
-static ACCOUNT_DETAIL_H: std::sync::Mutex<Option<std::collections::HashMap<String, u32>>> = std::sync::Mutex::new(None);
+/// 各账号上次内容自适应后的高度记录（逻辑像素），使各账号悬停时初始高度在不同 DPI 屏幕上均精准换算。
+static ACCOUNT_DETAIL_H: std::sync::Mutex<Option<std::collections::HashMap<String, f64>>> = std::sync::Mutex::new(None);
 
 #[tauri::command]
 pub fn get_detail_layout() -> Option<DetailLayout> {
@@ -565,7 +565,7 @@ pub fn resize_detail(height:f64,app:AppHandle)->Result<(),String>{
         if let Some(ref mut l) = *g {
             l.height = dh;
             if let Ok(mut map) = ACCOUNT_DETAIL_H.lock() {
-                map.get_or_insert_with(std::collections::HashMap::new).insert(l.account_id.clone(), dh);
+                map.get_or_insert_with(std::collections::HashMap::new).insert(l.account_id.clone(), height);
             }
         }
     }
@@ -634,10 +634,10 @@ pub async fn show_detail(
     let max_w = (area.size.width as f64 - 8.0).max(100.0);
     let max_h = (area.size.height as f64 - 8.0).max(100.0);
     let dw = (340.0 * scale).min(max_w);
-    // 高度优先使用该账号的历史自适应高度，其次按窗口数预估，最后兜底 360
-    let account_learned = ACCOUNT_DETAIL_H.lock().ok().and_then(|m| m.as_ref().and_then(|h| h.get(&account_id).copied())).map(|h| h as f64);
-    let estimated = if let Some(h) = account_learned {
-        h
+    // 高度优先使用该账号的历史自适应高度（逻辑像素按当前屏幕缩放），其次按窗口数预估，最后兜底 360
+    let account_learned = ACCOUNT_DETAIL_H.lock().ok().and_then(|m| m.as_ref().and_then(|h| h.get(&account_id).copied()));
+    let estimated = if let Some(logical_h) = account_learned {
+        (logical_h * scale).round()
     } else {
         let base_id = account_id.split("::").next().unwrap_or(&account_id);
         let win_count = state.cached_usages.try_lock().ok().and_then(|u| {

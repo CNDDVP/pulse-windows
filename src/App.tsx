@@ -72,9 +72,10 @@ function DetailOverlay() {
   const lastHeightRef=useRef(0);
   useEffect(()=>{
     const el=cardRef.current;if(!el||!usage||!settings)return;
-    const target=Math.ceil(el.scrollHeight)+16;
+    const rect=el.getBoundingClientRect();
+    const target=Math.ceil(Math.max(el.scrollHeight,rect.height))+20;
     const current=window.innerHeight;
-    if(Math.abs(target-current)>8&&lastHeightRef.current!==target){
+    if(Math.abs(target-current)>6&&lastHeightRef.current!==target){
       lastHeightRef.current=target;
       void invoke("resize_detail",{height:target}).catch(()=>{});
       setLayout(prev => prev ? { ...prev, height: Math.round(target * (window.devicePixelRatio || 1)) } : null);
@@ -84,7 +85,7 @@ function DetailOverlay() {
     onMouseEnter={()=>void invoke("set_detail_hover",{hovered:true})}
     onMouseLeave={()=>void invoke("set_detail_hover",{hovered:false})}
     onContextMenu={e=>e.preventDefault()}>
-    {usage&&settings?<UsageDetailCard usage={usage} settings={settings} placement={placement} cardRef={cardRef as React.RefObject<HTMLElement>}/>:null}
+    {usage&&settings?<UsageDetailCard key={accountId||"none"} usage={usage} settings={settings} placement={placement} cardRef={cardRef as React.RefObject<HTMLElement>}/>:null}
   </div>;
 }
 
