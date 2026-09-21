@@ -11,6 +11,7 @@ fn needs_initial_refresh(old:Option<&crate::types::ProviderConfig>,next:&crate::
 }
 #[tauri::command]
 pub async fn token_spend(days:u32,state:State<'_,AppState>)->Result<crate::ledger::Summary,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     {
         let s = state.settings.lock().await;
         if !s.token_spend_enabled {
@@ -55,6 +56,7 @@ pub async fn get_settings(state:State<'_,AppState>)->Result<AppSettings,String>{
 }
 #[tauri::command]
 pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppState>,app:AppHandle)->Result<AppSettings,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     new_settings.validate()?;
     // 事务化（A03）：从读快照到写盘、写回内存全程持 settings_io 锁，串行化所有
     // 设置写路径——并发保存/拖拽/凭据操作交错时不再互相覆盖。
@@ -223,6 +225,7 @@ pub async fn close_settings_window(state:State<'_,AppState>,app:AppHandle)->Resu
 }
 #[tauri::command]
 pub async fn set_credential(account_id:String,secret:String,state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let _io=state.settings_io.lock().await;
     let mut settings=state.settings.lock().await.clone();
     let pid = settings.providers.get_mut(&account_id).ok_or("账号不存在")?.provider_id.clone();
@@ -267,6 +270,7 @@ pub async fn set_credential(account_id:String,secret:String,state:State<'_,AppSt
 }
 #[tauri::command]
 pub async fn delete_credential(account_id:String,state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let _io=state.settings_io.lock().await;
     let mut settings=state.settings.lock().await.clone();
     settings.providers.get_mut(&account_id).ok_or("账号不存在")?.credential_configured=false;
@@ -286,6 +290,7 @@ pub async fn delete_credential(account_id:String,state:State<'_,AppState>,app:Ap
 }
 #[tauri::command]
 pub async fn delete_account(account_id:String,state:State<'_,AppState>,app:AppHandle)->Result<AppSettings,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let _io=state.settings_io.lock().await;
     let mut settings=state.settings.lock().await.clone();
     if !settings.providers.contains_key(&account_id){return Err("账号不存在".into());}
@@ -550,25 +555,19 @@ pub fn get_detail_layout() -> Option<DetailLayout> {
 /// 内容驱动的详情窗口高度自适应：前端测量卡片实际高度（逻辑像素）后调用。
 /// 钳制在屏幕工作区高度的 90% 内，超限时内容走滚动；若向下延伸超出屏幕底边则向上平移，避免被任务栏或屏幕裁切。
 #[tauri::command]
-pub fn resize_detail(height:f64,app:AppHandle)->Result<(),String>{
-    let width=match DETAIL_LAYOUT.lock(){
-        Ok(g)=>g.as_ref().map(|l|l.width).unwrap_or(360),
-        Err(_)=>return Ok(()),
-    };
-    let Some(w)=app.get_webview_window("detail")else{return Ok(())};
+pub fn resize_detail(height:f64,request_id:u64,app:AppHandle)->Result<Option<DetailLayout>,String>{
+    if !height.is_finite()||height<=0.0||height>100000.0{return Err("详情高度无效".into())}
+    let mut guard=DETAIL_LAYOUT.lock().map_err(|_|"详情布局锁异常")?;
+    let Some(layout)=guard.as_mut().filter(|l|l.request_id==request_id)else{return Ok(None)};
+    let width=layout.width;
+    let Some(w)=app.get_webview_window("detail")else{return Ok(None)};
     let scale=w.scale_factor().unwrap_or(1.0);
     let monitor=w.current_monitor().ok().flatten().or_else(||w.primary_monitor().ok().flatten());
     let max_h=monitor.as_ref().map(|m|((m.work_area().size.height as f64)*0.9).round() as u32).unwrap_or(1600);
-    let dh=((height*scale).round() as u32).clamp(120,max_h);
+    let dh=((height*scale).round() as u32).clamp(120,max_h.max(120));
     LAST_DETAIL_H.store(dh,Ordering::SeqCst);
-    if let Ok(mut g) = DETAIL_LAYOUT.lock() {
-        if let Some(ref mut l) = *g {
-            l.height = dh;
-            if let Ok(mut map) = ACCOUNT_DETAIL_H.lock() {
-                map.get_or_insert_with(std::collections::HashMap::new).insert(l.account_id.clone(), height);
-            }
-        }
-    }
+    layout.height=dh;
+    if let Ok(mut map)=ACCOUNT_DETAIL_H.lock(){map.get_or_insert_with(std::collections::HashMap::new).insert(layout.account_id.clone(),height);}
     let pos=w.outer_position().map_err(|_|"无法读取详情窗口位置".to_string())?;
     let (new_x, new_y) = if let Some(ref m) = monitor {
         let area = m.work_area();
@@ -587,7 +586,7 @@ pub fn resize_detail(height:f64,app:AppHandle)->Result<(),String>{
         (pos.x, pos.y)
     };
     crate::window::place_at(&w,new_x,new_y,width,dh);
-    Ok(())
+    Ok(Some(layout.clone()))
 }
 
 #[tauri::command]
@@ -846,6 +845,7 @@ pub fn get_profile_info()->crate::config::AppProfile{
 
 #[tauri::command]
 pub async fn clear_profile_credentials(state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let _io=state.settings_io.lock().await;
     crate::secrets::clear_profile_credentials()?;
     // 全量清理同步（B02）：全部账号读数清空、在途请求失效、凭据标志由下次写盘重核，
@@ -861,6 +861,7 @@ pub async fn clear_profile_credentials(state:State<'_,AppState>,app:AppHandle)->
 
 #[tauri::command]
 pub async fn create_isolated_profile(state:State<'_,AppState>,app:AppHandle)->Result<String,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let new_id=crate::config::create_isolated_profile()?;
     // 身份切换事务化（A25）：清读数与调度、失效全部账号的在途请求（代际 bump），
     // 广播清空后的读数——旧身份的结果不得在新身份下提交。
@@ -933,6 +934,7 @@ pub fn check_importable_config() -> Result<Option<crate::config::ImportableConfi
 
 #[tauri::command]
 pub async fn import_installed_config(state: State<'_, AppState>, app: AppHandle, mode: Option<String>) -> Result<AppSettings, String> {
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let _io = state.settings_io.lock().await;
     let import_mode = match mode.as_deref() {
         Some("overwrite") => crate::config::ImportMode::Overwrite,
@@ -1154,6 +1156,7 @@ pub async fn check_local_antigravity() -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn quick_add_antigravity_account(state: State<'_, AppState>, app: AppHandle) -> Result<AppSettings, String> {
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let _io = state.settings_io.lock().await;
     let mut settings = state.settings.lock().await.clone();
 

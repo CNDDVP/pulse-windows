@@ -91,7 +91,7 @@ jobs:
           )
           $missing = $required | Where-Object { -not (Test-Path $_) }
           if ($missing) { Write-Error ("Missing required artifacts: " + ($missing -join ', ')); exit 1 }
-          Write-Host "All required artifacts present."
+          ./scripts/verify-release.ps1 -Directory release-artifacts -Version $env:VERSION
 
       - name: Generate release notes
         shell: pwsh
@@ -109,9 +109,19 @@ jobs:
           if ($body.Count -eq 0) { $body = @("Pulse for Windows v$ver", '', 'See commit history for details.') }
           $body | Out-File RELEASE_BODY.md -Encoding utf8
 
+      - name: Refuse mutation of an existing published release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $existing = gh release view $env:TAG_NAME --json isDraft 2>$null
+          if ($LASTEXITCODE -eq 0 -and -not ($existing | ConvertFrom-Json).isDraft) { throw "Release is already published; use a new version." }
+          $global:LASTEXITCODE = 0
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
+          draft: true
           name: Pulse for Windows ${{ env.TAG_NAME }}
           tag_name: ${{ env.TAG_NAME }}
           prerelease: ${{ env.CHANNEL == 'pre-release' }}
@@ -122,3 +132,14 @@ jobs:
             release-artifacts/DEPENDENCIES.txt
             release-artifacts/BUILD_INFO.txt
             release-artifacts/SHA256SUMS.txt
+
+      - name: Verify uploaded draft assets and publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download $env:TAG_NAME --dir verified-download
+          if ($LASTEXITCODE -ne 0) { throw "Draft download verification failed" }
+          ./scripts/verify-release.ps1 -Directory verified-download -Version $env:VERSION
+          gh release edit $env:TAG_NAME --draft=false
+          if ($LASTEXITCODE -ne 0) { throw "Publish failed" }

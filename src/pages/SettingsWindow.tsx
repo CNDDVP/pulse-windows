@@ -664,7 +664,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
           {view.kind === "notifications" && <NotificationsPage settings={settings} update={update} toast={showToast} />}
           {view.kind === "hotkeys" && <HotkeysPage settings={settings} save={saveHotkeys} onError={m => m && showToast("error", m)} />}
           {view.kind === "diagnostics" && <DiagnosticsPage usages={usages} settings={settings} busy={busy} setBusy={setBusy} toast={showToast} open={id => setView({ kind: "account", id })} />}
-          {view.kind === "about" && <AboutPage />}
+          {view.kind === "about" && <AboutPage hasDraft={() => anyDirtyRef.current || Object.values(secretsRef.current).some(s => !!s?.trim()) || Object.values(stepfunCredentialsRef.current).some(c => !!c && !!(c.apiKey.trim() || c.oasisToken.trim()))} />}
 
           {view.kind === "accounts" && (
             <div className="space-y-5 max-w-3xl">
