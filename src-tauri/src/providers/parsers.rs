@@ -130,7 +130,7 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
             if let Some(credits)=v["credits"].as_object(){
                 let c=credits.get("credits").unwrap_or(&v["credits"]);
                 let total=c.get("purchasedCredits").and_then(number).unwrap_or(0.0)+c.get("monthlyCredits").and_then(number).unwrap_or(0.0);
-                if total>0.0{reading.balances.push(Balance{currency:"credits".into(),amount:total});}
+                if total>0.0{reading.balances.push(Balance::new("credits",total));}
                 if let Some(p)=credits.get("planId").and_then(Value::as_str).or_else(||c.get("planId").and_then(Value::as_str)){reading.plan_name=Some(normalize_plan_name(p));}
             }
             if let Some(limits)=v.pointer("/credits/windowLimits").or_else(||v.get("windowLimits")).and_then(Value::as_object){for (key,l) in limits{
@@ -186,7 +186,7 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
             if let Some(plan)=v.pointer("/detail/planCode").and_then(Value::as_str){reading_plan=Some(plan.to_string());}
             if let Some(balance)=v.pointer("/balance/balance").and_then(number){
                 let cur=v.pointer("/balance/currency").and_then(Value::as_str).unwrap_or("CNY").to_string();
-                reading_balances.push(Balance{currency:cur,amount:balance});
+                reading_balances.push(Balance::new(cur,balance));
             }
         }
         "grok-bot"=>{
@@ -246,7 +246,7 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
         }
         "deepseek"=>{
             let mut reading=ProviderUsage::reading(id,vec![]);
-            if let Some(infos)=v["balance_infos"].as_array(){for b in infos{if let (Some(currency),Some(amount))=(b["currency"].as_str(),number(&b["total_balance"])){reading.balances.push(Balance{currency:currency.into(),amount});}}}
+            if let Some(infos)=v["balance_infos"].as_array(){for b in infos{if let (Some(currency),Some(amount))=(b["currency"].as_str(),number(&b["total_balance"])){reading.balances.push(Balance::new(currency,amount));}}}
             if !reading.balances.is_empty(){reading.state="live".into();reading.error_code=None;reading.error_message=None;}
             return reading;
         }
@@ -260,14 +260,39 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
                     add(&mut w, window("plan", "Credit 套餐额度", used_pct, &serde_json::to_value(reset_at).unwrap_or(Value::Null), None));
                 }
                 if let Some(buckets) = plan_rate["credit_buckets"].as_array() {
-                    let mut total_residual = 0.0;
+                    let mut subscription_residual = 0.0;
+                    let mut topup_residual = 0.0;
+                    let mut topup_expire_at: Option<String> = None;
+                    let mut has_subscription = false;
+                    let mut has_topup = false;
+
                     for b in buckets {
-                        if let Some(res) = number(&b["credit_residual"]) {
-                            total_residual += res;
+                        let b_type = b["type"].as_i64()
+                            .or_else(|| b["type"].as_str().and_then(|s| s.parse().ok()))
+                            .unwrap_or(1);
+                        let res = number(&b["credit_residual"])
+                            .or_else(|| number(&b["residual"]))
+                            .unwrap_or(0.0);
+                        if b_type == 2 {
+                            topup_residual += res;
+                            has_topup = true;
+                            if topup_expire_at.is_none() {
+                                topup_expire_at = date(&b["expireAt"])
+                                    .or_else(|| date(&b["expire_at"]))
+                                    .or_else(|| date(&b["expireTime"]))
+                                    .or_else(|| date(&b["expire_time"]));
+                            }
+                        } else {
+                            subscription_residual += res;
+                            has_subscription = true;
                         }
                     }
-                    if buckets.iter().any(|b| number(&b["credit_residual"]).is_some()) {
-                        reading.balances.push(Balance { currency: "Credit".into(), amount: total_residual });
+
+                    if has_subscription {
+                        reading.balances.push(Balance::new("Credit", subscription_residual));
+                    }
+                    if has_topup && topup_residual > 0.0 {
+                        reading.balances.push(Balance::with_expiry("Credit-Topup", topup_residual, topup_expire_at));
                     }
                 }
             }
@@ -313,12 +338,43 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
             let credits=number(&v["credits"]).or_else(||number(&v["credit"])).or_else(||number(&v["total_credit"]));
 
             if let Some(amt)=total_balance{
-                reading.balances.push(Balance{currency:"CNY".into(),amount:amt});
+                reading.balances.push(Balance::new("CNY",amt));
             }
 
             if let Some(c)=credits{
                 if !reading.balances.iter().any(|b| b.currency == "Credit") {
-                    reading.balances.push(Balance{currency:"Credit".into(),amount:c});
+                    reading.balances.push(Balance::new("Credit",c));
+                }
+            }
+
+            if let Some(usages) = v.get("hourly_usages").or_else(|| v.get("usages")).and_then(Value::as_array) {
+                let mut list = Vec::new();
+                for u in usages {
+                    let ts = u["fromTime"].as_i64()
+                        .or_else(|| u["from_time"].as_i64())
+                        .or_else(|| u["timestamp"].as_i64())
+                        .unwrap_or(0);
+                    let model = u["modelId"].as_str()
+                        .or_else(|| u["model_id"].as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let calls = u["calls"].as_u64()
+                        .or_else(|| u["call_count"].as_u64())
+                        .unwrap_or(0);
+                    let credit = number(&u["creditConsumed"])
+                        .or_else(|| number(&u["credit_consumed"]))
+                        .unwrap_or(0.0);
+                    if ts > 0 {
+                        list.push(crate::types::HourlyUsage {
+                            timestamp: ts,
+                            model_id: model,
+                            calls,
+                            credit_consumed: credit,
+                        });
+                    }
+                }
+                if !list.is_empty() {
+                    reading.hourly_usages = Some(list);
                 }
             }
 
@@ -374,9 +430,9 @@ fn normalize_plan_name(raw:&str)->String{
     }
 }
 fn balances_of(v:&Value)->Vec<Balance>{
-    v.pointer("/balance/balance").and_then(number).map(|amount|vec![Balance{
-        currency:v.pointer("/balance/currency").and_then(Value::as_str).unwrap_or("CNY").to_string(),amount
-    }]).unwrap_or_default()
+    v.pointer("/balance/balance").and_then(number).map(|amount|vec![Balance::new(
+        v.pointer("/balance/currency").and_then(Value::as_str).unwrap_or("CNY"),amount
+    )]).unwrap_or_default()
 }
 fn count_window(id:&str,name:&str,v:&Value,seconds:Option<i64>)->Option<UsageWindow>{let limit=number(&v["limit"]).filter(|n|*n>0.0)?;let used=number(&v["used"]).or_else(||Some(limit-number(&v["remaining"])?))?;window(id,name,(used/limit*100.0).max(0.0),&v["resetTime"],seconds)}
 

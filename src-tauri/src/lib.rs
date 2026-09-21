@@ -1,3 +1,4 @@
+pub mod updater;
 pub mod commands;
 pub mod config;
 pub mod providers;
@@ -57,6 +58,7 @@ impl AppState {
     /// Refresh one account on demand: merged clicks reuse the in-flight request, the
     /// server's backoff window is respected, and timeouts write a failure reading.
     pub async fn refresh_account_now(app:&AppHandle,account_id:&str)->Result<u64,String>{
+        if updater::applying(){return Err("正在退出升级".into())}
         let state=app.state::<AppState>();
         if let Some(e)=state.config_error(){return Err(e)}
         let settings=state.settings.lock().await.clone();
@@ -99,10 +101,21 @@ impl AppState {
             let slots=state.refresh_slots.clone();
             tauri::async_runtime::spawn(async move{
                 let permit=slots.acquire_owned().await;
-                let reading=match permit{
+                let mut reading=match permit{
                     Ok(p)=>{let _p=p;tokio::time::timeout(Duration::from_secs(25),providers::fetch_one(&aid,&cfg_clone,&http)).await.ok()}
                     Err(_)=>None,
                 };
+                if let Some(ref r) = reading {
+                    if cfg_clone.provider_id == "stepfun" && r.error_code.as_deref() == Some("auth") {
+                        if let Some(msg) = &r.error_message {
+                            if msg.contains("Token 已过期") || msg.contains("expired") {
+                                if crate::commands::renew_stepfun_token(&app2, &aid).await.is_ok() {
+                                    reading = tokio::time::timeout(Duration::from_secs(25), providers::fetch_one(&aid, &cfg_clone, &http)).await.ok();
+                                }
+                            }
+                        }
+                    }
+                }
                 let st=app2.state::<AppState>();
                 let still_valid={
                     let s=st.settings.lock().await;
@@ -240,6 +253,7 @@ pub fn open_settings_window(app:&AppHandle){
 #[derive(serde::Serialize,Clone)]
 pub struct RefreshSummary{pub readings:Vec<ProviderUsage>,pub initiated:usize,pub skipped:usize}
 pub async fn refresh_usages_and_emit(app:&AppHandle,manual:bool)->Result<RefreshSummary,String>{
+    if updater::applying(){return Err("正在退出升级".into())}
     let state=app.state::<AppState>();
     let Ok(_gate)=state.refresh_gate.try_lock() else {
         let readings=state.cached_usages.lock().await.clone();
@@ -302,10 +316,21 @@ pub async fn refresh_usages_and_emit(app:&AppHandle,manual:bool)->Result<Refresh
     let mut passed:Vec<ProviderUsage>=vec![];
     let mut finished_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    while let Some(fresh)=rx.recv().await {
-        incoming.push(fresh.clone());
+    while let Some(mut fresh)=rx.recv().await {
         let current_settings=state.settings.lock().await.clone();
         let id=fresh.account_id.clone();
+        if let Some(cfg) = current_settings.providers.get(&id) {
+            if cfg.provider_id == "stepfun" && fresh.error_code.as_deref() == Some("auth") {
+                if let Some(msg) = &fresh.error_message {
+                    if msg.contains("Token 已过期") || msg.contains("expired") {
+                        if crate::commands::renew_stepfun_token(app, &id).await.is_ok() {
+                            fresh = providers::fetch_one(&id, cfg, &http).await;
+                        }
+                    }
+                }
+            }
+        }
+        incoming.push(fresh.clone());
         state.inflight.lock().await.remove(&id); // 本轮发起的请求已落地，放行后续手动刷新
         finished_ids.insert(id.clone());
 
@@ -418,7 +443,10 @@ pub async fn refresh_usages_and_emit(app:&AppHandle,manual:bool)->Result<Refresh
 /// Apply one freshly fetched reading with the same reconcile/schedule/emit semantics as
 /// the scheduled stream.
 pub async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderUsage,expected_gen:Option<u64>)->Result<(),String>{
+    if updater::applying(){return Ok(())}
     let state=app.state::<AppState>();
+    let _commit_gate=state.refresh_gate.lock().await;
+    if updater::applying(){return Ok(())}
     let current_settings=state.settings.lock().await.clone();
     // 通知判断用 reconcile 前的原始读数（与定时轮 passed 语义一致，A10）。
     let raw_for_alerts=fresh.clone();
@@ -535,6 +563,7 @@ fn expire_tick(app:&AppHandle){
 
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
 pub fn run(){
+    if updater::helper::entry(){return}
     // W07: CLI --json 前置于所有 GUI/WebView2/单实例/注册表调用之前
     if std::env::args().any(|a| a == "--json") {
         let data_dir = if let Some(dir_str) = std::env::var_os("PULSE_DATA_DIR") {
@@ -576,6 +605,7 @@ pub fn run(){
         }
     }
 
+    if let Err(e)=updater::helper::startup_guard(){eprintln!("{e}");return;}
     if !crate::platform::is_webview2_available() {
         crate::platform::show_missing_webview2_dialog();
         std::process::exit(1);
@@ -610,6 +640,7 @@ pub fn run(){
             std::process::exit(1);
         }
     };
+    if let Err(e)=updater::helper::mark_startup_attempt(){eprintln!("{e}");return;}
     crate::platform::repair_startup_if_moved();
     crate::platform::sync_portable_notification_identity();
     // profile_id exists from first run, not first credential use.
@@ -627,8 +658,10 @@ pub fn run(){
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(state)
+        .manage(updater::UpdateService::default())
         .setup(|app|{
             let app_handle=app.handle().clone();
+            updater::start(app_handle.clone());
             let _=app.state::<AppState>().app_handle.set(app_handle.clone());
             let _=RAIL_APP.set(app_handle.clone());
             tray::setup_tray(&app_handle)?;
@@ -795,6 +828,6 @@ pub fn run(){
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![commands::publish_rail_warning,commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::refresh_account,commands::drag_begin,commands::drag_move,commands::drag_end,commands::drag_cancel,commands::rail_menu_cmd,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::settings_window_ready,commands::request_close_settings,commands::acknowledge_close,commands::pending_settings_close,commands::confirm_close_settings,commands::set_credential,commands::delete_credential,commands::delete_account,commands::diagnostics,commands::test_account,commands::token_spend,commands::cancel_token_spend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::get_notification_status,commands::register_notification_identity,commands::unregister_notification_identity,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::get_detail_layout,commands::detail_layout_ready,commands::resize_detail,commands::hide_detail,commands::detail_account,commands::set_detail_hover,commands::is_portable,commands::get_profile_info,commands::check_profile_status,commands::clear_profile_credentials,commands::create_isolated_profile,commands::get_runtime_info,commands::check_importable_config,commands::import_installed_config,commands::detect_network_proxy,commands::test_network_connection,commands::check_local_antigravity,commands::quick_add_antigravity_account])
+        .invoke_handler(tauri::generate_handler![updater::update_status,updater::update_ui_ready,updater::update_check,updater::update_download,updater::update_cancel,updater::update_discard,updater::update_preferences,updater::update_apply,commands::publish_rail_warning,commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::refresh_account,commands::drag_begin,commands::drag_move,commands::drag_end,commands::drag_cancel,commands::rail_menu_cmd,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::settings_window_ready,commands::request_close_settings,commands::acknowledge_close,commands::pending_settings_close,commands::confirm_close_settings,commands::set_credential,commands::delete_credential,commands::delete_account,commands::diagnostics,commands::test_account,commands::token_spend,commands::cancel_token_spend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::get_notification_status,commands::register_notification_identity,commands::unregister_notification_identity,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::get_detail_layout,commands::detail_layout_ready,commands::resize_detail,commands::hide_detail,commands::detail_account,commands::set_detail_hover,commands::is_portable,commands::get_profile_info,commands::check_profile_status,commands::clear_profile_credentials,commands::create_isolated_profile,commands::get_runtime_info,commands::check_importable_config,commands::import_installed_config,commands::detect_network_proxy,commands::test_network_connection,commands::check_local_antigravity,commands::quick_add_antigravity_account,commands::open_external_url,commands::open_stepfun_login])
         .run(tauri::generate_context!()).expect("Pulse runtime failed");
 }

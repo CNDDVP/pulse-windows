@@ -2,14 +2,26 @@ export interface UsageWindow {
   id: string; name: string; used_fraction: number; used_percent: number;
   resets_at: string | null; window_seconds: number | null; exhausted: boolean;
 }
+export interface Balance {
+  currency: string;
+  amount: number;
+  expires_at?: string | null;
+}
+export interface HourlyUsage {
+  timestamp: number;
+  model_id: string;
+  calls: number;
+  credit_consumed: number;
+}
 export interface ProviderUsage {
   account_id: string; provider_id: string; display_name: string;
   state: "live" | "stale" | "loading" | "unavailable" | "error";
   primary_percent: number | null; plan_name: string | null; is_active: boolean;
-  windows: UsageWindow[]; balances: {currency: string; amount: number}[];
+  windows: UsageWindow[]; balances: Balance[];
   error_code: string | null; error_message: string | null; source: string;
   checked_at: string | null; last_success_at: string | null; retry_after_seconds: number | null;
   duration_ms: number | null;
+  hourly_usages?: HourlyUsage[];
 }
 export interface ProviderConfig {
   provider_id: string; label: string; enabled: boolean; order: number; use_local: boolean;

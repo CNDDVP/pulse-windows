@@ -11,6 +11,7 @@ fn needs_initial_refresh(old:Option<&crate::types::ProviderConfig>,next:&crate::
 }
 #[tauri::command]
 pub async fn token_spend(days:u32,state:State<'_,AppState>)->Result<crate::ledger::Summary,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     {
         let s = state.settings.lock().await;
         if !s.token_spend_enabled {
@@ -55,6 +56,7 @@ pub async fn get_settings(state:State<'_,AppState>)->Result<AppSettings,String>{
 }
 #[tauri::command]
 pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppState>,app:AppHandle)->Result<AppSettings,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     new_settings.validate()?;
     // 事务化（A03）：从读快照到写盘、写回内存全程持 settings_io 锁，串行化所有
     // 设置写路径——并发保存/拖拽/凭据操作交错时不再互相覆盖。
@@ -168,7 +170,16 @@ pub async fn test_account(account_id:String,state:State<'_,AppState>,app:AppHand
         return Err(format!("服务商 {} 未授权监控；请在常规设置中开启授权", cfg.provider_id));
     }
     let http = state.http.read().await.clone();
-    let usage=crate::providers::fetch_one(&account_id,&cfg,&http).await;
+    let mut usage=crate::providers::fetch_one(&account_id,&cfg,&http).await;
+    if cfg.provider_id == "stepfun" && usage.error_code.as_deref() == Some("auth") {
+        if let Some(msg) = &usage.error_message {
+            if msg.contains("Token 已过期") || msg.contains("expired") {
+                if renew_stepfun_token(&app, &account_id).await.is_ok() {
+                    usage = crate::providers::fetch_one(&account_id, &cfg, &http).await;
+                }
+            }
+        }
+    }
     let _=crate::apply_single_reading(&app,&account_id,usage.clone(),None).await;
     Ok(usage)
 }
@@ -223,6 +234,7 @@ pub async fn close_settings_window(state:State<'_,AppState>,app:AppHandle)->Resu
 }
 #[tauri::command]
 pub async fn set_credential(account_id:String,secret:String,state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let _io=state.settings_io.lock().await;
     let mut settings=state.settings.lock().await.clone();
     let pid = settings.providers.get_mut(&account_id).ok_or("账号不存在")?.provider_id.clone();
@@ -267,6 +279,7 @@ pub async fn set_credential(account_id:String,secret:String,state:State<'_,AppSt
 }
 #[tauri::command]
 pub async fn delete_credential(account_id:String,state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let _io=state.settings_io.lock().await;
     let mut settings=state.settings.lock().await.clone();
     settings.providers.get_mut(&account_id).ok_or("账号不存在")?.credential_configured=false;
@@ -286,6 +299,7 @@ pub async fn delete_credential(account_id:String,state:State<'_,AppState>,app:Ap
 }
 #[tauri::command]
 pub async fn delete_account(account_id:String,state:State<'_,AppState>,app:AppHandle)->Result<AppSettings,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let _io=state.settings_io.lock().await;
     let mut settings=state.settings.lock().await.clone();
     if !settings.providers.contains_key(&account_id){return Err("账号不存在".into());}
@@ -550,25 +564,19 @@ pub fn get_detail_layout() -> Option<DetailLayout> {
 /// 内容驱动的详情窗口高度自适应：前端测量卡片实际高度（逻辑像素）后调用。
 /// 钳制在屏幕工作区高度的 90% 内，超限时内容走滚动；若向下延伸超出屏幕底边则向上平移，避免被任务栏或屏幕裁切。
 #[tauri::command]
-pub fn resize_detail(height:f64,app:AppHandle)->Result<(),String>{
-    let width=match DETAIL_LAYOUT.lock(){
-        Ok(g)=>g.as_ref().map(|l|l.width).unwrap_or(360),
-        Err(_)=>return Ok(()),
-    };
-    let Some(w)=app.get_webview_window("detail")else{return Ok(())};
+pub fn resize_detail(height:f64,request_id:u64,app:AppHandle)->Result<Option<DetailLayout>,String>{
+    if !height.is_finite()||height<=0.0||height>100000.0{return Err("详情高度无效".into())}
+    let mut guard=DETAIL_LAYOUT.lock().map_err(|_|"详情布局锁异常")?;
+    let Some(layout)=guard.as_mut().filter(|l|l.request_id==request_id)else{return Ok(None)};
+    let width=layout.width;
+    let Some(w)=app.get_webview_window("detail")else{return Ok(None)};
     let scale=w.scale_factor().unwrap_or(1.0);
     let monitor=w.current_monitor().ok().flatten().or_else(||w.primary_monitor().ok().flatten());
     let max_h=monitor.as_ref().map(|m|((m.work_area().size.height as f64)*0.9).round() as u32).unwrap_or(1600);
-    let dh=((height*scale).round() as u32).clamp(120,max_h);
+    let dh=((height*scale).round() as u32).clamp(120,max_h.max(120));
     LAST_DETAIL_H.store(dh,Ordering::SeqCst);
-    if let Ok(mut g) = DETAIL_LAYOUT.lock() {
-        if let Some(ref mut l) = *g {
-            l.height = dh;
-            if let Ok(mut map) = ACCOUNT_DETAIL_H.lock() {
-                map.get_or_insert_with(std::collections::HashMap::new).insert(l.account_id.clone(), height);
-            }
-        }
-    }
+    layout.height=dh;
+    if let Ok(mut map)=ACCOUNT_DETAIL_H.lock(){map.get_or_insert_with(std::collections::HashMap::new).insert(layout.account_id.clone(),height);}
     let pos=w.outer_position().map_err(|_|"无法读取详情窗口位置".to_string())?;
     let (new_x, new_y) = if let Some(ref m) = monitor {
         let area = m.work_area();
@@ -587,7 +595,7 @@ pub fn resize_detail(height:f64,app:AppHandle)->Result<(),String>{
         (pos.x, pos.y)
     };
     crate::window::place_at(&w,new_x,new_y,width,dh);
-    Ok(())
+    Ok(Some(layout.clone()))
 }
 
 #[tauri::command]
@@ -846,6 +854,7 @@ pub fn get_profile_info()->crate::config::AppProfile{
 
 #[tauri::command]
 pub async fn clear_profile_credentials(state:State<'_,AppState>,app:AppHandle)->Result<(),String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let _io=state.settings_io.lock().await;
     crate::secrets::clear_profile_credentials()?;
     // 全量清理同步（B02）：全部账号读数清空、在途请求失效、凭据标志由下次写盘重核，
@@ -861,6 +870,7 @@ pub async fn clear_profile_credentials(state:State<'_,AppState>,app:AppHandle)->
 
 #[tauri::command]
 pub async fn create_isolated_profile(state:State<'_,AppState>,app:AppHandle)->Result<String,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let new_id=crate::config::create_isolated_profile()?;
     // 身份切换事务化（A25）：清读数与调度、失效全部账号的在途请求（代际 bump），
     // 广播清空后的读数——旧身份的结果不得在新身份下提交。
@@ -933,6 +943,7 @@ pub fn check_importable_config() -> Result<Option<crate::config::ImportableConfi
 
 #[tauri::command]
 pub async fn import_installed_config(state: State<'_, AppState>, app: AppHandle, mode: Option<String>) -> Result<AppSettings, String> {
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let _io = state.settings_io.lock().await;
     let import_mode = match mode.as_deref() {
         Some("overwrite") => crate::config::ImportMode::Overwrite,
@@ -1154,6 +1165,7 @@ pub async fn check_local_antigravity() -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn quick_add_antigravity_account(state: State<'_, AppState>, app: AppHandle) -> Result<AppSettings, String> {
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
     let _io = state.settings_io.lock().await;
     let mut settings = state.settings.lock().await.clone();
 
@@ -1207,4 +1219,418 @@ pub async fn quick_add_antigravity_account(state: State<'_, AppState>, app: AppH
     });
 
     Ok(saved)
+}
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("仅支持 HTTPS 链接".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let url_wide: Vec<u16> = std::ffi::OsStr::new(&url).encode_wide().chain(Some(0)).collect();
+        let op_wide: Vec<u16> = std::ffi::OsStr::new("open").encode_wide().chain(Some(0)).collect();
+        unsafe {
+            let res = ShellExecuteW(
+                None,
+                PCWSTR(op_wide.as_ptr()),
+                PCWSTR(url_wide.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+            if res.0 as usize <= 32 {
+                return Err("无法打开系统浏览器".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn save_stepfun_login_token(app: &tauri::AppHandle, account_id: &str, token: &str, cookie: Option<&str>) -> Result<(), String> {
+    let had_cred = WindowsSecrets.get(account_id).unwrap_or(None);
+    let update_payload = serde_json::json!({
+        "oasis_token": token,
+        "cookie": cookie
+    }).to_string();
+    let secret = crate::providers::credentials::merge_stepfun_credentials(
+        had_cred.as_deref().unwrap_or(""),
+        &update_payload,
+    );
+    let aid = account_id.to_string();
+    let sec = secret.clone();
+
+    // Save to WindowsSecrets
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        WindowsSecrets.put(&aid, sec.trim())
+    }).await.map_err(|_| "保存凭据失败")??;
+
+    // Update settings
+    let state = app.state::<AppState>();
+    {
+        let mut settings = state.settings.lock().await;
+        if let Some(cfg) = settings.providers.get_mut(account_id) {
+            cfg.credential_configured = true;
+        }
+        settings.generation = settings.generation.wrapping_add(1);
+        let _ = crate::config::save_settings(&settings);
+        let _ = app.emit("settings-updated", &*settings);
+    }
+    state.clear_config_error();
+    state.bump_account_gen(account_id).await;
+    state.schedule.lock().await.remove(account_id);
+
+    // Emit login success event to frontend
+    let _ = app.emit("stepfun-login-success", serde_json::json!({
+        "account_id": account_id,
+    }));
+
+    // Close the login window
+    if let Some(win) = app.get_webview_window("stepfun_login") {
+        let _ = win.close();
+    }
+
+    Ok(())
+}
+
+fn poll_stepfun_cookies(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    account_id: String,
+    success_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..600 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+            if success_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+
+            let (tx, rx) = tokio::sync::oneshot::channel::<(Option<String>, String)>();
+            let win_clone = window.clone();
+            let res = win_clone.with_webview(move |webview| {
+                #[cfg(windows)]
+                unsafe {
+                    use webview2_com::Microsoft::Web::WebView2::Win32::*;
+                    use windows_core::Interface;
+                    let c = webview.controller();
+                    if let Ok(w2) = c.CoreWebView2() {
+                        if let Ok(w2_2) = w2.cast::<ICoreWebView2_2>() {
+                            if let Ok(cm) = w2_2.CookieManager() {
+                                let handler = webview2_com::GetCookiesCompletedHandler::create(Box::new(move |_res, list| {
+                                    let mut token_found: Option<String> = None;
+                                    let mut all_cookies: Vec<String> = Vec::new();
+                                    if let Some(list) = list {
+                                        let mut count = 0;
+                                        let _ = list.Count(&mut count);
+                                        for i in 0..count {
+                                            if let Ok(cookie) = list.GetValueAtIndex(i) {
+                                                let mut name = windows_core::PWSTR::null();
+                                                let _ = cookie.Name(&mut name);
+                                                let mut val = windows_core::PWSTR::null();
+                                                let _ = cookie.Value(&mut val);
+                                                let n = if !name.is_null() {
+                                                    let s = name.to_string().unwrap_or_default();
+                                                    windows::Win32::System::Com::CoTaskMemFree(Some(name.as_ptr() as *const _));
+                                                    s
+                                                } else {
+                                                    String::new()
+                                                };
+                                                let v = if !val.is_null() {
+                                                    let s = val.to_string().unwrap_or_default();
+                                                    windows::Win32::System::Com::CoTaskMemFree(Some(val.as_ptr() as *const _));
+                                                    s
+                                                } else {
+                                                    String::new()
+                                                };
+                                                if !n.is_empty() {
+                                                    all_cookies.push(format!("{n}={v}"));
+                                                    if n.eq_ignore_ascii_case("Oasis-Token") && !v.trim().is_empty() {
+                                                        token_found = Some(v.trim().to_string());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    let _ = tx.send((token_found, all_cookies.join("; ")));
+                                    Ok(())
+                                }));
+                                let _ = cm.GetCookies(None, &handler);
+                                return;
+                            }
+                        }
+                    }
+                }
+                let _ = tx.send((None, String::new()));
+            });
+
+            if res.is_err() {
+                break;
+            }
+
+            if let Ok((Some(token), cookie_str)) = rx.await {
+                if !token.is_empty() && !success_flag.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let app_inner = app.clone();
+                    let aid = account_id.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = save_stepfun_login_token(&app_inner, &aid, &token, Some(&cookie_str)).await;
+                    });
+                    break;
+                }
+            }
+        }
+    });
+}
+
+pub async fn renew_stepfun_token(app: &tauri::AppHandle, account_id: &str) -> Result<String, String> {
+    if let Some(w) = app.get_webview_window("stepfun_login") {
+        if w.is_visible().unwrap_or(false) {
+            return Err("用户正在登录窗口操作".into());
+        }
+    }
+
+    if let Some(w) = app.get_webview_window("stepfun_renew") {
+        let _ = w.close();
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    }
+
+    let renew_url: tauri::Url = "https://platform.stepfun.com/".parse().map_err(|e| format!("{e}"))?;
+    let renew_win = tauri::WebviewWindowBuilder::new(
+        app,
+        "stepfun_renew",
+        tauri::WebviewUrl::External(renew_url),
+    )
+    .title("StepFun Token Renew")
+    .inner_size(400.0, 300.0)
+    .visible(false)
+    .skip_taskbar(true)
+    .focused(false)
+    .build()
+    .map_err(|e| format!("无法创建续期窗口: {e}"))?;
+
+    let mut renewed_token: Option<String> = None;
+    let mut renewed_cookie: Option<String> = None;
+
+    for _ in 0..15 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
+        let (tx, rx) = tokio::sync::oneshot::channel::<(Option<String>, String)>();
+        let win_clone = renew_win.clone();
+        let res = win_clone.with_webview(move |webview| {
+            #[cfg(windows)]
+            unsafe {
+                use webview2_com::Microsoft::Web::WebView2::Win32::*;
+                use windows_core::Interface;
+                let c = webview.controller();
+                if let Ok(w2) = c.CoreWebView2() {
+                    if let Ok(w2_2) = w2.cast::<ICoreWebView2_2>() {
+                        if let Ok(cm) = w2_2.CookieManager() {
+                            let handler = webview2_com::GetCookiesCompletedHandler::create(Box::new(move |_res, list| {
+                                let mut token_found: Option<String> = None;
+                                let mut all_cookies: Vec<String> = Vec::new();
+                                if let Some(list) = list {
+                                    let mut count = 0;
+                                    let _ = list.Count(&mut count);
+                                    for i in 0..count {
+                                        if let Ok(cookie) = list.GetValueAtIndex(i) {
+                                            let mut name = windows_core::PWSTR::null();
+                                            let _ = cookie.Name(&mut name);
+                                            let mut val = windows_core::PWSTR::null();
+                                            let _ = cookie.Value(&mut val);
+                                            let n = if !name.is_null() {
+                                                let s = name.to_string().unwrap_or_default();
+                                                windows::Win32::System::Com::CoTaskMemFree(Some(name.as_ptr() as *const _));
+                                                s
+                                            } else {
+                                                String::new()
+                                            };
+                                            let v = if !val.is_null() {
+                                                let s = val.to_string().unwrap_or_default();
+                                                windows::Win32::System::Com::CoTaskMemFree(Some(val.as_ptr() as *const _));
+                                                s
+                                            } else {
+                                                String::new()
+                                            };
+                                            if !n.is_empty() {
+                                                all_cookies.push(format!("{n}={v}"));
+                                                if n.eq_ignore_ascii_case("Oasis-Token") && !v.trim().is_empty() {
+                                                    token_found = Some(v.trim().to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                let _ = tx.send((token_found, all_cookies.join("; ")));
+                                Ok(())
+                            }));
+                            let _ = cm.GetCookies(None, &handler);
+                            return;
+                        }
+                    }
+                }
+            }
+            let _ = tx.send((None, String::new()));
+        });
+
+        if res.is_err() {
+            break;
+        }
+
+        if let Ok((Some(token), cookie_str)) = rx.await {
+            renewed_token = Some(token);
+            renewed_cookie = Some(cookie_str);
+            break;
+        }
+    }
+
+    let _ = renew_win.close();
+
+    if let Some(token) = renewed_token {
+        save_stepfun_login_token(app, account_id, &token, renewed_cookie.as_deref()).await?;
+        Ok(token)
+    } else {
+        Err("未能自动续期，登录会话可能已彻底失效，请重新网页登录".into())
+    }
+}
+
+#[tauri::command]
+pub async fn open_stepfun_login(app: tauri::AppHandle, account_id: String) -> Result<(), String> {
+    let success_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    if let Some(w) = app.get_webview_window("stepfun_login") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        poll_stepfun_cookies(w, app.clone(), account_id, success_flag);
+        return Ok(());
+    }
+
+    let login_url: tauri::Url = "https://platform.stepfun.com/".parse().map_err(|e| format!("{e}"))?;
+
+    let injection = r#"
+(function() {
+    function notifyToken(token) {
+        if (token && typeof token === 'string' && token.length > 15 && !window.__pulse_token_sent) {
+            window.__pulse_token_sent = true;
+            window.location.href = "https://pulse.internal/auth?token=" + encodeURIComponent(token);
+        }
+    }
+
+    // 1. Intercept fetch
+    var origFetch = window.fetch;
+    window.fetch = function(input, init) {
+        try {
+            if (init && init.headers) {
+                var headers = init.headers;
+                if (headers instanceof Headers) {
+                    var t = headers.get('Oasis-Token') || headers.get('oasis-token');
+                    if (t) notifyToken(t);
+                } else if (typeof headers === 'object') {
+                    for (var k in headers) {
+                        if (/oasis[-_]?token/i.test(k)) {
+                            notifyToken(headers[k]);
+                        }
+                    }
+                }
+            }
+        } catch(e) {}
+        return origFetch.apply(this, arguments);
+    };
+
+    // 2. Intercept XMLHttpRequest
+    var origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+    XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
+        try {
+            if (/oasis[-_]?token/i.test(header)) {
+                notifyToken(value);
+            }
+        } catch(e) {}
+        return origSetHeader.apply(this, arguments);
+    };
+
+    // 3. Polling document.cookie, localStorage, sessionStorage
+    function scanStorage() {
+        try {
+            var match = document.cookie.match(/(?:^|;\s*)Oasis-Token=([^;]+)/i);
+            if (match && match[1]) {
+                notifyToken(decodeURIComponent(match[1]));
+                return;
+            }
+            if (window.localStorage) {
+                for (var i = 0; i < localStorage.length; i++) {
+                    var k = localStorage.key(i);
+                    if (k && /oasis[-_]?token/i.test(k)) {
+                        var v = localStorage.getItem(k);
+                        if (v && v.length > 15) { notifyToken(v); return; }
+                    }
+                }
+            }
+            if (window.sessionStorage) {
+                for (var j = 0; j < sessionStorage.length; j++) {
+                    var sk = sessionStorage.key(j);
+                    if (sk && /oasis[-_]?token/i.test(sk)) {
+                        var sv = sessionStorage.getItem(sk);
+                        if (sv && sv.length > 15) { notifyToken(sv); return; }
+                    }
+                }
+            }
+        } catch(e) {}
+    }
+
+    setInterval(scanStorage, 1000);
+    scanStorage();
+})();
+"#;
+
+    let app_handle = app.clone();
+    let aid = account_id.clone();
+    let flag_clone = success_flag.clone();
+
+    let window = tauri::WebviewWindowBuilder::new(&app, "stepfun_login", tauri::WebviewUrl::External(login_url))
+        .title("阶跃星辰 StepFun - 网页登录")
+        .inner_size(860.0, 720.0)
+        .center()
+        .resizable(true)
+        .initialization_script(injection)
+        .on_navigation({
+            let app = app_handle.clone();
+            let aid = aid.clone();
+            let flag = flag_clone.clone();
+            move |url| {
+                if url.host_str() == Some("pulse.internal") && url.path() == "/auth" {
+                    let token_opt = url.query_pairs().find(|(k, _)| k == "token").map(|(_, v)| v.to_string());
+                    if let Some(token) = token_opt {
+                        if !token.is_empty() {
+                            if !flag.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                let app_inner = app.clone();
+                                let account_id_inner = aid.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    let _ = save_stepfun_login_token(&app_inner, &account_id_inner, &token, None).await;
+                                });
+                            }
+                        }
+                    }
+                    return false;
+                }
+                true
+            }
+        })
+        .build()
+        .map_err(|e| format!("无法创建登录窗口：{e}"))?;
+
+    poll_stepfun_cookies(window.clone(), app.clone(), aid.clone(), success_flag.clone());
+
+    let app_for_close = app.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Destroyed = event {
+            if !flag_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = app_for_close.emit("stepfun-login-closed", ());
+            }
+        }
+    });
+
+    Ok(())
 }

@@ -61,6 +61,7 @@ pub fn cursor_cookie(token:&str)->Option<String>{
 pub struct StepFunCredentials {
     pub api_key: Option<String>,
     pub oasis_token: Option<String>,
+    pub cookie: Option<String>,
 }
 
 pub fn clean_oasis_token(raw: &str) -> Option<String> {
@@ -88,23 +89,32 @@ pub fn parse_stepfun_credentials(secret: &str) -> StepFunCredentials {
             let oasis_token = v.get("oasis_token")
                 .or_else(|| v.get("oasisToken"))
                 .or_else(|| v.get("token"))
-                .or_else(|| v.get("cookie"))
                 .and_then(Value::as_str)
-                .and_then(clean_oasis_token);
-            if api_key.is_some() || oasis_token.is_some() {
-                return StepFunCredentials { api_key, oasis_token };
+                .and_then(clean_oasis_token)
+                .or_else(|| v.get("cookie").and_then(Value::as_str).and_then(clean_oasis_token));
+            let cookie = v.get("cookie")
+                .or_else(|| v.get("cookies"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|k| !k.is_empty())
+                .map(str::to_string);
+            if api_key.is_some() || oasis_token.is_some() || cookie.is_some() {
+                return StepFunCredentials { api_key, oasis_token, cookie };
             }
         }
     }
     if s.contains("Oasis-Token=") || s.contains("platform.stepfun.com") || s.starts_with("eyJ") {
+        let cookie = if s.contains(';') { Some(s.to_string()) } else { None };
         StepFunCredentials {
             api_key: None,
             oasis_token: clean_oasis_token(s),
+            cookie,
         }
     } else {
         StepFunCredentials {
             api_key: Some(s.to_string()),
             oasis_token: None,
+            cookie: None,
         }
     }
 }
@@ -116,7 +126,8 @@ pub fn merge_stepfun_credentials(old: &str, update: &str) -> String {
     let nonempty = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
     serde_json::json!({
         "api_key": nonempty(incoming.api_key).or_else(|| nonempty(previous.api_key)),
-        "oasis_token": nonempty(incoming.oasis_token).or_else(|| nonempty(previous.oasis_token))
+        "oasis_token": nonempty(incoming.oasis_token).or_else(|| nonempty(previous.oasis_token)),
+        "cookie": nonempty(incoming.cookie).or_else(|| nonempty(previous.cookie))
     }).to_string()
 }
 

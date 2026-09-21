@@ -76,12 +76,16 @@ pub fn detect_proxy(proxy_cfg: &crate::types::NetworkProxySettings) -> ProxyDete
 }
 
 pub fn client_with_proxy(proxy_cfg: &crate::types::NetworkProxySettings) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(12))
         .connect_timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!("PulseWindows/", env!("CARGO_PKG_VERSION")));
 
+    proxy_client(builder, proxy_cfg)
+}
+
+fn proxy_client(mut builder:reqwest::ClientBuilder, proxy_cfg:&crate::types::NetworkProxySettings)->Result<reqwest::Client,String>{
     match proxy_cfg.mode.as_str() {
         "manual_http" => {
             let proxy_url = format!("http://{}:{}", proxy_cfg.host, proxy_cfg.port);
@@ -365,3 +369,10 @@ mod tests {
     }
 }
 
+
+pub fn updater_client(proxy:&crate::types::NetworkProxySettings)->Result<reqwest::Client,String>{
+ let builder=reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(900)).user_agent(concat!("PulseWindows/",env!("CARGO_PKG_VERSION"))).redirect(reqwest::redirect::Policy::custom(|attempt|{
+ let url=attempt.url();
+ if attempt.previous().len()>=8||url.scheme()!="https"||!matches!(url.host_str(),Some("github.com"|"api.github.com"|"release-assets.githubusercontent.com"|"objects.githubusercontent.com")){attempt.error("不允许的更新重定向")}else{attempt.follow()}
+ }));proxy_client(builder,proxy)
+}

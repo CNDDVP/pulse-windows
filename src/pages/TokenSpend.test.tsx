@@ -4,6 +4,7 @@ import {render,fireEvent,screen,act,cleanup} from '@testing-library/react';
 import {TokenSpend} from './TokenSpend';
 const invoke=vi.hoisted(()=>vi.fn());
 vi.mock('@tauri-apps/api/core',()=>({invoke}));
+vi.mock('@tauri-apps/api/event',()=>({listen:vi.fn(()=>Promise.resolve(()=>{}))}));
 afterEach(()=>{cleanup();invoke.mockReset()});
 it('leaving a pending scan clears busy; a late result cannot replace a newer scan',async()=>{
   const resolvers:((v:unknown)=>void)[]=[];

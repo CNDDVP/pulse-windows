@@ -69,16 +69,17 @@ function DetailOverlay() {
   // 窗口高随之伸缩（resize_detail 后端再按工作区钳制）。仅当目标高度与当前相差 >8px
   // 时调用，避免与窗口变化互相触发循环。
   const cardRef=useRef<HTMLElement>(null);
-  const lastHeightRef=useRef(0);
+  const lastHeightRef=useRef("");
   useEffect(()=>{
-    const el=cardRef.current;if(!el||!usage||!settings)return;
+    const el=cardRef.current;if(!el||!usage||!settings||!layout)return;
     const rect=el.getBoundingClientRect();
     const target=Math.ceil(Math.max(el.scrollHeight,rect.height))+20;
     const current=window.innerHeight;
-    if(Math.abs(target-current)>6&&lastHeightRef.current!==target){
-      lastHeightRef.current=target;
-      void invoke("resize_detail",{height:target}).catch(()=>{});
-      setLayout(prev => prev ? { ...prev, height: Math.round(target * (window.devicePixelRatio || 1)) } : null);
+    if(Math.abs(target-current)>6&&lastHeightRef.current!==`${layout.request_id}:${target}`){
+      lastHeightRef.current=`${layout.request_id}:${target}`;
+      void invoke<DetailLayout|null>("resize_detail",{height:target,requestId:layout.request_id}).then(actual=>{
+        if(actual)setLayout(prev=>prev?.request_id===actual.request_id?actual:prev);
+      }).catch(()=>{lastHeightRef.current="";});
     }
   },[usage,settings,layout,accountId]);
   return <div className={`w-full h-full p-2 flex ${justifyClass} ${alignClass}`}
@@ -130,6 +131,7 @@ function MainApp({label}:{label:string}){
   },[]);
   // 减少动态效果：应用内开关挂到根元素，CSS 一处覆盖所有动画（A27）。
   useEffect(()=>{document.documentElement.classList.toggle("reduce-motion",!!settings?.reduce_motion);},[settings?.reduce_motion]);
+  useEffect(()=>{if(settings&&!error)void invoke("update_ui_ready").catch(()=>{});},[settings,error]);
   if(error)return <div className="p-4 bg-zinc-900 text-amber-300 text-sm">{error}</div>;
   if(!settings)return <div className="p-3 bg-zinc-900 text-zinc-400 text-xs">正在加载…</div>;
   return label==="settings"?<SettingsWindow initialSettings={settings} usages={usages} onSaved={setSettings}/>:<FloatingRail usages={usages} settings={settings}/>;

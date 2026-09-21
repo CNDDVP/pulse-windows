@@ -1,3 +1,4 @@
+import { UpdateCenter } from "./UpdateCenter";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Section } from "./shared";
@@ -40,7 +41,7 @@ function sanitizePath(raw: string): string {
     .replace(/\/(Users|home|etc)\/[^"\s,;]+/g, "[PATH]");
 }
 
-export function AboutPage() {
+export function AboutPage({hasDraft}: {hasDraft: () => boolean}) {
   const [profile, setProfile] = useState<ProfileInfo | null>(null);
   const [profileStatus, setProfileStatus] = useState<ProfileStatus | null>(null);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
@@ -147,7 +148,7 @@ export function AboutPage() {
   const rows: [string, string][] = [
     ["版本", `v${runtime?.version || __APP_VERSION__}`],
     ["构建", `${runtime?.commit || __GIT_COMMIT__} · ${runtime?.build_time || __BUILD_TIME__}`],
-    ["部署模式", profile?.mode === "portable" ? "便携版 (运行数据保存在 data/)" : profile?.mode === "custom_env" ? "自定义环境变量 (PULSE_DATA_DIR)" : "标准安装版 (数据保存在 AppData)"],
+    ["部署模式", profile?.mode === "portable" ? "便携版 (运行数据保存在 data/)" : profile?.mode === "custom_env" ? "自定义环境变量 (PULSE_DATA_DIR)" : "默认数据目录 (AppData；安装形态见更新方式)"],
     ["配置身份", profile ? `${profile.profile_id.slice(0, 16)}...` : "正在读取..."],
     ["程序 SHA256", runtime?.exe_sha256 ? `${runtime.exe_sha256.slice(0, 16)}...${runtime.exe_sha256.slice(-16)}` : "正在计算..."],
     ["数据目录", runtime?.data_dir || "正在读取..."],
@@ -222,7 +223,13 @@ export function AboutPage() {
       </Section>
 
       <Section title="更新与开源" icon="⬆️" subtitle="本项目遵循 Apache-2.0 许可证公开开源。"
-        aside={<a className={btnGhost} href="https://github.com/qunqin24/Pulse" target="_blank" rel="noreferrer">上游项目</a>}>
+        aside={
+          <div className="flex gap-2">
+            <a className={btnGhost} href="https://github.com/CNDDVP/pulse-windows" target="_blank" rel="noreferrer" onClick={e => { e.preventDefault(); void invoke("open_external_url", { url: "https://github.com/CNDDVP/pulse-windows" }).catch(console.error); }}>GitHub 仓库</a>
+            <a className={btnGhost} href="https://github.com/qunqin24/Pulse" target="_blank" rel="noreferrer" onClick={e => { e.preventDefault(); void invoke("open_external_url", { url: "https://github.com/qunqin24/Pulse" }).catch(console.error); }}>上游项目</a>
+          </div>
+        }>
+        <UpdateCenter hasDraft={hasDraft} />
         <div className="text-xs text-zinc-400">当前版本 v{runtime?.version || __APP_VERSION__} · 遵循零遥测、零数据回传隐私承诺</div>
       </Section>
 

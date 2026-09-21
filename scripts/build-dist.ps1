@@ -1,4 +1,4 @@
-# Release packaging: NSIS setup + portable ZIP + manifests + SHA256SUMS.
+﻿# Release packaging: NSIS setup + portable ZIP + manifests + SHA256SUMS.
 # Builds from the CURRENT working tree; fails loudly on any inconsistency.
 param (
     [string]$Version = "",
@@ -45,19 +45,16 @@ foreach ($protected in @("$Root\src", "$Root\src-tauri", "$Root\.git", "$Root\do
         throw "OutputDir 不得命中受保护路径: $ArtifactsDir 与 $pp 冲突"
     }
 }
+# Do not terminate processes by name: other portable/install copies may be active.
+$buildExe = [IO.Path]::GetFullPath((Join-Path $Root "src-tauri\target\release\pulse-windows.exe"))
+$proc = Get-Process -Name "pulse-windows" -ErrorAction SilentlyContinue | Where-Object {
+    $_.Path -and [string]::Equals($_.Path, $buildExe, [StringComparison]::OrdinalIgnoreCase)
+}
+if ($StopRunningInstance) { Write-Warning "-StopRunningInstance 不再强制终止进程，请从托盘正常退出目标构建。" }
+if ($proc) { throw "构建产物正在运行（PID $($proc.Id)）；请正常退出该实例后重试。其他目录实例不会被终止。" }
+
 if (Test-Path $ArtifactsDir) { Remove-Item -Recurse -Force $ArtifactsDir }
 New-Item -ItemType Directory -Force -Path $ArtifactsDir | Out-Null
-
-# 1b. 运行中的实例会锁住链接产物：默认不停止用户程序，报告并要求显式决定。
-$proc = Get-Process -Name "pulse-windows" -ErrorAction SilentlyContinue
-if ($proc) {
-    if (-not $StopRunningInstance) {
-        throw "检测到正在运行的 pulse-windows（PID $($proc.Id)）。请先退出应用，或加 -StopRunningInstance 允许自动停止。"
-    }
-    Write-Host "  -> Stopping running pulse-windows instance (PID $($proc.Id))..." -ForegroundColor Yellow
-    Stop-Process -Name "pulse-windows" -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
-}
 
 # 2. Frontend
 Write-Host "`n[1/6] Building frontend assets..." -ForegroundColor Yellow

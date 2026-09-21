@@ -118,7 +118,7 @@ pub fn save(path:&std::path::Path,memory:&Memory)->Result<(),String>{crate::conf
     }
     #[test]fn low_balance_once_per_line_and_rearms(){
         let mut s=settings(None);let c=s.providers.get_mut("a").unwrap();c.low_balance=Some(5.0);c.low_balance_currency=Some("CNY".into());
-        let mut r=ProviderUsage::reading("deepseek",vec![]);r.state="live".into();r.account_id="a".into();r.checked_at=Some(chrono::DateTime::from_timestamp(NOW,0).unwrap().to_rfc3339());r.balances=vec![Balance{currency:"CNY".into(),amount:3.0},Balance{currency:"USD".into(),amount:1.0}];
+        let mut r=ProviderUsage::reading("deepseek",vec![]);r.state="live".into();r.account_id="a".into();r.checked_at=Some(chrono::DateTime::from_timestamp(NOW,0).unwrap().to_rfc3339());r.balances=vec![Balance::new("CNY",3.0),Balance::new("USD",1.0)];
         let (n,m)=evaluate(&[r.clone()],&s,Memory::default(),NOW);assert_eq!(n.len(),1,"only the configured currency is compared");assert_eq!(n[0].kind,"low_balance");
         let (n2,m)=evaluate(&[r.clone()],&s,m,NOW);assert!(n2.is_empty());
         r.balances[0].amount=20.0;let (_,m)=evaluate(&[r.clone()],&s,m,NOW);r.balances[0].amount=2.0;let (n3,_)=evaluate(&[r],&s,m,NOW);assert_eq!(n3.len(),1,"climbing back over the line re-arms");
