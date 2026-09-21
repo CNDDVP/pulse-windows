@@ -1291,12 +1291,101 @@ async fn save_stepfun_login_token(app: &tauri::AppHandle, account_id: &str, toke
     Ok(())
 }
 
+fn poll_stepfun_cookies(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    account_id: String,
+    success_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..600 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+            if success_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+
+            let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
+            let win_clone = window.clone();
+            let res = win_clone.with_webview(move |webview| {
+                #[cfg(windows)]
+                unsafe {
+                    use webview2_com::Microsoft::Web::WebView2::Win32::*;
+                    use windows_core::Interface;
+                    let c = webview.controller();
+                    if let Ok(w2) = c.CoreWebView2() {
+                        if let Ok(w2_2) = w2.cast::<ICoreWebView2_2>() {
+                            if let Ok(cm) = w2_2.CookieManager() {
+                                let handler = webview2_com::GetCookiesCompletedHandler::create(Box::new(move |_res, list| {
+                                    let mut token_found: Option<String> = None;
+                                    if let Some(list) = list {
+                                        let mut count = 0;
+                                        let _ = list.Count(&mut count);
+                                        for i in 0..count {
+                                            if let Ok(cookie) = list.GetValueAtIndex(i) {
+                                                let mut name = windows_core::PWSTR::null();
+                                                let _ = cookie.Name(&mut name);
+                                                let mut val = windows_core::PWSTR::null();
+                                                let _ = cookie.Value(&mut val);
+                                                let n = if !name.is_null() {
+                                                    let s = name.to_string().unwrap_or_default();
+                                                    windows::Win32::System::Com::CoTaskMemFree(Some(name.as_ptr() as *const _));
+                                                    s
+                                                } else {
+                                                    String::new()
+                                                };
+                                                let v = if !val.is_null() {
+                                                    let s = val.to_string().unwrap_or_default();
+                                                    windows::Win32::System::Com::CoTaskMemFree(Some(val.as_ptr() as *const _));
+                                                    s
+                                                } else {
+                                                    String::new()
+                                                };
+                                                if n.eq_ignore_ascii_case("Oasis-Token") && !v.trim().is_empty() {
+                                                    token_found = Some(v.trim().to_string());
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    let _ = tx.send(token_found);
+                                    Ok(())
+                                }));
+                                let _ = cm.GetCookies(None, &handler);
+                                return;
+                            }
+                        }
+                    }
+                }
+                let _ = tx.send(None);
+            });
+
+            if res.is_err() {
+                break;
+            }
+
+            if let Ok(Some(token)) = rx.await {
+                if !token.is_empty() && !success_flag.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let app_inner = app.clone();
+                    let aid = account_id.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = save_stepfun_login_token(&app_inner, &aid, &token).await;
+                    });
+                    break;
+                }
+            }
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn open_stepfun_login(app: tauri::AppHandle, account_id: String) -> Result<(), String> {
+    let success_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     if let Some(w) = app.get_webview_window("stepfun_login") {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
+        poll_stepfun_cookies(w, app.clone(), account_id, success_flag);
         return Ok(());
     }
 
@@ -1379,7 +1468,6 @@ pub async fn open_stepfun_login(app: tauri::AppHandle, account_id: String) -> Re
 
     let app_handle = app.clone();
     let aid = account_id.clone();
-    let success_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag_clone = success_flag.clone();
 
     let window = tauri::WebviewWindowBuilder::new(&app, "stepfun_login", tauri::WebviewUrl::External(login_url))
@@ -1397,12 +1485,13 @@ pub async fn open_stepfun_login(app: tauri::AppHandle, account_id: String) -> Re
                     let token_opt = url.query_pairs().find(|(k, _)| k == "token").map(|(_, v)| v.to_string());
                     if let Some(token) = token_opt {
                         if !token.is_empty() {
-                            flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                            let app_inner = app.clone();
-                            let account_id_inner = aid.clone();
-                            tauri::async_runtime::spawn(async move {
-                                let _ = save_stepfun_login_token(&app_inner, &account_id_inner, &token).await;
-                            });
+                            if !flag.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                let app_inner = app.clone();
+                                let account_id_inner = aid.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    let _ = save_stepfun_login_token(&app_inner, &account_id_inner, &token).await;
+                                });
+                            }
                         }
                     }
                     return false;
@@ -1412,6 +1501,8 @@ pub async fn open_stepfun_login(app: tauri::AppHandle, account_id: String) -> Re
         })
         .build()
         .map_err(|e| format!("无法创建登录窗口：{e}"))?;
+
+    poll_stepfun_cookies(window.clone(), app.clone(), aid.clone(), success_flag.clone());
 
     let app_for_close = app.clone();
     window.on_window_event(move |event| {

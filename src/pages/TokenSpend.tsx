@@ -1,5 +1,6 @@
 import {useEffect, useRef, useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
+import {listen} from '@tauri-apps/api/event';
 import {HourlyUsageChart} from '../components/HourlyUsageChart';
 import type {ProviderUsage} from '../types';
 
@@ -22,12 +23,24 @@ export function TokenSpend({ active = true }: { active?: boolean }){
 
   useEffect(() => {
     if (active) {
+      const updateSf = (usages: ProviderUsage[]) => {
+        const sf = (usages || []).filter(u => u.provider_id === 'stepfun' && u.hourly_usages && u.hourly_usages.length > 0);
+        setStepfunUsages(sf);
+      };
       invoke<ProviderUsage[]>('get_usages')
-        .then(usages => {
-          const sf = (usages || []).filter(u => u.provider_id === 'stepfun' && u.hourly_usages && u.hourly_usages.length > 0);
-          setStepfunUsages(sf);
-        })
+        .then(updateSf)
         .catch(() => {});
+      let unlisten: Promise<() => void> | undefined;
+      try {
+        unlisten = listen<ProviderUsage[]>('usages-updated', event => {
+          updateSf(event.payload);
+        });
+      } catch (_) {}
+      return () => {
+        if (unlisten) {
+          unlisten.then(fn => fn()).catch(() => {});
+        }
+      };
     }
   }, [active]);
 
