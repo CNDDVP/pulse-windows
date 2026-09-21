@@ -93,6 +93,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
           markApplied(saved);
           setSettings(saved);
           onSaved(saved);
+          invoke("refresh_account", { accountId: aid }).catch(() => {});
         })
         .catch(() => {});
     });
@@ -819,9 +820,9 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                                   onClick={() => void handleStepfunWebLogin(id)}
                                   disabled={locked || webLoginLoading[id]}
                                   className="text-[11px] text-emerald-400 hover:text-emerald-300 hover:underline cursor-pointer flex items-center gap-1 font-medium disabled:opacity-40"
-                                  title="唤起网页登录窗口，扫码或验证码登录后自动提取 Token 并保存"
+                                  title="唤起网页登录窗口，登录后自动提取 Token 并支持自动续期"
                                 >
-                                  <span>{webLoginLoading[id] ? "⏳ 等待登录…" : "🌐 网页扫码登录"}</span>
+                                  <span>{webLoginLoading[id] ? "⏳ 等待登录…" : "🌐 网页登录"}</span>
                                 </button>
                                 <button
                                   type="button"

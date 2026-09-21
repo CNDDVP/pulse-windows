@@ -112,7 +112,11 @@ pub async fn fetch(secret: &str, http: &reqwest::Client) -> Result<Value, Provid
             .header("Connect-Protocol-Version","1").header("Oasis-Appid","10300")
             .header("Oasis-Platform","web").header("Oasis-Token",token)
             .header("Origin","https://platform.stepfun.com").header("Referer","https://platform.stepfun.com/");
-        let cookie = if let Some(device) = &device {
+        let cookie = if let Some(custom) = &creds.cookie {
+            if custom.contains("Oasis-Token=") { custom.clone() }
+            else if let Some(device) = &device { req = req.header("Oasis-Webid", device); format!("Oasis-Token={token}; Oasis-Webid={device}; {custom}") }
+            else { format!("Oasis-Token={token}; {custom}") }
+        } else if let Some(device) = &device {
             req = req.header("Oasis-Webid", device);
             format!("Oasis-Token={token}; Oasis-Webid={device}")
         } else {
@@ -132,7 +136,11 @@ pub async fn fetch(secret: &str, http: &reqwest::Client) -> Result<Value, Provid
             .header("Connect-Protocol-Version","1").header("Oasis-Appid","10300")
             .header("Oasis-Platform","web").header("Oasis-Token",token)
             .header("Origin","https://platform.stepfun.com").header("Referer","https://platform.stepfun.com/");
-        let cookie = if let Some(device) = &device {
+        let cookie = if let Some(custom) = &creds.cookie {
+            if custom.contains("Oasis-Token=") { custom.clone() }
+            else if let Some(device) = &device { req = req.header("Oasis-Webid", device); format!("Oasis-Token={token}; Oasis-Webid={device}; {custom}") }
+            else { format!("Oasis-Token={token}; {custom}") }
+        } else if let Some(device) = &device {
             req = req.header("Oasis-Webid", device);
             format!("Oasis-Token={token}; Oasis-Webid={device}")
         } else {

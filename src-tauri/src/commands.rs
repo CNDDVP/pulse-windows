@@ -170,7 +170,16 @@ pub async fn test_account(account_id:String,state:State<'_,AppState>,app:AppHand
         return Err(format!("服务商 {} 未授权监控；请在常规设置中开启授权", cfg.provider_id));
     }
     let http = state.http.read().await.clone();
-    let usage=crate::providers::fetch_one(&account_id,&cfg,&http).await;
+    let mut usage=crate::providers::fetch_one(&account_id,&cfg,&http).await;
+    if cfg.provider_id == "stepfun" && usage.error_code.as_deref() == Some("auth") {
+        if let Some(msg) = &usage.error_message {
+            if msg.contains("Token 已过期") || msg.contains("expired") {
+                if renew_stepfun_token(&app, &account_id).await.is_ok() {
+                    usage = crate::providers::fetch_one(&account_id, &cfg, &http).await;
+                }
+            }
+        }
+    }
     let _=crate::apply_single_reading(&app,&account_id,usage.clone(),None).await;
     Ok(usage)
 }
@@ -1242,11 +1251,15 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
-async fn save_stepfun_login_token(app: &tauri::AppHandle, account_id: &str, token: &str) -> Result<(), String> {
+async fn save_stepfun_login_token(app: &tauri::AppHandle, account_id: &str, token: &str, cookie: Option<&str>) -> Result<(), String> {
     let had_cred = WindowsSecrets.get(account_id).unwrap_or(None);
+    let update_payload = serde_json::json!({
+        "oasis_token": token,
+        "cookie": cookie
+    }).to_string();
     let secret = crate::providers::credentials::merge_stepfun_credentials(
         had_cred.as_deref().unwrap_or(""),
-        token,
+        &update_payload,
     );
     let aid = account_id.to_string();
     let sec = secret.clone();
@@ -1281,13 +1294,6 @@ async fn save_stepfun_login_token(app: &tauri::AppHandle, account_id: &str, toke
         let _ = win.close();
     }
 
-    // Immediately refresh account
-    let app_clone = app.clone();
-    let aid = account_id.to_string();
-    tauri::async_runtime::spawn(async move {
-        let _ = AppState::refresh_account_now(&app_clone, &aid).await;
-    });
-
     Ok(())
 }
 
@@ -1304,7 +1310,7 @@ fn poll_stepfun_cookies(
                 break;
             }
 
-            let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
+            let (tx, rx) = tokio::sync::oneshot::channel::<(Option<String>, String)>();
             let win_clone = window.clone();
             let res = win_clone.with_webview(move |webview| {
                 #[cfg(windows)]
@@ -1317,6 +1323,7 @@ fn poll_stepfun_cookies(
                             if let Ok(cm) = w2_2.CookieManager() {
                                 let handler = webview2_com::GetCookiesCompletedHandler::create(Box::new(move |_res, list| {
                                     let mut token_found: Option<String> = None;
+                                    let mut all_cookies: Vec<String> = Vec::new();
                                     if let Some(list) = list {
                                         let mut count = 0;
                                         let _ = list.Count(&mut count);
@@ -1340,14 +1347,16 @@ fn poll_stepfun_cookies(
                                                 } else {
                                                     String::new()
                                                 };
-                                                if n.eq_ignore_ascii_case("Oasis-Token") && !v.trim().is_empty() {
-                                                    token_found = Some(v.trim().to_string());
-                                                    break;
+                                                if !n.is_empty() {
+                                                    all_cookies.push(format!("{n}={v}"));
+                                                    if n.eq_ignore_ascii_case("Oasis-Token") && !v.trim().is_empty() {
+                                                        token_found = Some(v.trim().to_string());
+                                                    }
                                                 }
                                             }
                                         }
                                     }
-                                    let _ = tx.send(token_found);
+                                    let _ = tx.send((token_found, all_cookies.join("; ")));
                                     Ok(())
                                 }));
                                 let _ = cm.GetCookies(None, &handler);
@@ -1356,25 +1365,135 @@ fn poll_stepfun_cookies(
                         }
                     }
                 }
-                let _ = tx.send(None);
+                let _ = tx.send((None, String::new()));
             });
 
             if res.is_err() {
                 break;
             }
 
-            if let Ok(Some(token)) = rx.await {
+            if let Ok((Some(token), cookie_str)) = rx.await {
                 if !token.is_empty() && !success_flag.swap(true, std::sync::atomic::Ordering::SeqCst) {
                     let app_inner = app.clone();
                     let aid = account_id.clone();
                     tauri::async_runtime::spawn(async move {
-                        let _ = save_stepfun_login_token(&app_inner, &aid, &token).await;
+                        let _ = save_stepfun_login_token(&app_inner, &aid, &token, Some(&cookie_str)).await;
                     });
                     break;
                 }
             }
         }
     });
+}
+
+pub async fn renew_stepfun_token(app: &tauri::AppHandle, account_id: &str) -> Result<String, String> {
+    if let Some(w) = app.get_webview_window("stepfun_login") {
+        if w.is_visible().unwrap_or(false) {
+            return Err("用户正在登录窗口操作".into());
+        }
+    }
+
+    if let Some(w) = app.get_webview_window("stepfun_renew") {
+        let _ = w.close();
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    }
+
+    let renew_url: tauri::Url = "https://platform.stepfun.com/".parse().map_err(|e| format!("{e}"))?;
+    let renew_win = tauri::WebviewWindowBuilder::new(
+        app,
+        "stepfun_renew",
+        tauri::WebviewUrl::External(renew_url),
+    )
+    .title("StepFun Token Renew")
+    .inner_size(400.0, 300.0)
+    .visible(false)
+    .skip_taskbar(true)
+    .focused(false)
+    .build()
+    .map_err(|e| format!("无法创建续期窗口: {e}"))?;
+
+    let mut renewed_token: Option<String> = None;
+    let mut renewed_cookie: Option<String> = None;
+
+    for _ in 0..15 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
+        let (tx, rx) = tokio::sync::oneshot::channel::<(Option<String>, String)>();
+        let win_clone = renew_win.clone();
+        let res = win_clone.with_webview(move |webview| {
+            #[cfg(windows)]
+            unsafe {
+                use webview2_com::Microsoft::Web::WebView2::Win32::*;
+                use windows_core::Interface;
+                let c = webview.controller();
+                if let Ok(w2) = c.CoreWebView2() {
+                    if let Ok(w2_2) = w2.cast::<ICoreWebView2_2>() {
+                        if let Ok(cm) = w2_2.CookieManager() {
+                            let handler = webview2_com::GetCookiesCompletedHandler::create(Box::new(move |_res, list| {
+                                let mut token_found: Option<String> = None;
+                                let mut all_cookies: Vec<String> = Vec::new();
+                                if let Some(list) = list {
+                                    let mut count = 0;
+                                    let _ = list.Count(&mut count);
+                                    for i in 0..count {
+                                        if let Ok(cookie) = list.GetValueAtIndex(i) {
+                                            let mut name = windows_core::PWSTR::null();
+                                            let _ = cookie.Name(&mut name);
+                                            let mut val = windows_core::PWSTR::null();
+                                            let _ = cookie.Value(&mut val);
+                                            let n = if !name.is_null() {
+                                                let s = name.to_string().unwrap_or_default();
+                                                windows::Win32::System::Com::CoTaskMemFree(Some(name.as_ptr() as *const _));
+                                                s
+                                            } else {
+                                                String::new()
+                                            };
+                                            let v = if !val.is_null() {
+                                                let s = val.to_string().unwrap_or_default();
+                                                windows::Win32::System::Com::CoTaskMemFree(Some(val.as_ptr() as *const _));
+                                                s
+                                            } else {
+                                                String::new()
+                                            };
+                                            if !n.is_empty() {
+                                                all_cookies.push(format!("{n}={v}"));
+                                                if n.eq_ignore_ascii_case("Oasis-Token") && !v.trim().is_empty() {
+                                                    token_found = Some(v.trim().to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                let _ = tx.send((token_found, all_cookies.join("; ")));
+                                Ok(())
+                            }));
+                            let _ = cm.GetCookies(None, &handler);
+                            return;
+                        }
+                    }
+                }
+            }
+            let _ = tx.send((None, String::new()));
+        });
+
+        if res.is_err() {
+            break;
+        }
+
+        if let Ok((Some(token), cookie_str)) = rx.await {
+            renewed_token = Some(token);
+            renewed_cookie = Some(cookie_str);
+            break;
+        }
+    }
+
+    let _ = renew_win.close();
+
+    if let Some(token) = renewed_token {
+        save_stepfun_login_token(app, account_id, &token, renewed_cookie.as_deref()).await?;
+        Ok(token)
+    } else {
+        Err("未能自动续期，登录会话可能已彻底失效，请重新网页登录".into())
+    }
 }
 
 #[tauri::command]
@@ -1489,7 +1608,7 @@ pub async fn open_stepfun_login(app: tauri::AppHandle, account_id: String) -> Re
                                 let app_inner = app.clone();
                                 let account_id_inner = aid.clone();
                                 tauri::async_runtime::spawn(async move {
-                                    let _ = save_stepfun_login_token(&app_inner, &account_id_inner, &token).await;
+                                    let _ = save_stepfun_login_token(&app_inner, &account_id_inner, &token, None).await;
                                 });
                             }
                         }
