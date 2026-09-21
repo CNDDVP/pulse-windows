@@ -1,4 +1,4 @@
-import type {ProviderUsage,UsageWindow} from "./types";
+import type {ProviderUsage,UsageWindow,ProviderConfig} from "./types";
 export function percentText(usage:ProviderUsage,mode:"used"|"remaining"="used"){
   if(!["live","stale"].includes(usage.state)||usage.primary_percent===null)return usage.balances?.length&&["live","stale"].includes(usage.state)?(usage.state==="stale"?"余额*":"余额"):"—";
   const n=mode==="remaining"?Math.max(0,100-usage.primary_percent):usage.primary_percent;
@@ -56,4 +56,21 @@ export function balanceText(currency:string,amount:number):string {
 }
 export function balanceLabel(provider:string,currency:string):string {
   return currency==='Credit'?'套餐剩余':provider==='stepfun'?'API 可用余额':'可用余额';
+}
+
+export type TimedWindow=UsageWindow & {period_note?:string};
+/** Only timing presentation receives estimates; original usage and forecasts stay untouched. */
+export function timingWindows(usage:ProviderUsage,cfg?:ProviderConfig):TimedWindow[] {
+  return usage.windows.map(w=>{
+    const days=cfg?.elapsed_period_days;
+    if(days!=null&&Number.isFinite(days)&&days>=1/24&&days<=366){
+      if(w.window_seconds && w.window_seconds>0 && cfg?.elapsed_window !== w.id) {
+        return {...w,period_note:'按数据源周期计算'};
+      }
+      return {...w,window_seconds:Math.round(days*86400),period_note:`按自定义周期估算（${days} 天）`};
+    }
+    if(w.window_seconds && w.window_seconds>0)return {...w,period_note:'按数据源周期计算'};
+    if(usage.provider_id==='stepfun'&&w.id==='plan')return {...w,window_seconds:30*86400,period_note:'按 StepFun 30 天规则估算'};
+    return {...w,period_note:'尚无完整周期，请设置自定义周期'};
+  });
 }

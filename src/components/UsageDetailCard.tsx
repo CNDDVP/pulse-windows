@@ -1,8 +1,9 @@
 import {useEffect,useState} from "react";
 import type {AppSettings,ProviderUsage} from "../types";
-import {resetText,forecast,forecastKind,balanceText,balanceLabel} from "../presentation";
+import {resetText,forecast,forecastKind,timingWindows,balanceText,balanceLabel} from "../presentation";
 export function UsageDetailCard({usage,settings,placement}:{usage:ProviderUsage;settings:AppSettings;placement?: "left" | "right" | "top" | "bottom"}){
   const [now,setNow]=useState(()=>Date.now());useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),10000);return()=>clearInterval(t)},[]);
+  const timed=timingWindows(usage,settings.providers[usage.account_id]);
   const dark = settings.theme === "obsidian";
   const isRightOfRail = placement !== undefined ? placement === "right" : settings.dock_side === "left";
   // 侧向小箭头只在卡片位于 rail 左/右侧时有意义；正下/正上时朝向用 dock_side 兜底。
@@ -49,6 +50,7 @@ export function UsageDetailCard({usage,settings,placement}:{usage:ProviderUsage;
             />
           </div>
           <p className="text-zinc-500">{resetText(w.resets_at,now)}</p>
+          <p className="text-zinc-500">{timed.find(t=>t.id===w.id)?.period_note}</p>
           {settings.forecast&&usage.state==="live"&&(()=>{
             const kind=forecastKind(w,now);
             const color=kind==="exhausted"?"text-red-500":kind==="ok"?"text-emerald-500":kind==="soon"?"text-orange-500":"text-yellow-500";

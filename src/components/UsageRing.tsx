@@ -1,7 +1,7 @@
 import {useEffect, useMemo, useRef, useState} from "react";
 import {ProviderIcon} from "./icons/ProviderIcons";
 import {BotMark} from "./BotMark";
-import {percentText,elapsed,pickElapsedWindow} from "../presentation";
+import {percentText,elapsed,pickElapsedWindow,timingWindows} from "../presentation";
 import type {AppSettings,ProviderUsage} from "../types";
 import {detectEvent} from "./botEvents";
 
@@ -33,7 +33,7 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,onDoubleCli
   const exhausted=primaryWin?primaryWin.exhausted:(!isPureBalance&&usage.windows.some(w=>w.exhausted));
   const color=!valid?"#71717a":usage.state==="stale"?"#a1a1aa":(exhausted||used>=red)?"#ef4444":used>=amber?"#f97316":custom??(used>=50?"#eab308":"#10b981");
   // The outer time ring follows the account's own pick (or the soonest reset), independent of the inner quota ring.
-  const timed=["live","stale"].includes(usage.state)?pickElapsedWindow(usage.windows,cfg?.elapsed_window??null):null;
+  const timed=["live","stale"].includes(usage.state)?pickElapsedWindow(timingWindows(usage,cfg),cfg?.elapsed_window??null):null;
   const clock=settings.show_elapsed&&timed?elapsed(timed):null;
   const dark = settings.theme === "obsidian";
   // Animated bot mark replaces the provider badge when enabled; the white travelling
@@ -61,7 +61,7 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,onDoubleCli
     : `${usage.display_name} ${percentText(effectiveUsage,settings.display_mode)}`;
   return <button ref={ref} data-account={dataKey??usage.account_id}
     onClick={()=>{if(useBot)setPokeCount(c=>c+1);onClick?.();}} onDoubleClick={onDoubleClick}
-    onMouseEnter={()=>{setHovered(true);onHover();}} onMouseLeave={()=>setHovered(false)} onFocus={onHover} title={ringTitle}
+    onMouseEnter={()=>{setHovered(true);onHover();}} onMouseLeave={()=>setHovered(false)} onFocus={onHover} title={`${ringTitle}${clock!==null?` · ${timingWindows(usage,cfg).find(w=>w.id===timed?.id)?.period_note??""}`:""}`}
     className={`shrink-0 flex flex-col items-center p-1 text-xs rounded-lg focus:outline-none ${reduced?"":"hover:scale-105 transition-transform duration-150"}`}>
     <div className="relative w-11 h-11 flex items-center justify-center">
       <svg viewBox="0 0 44 44" className="w-11 h-11 -rotate-90">

@@ -16,6 +16,7 @@ export interface ProviderConfig {
   credential_configured: boolean; primary_window: string | null;
   /** Window the outer elapsed-time ring tracks; null = soonest reset. */
   elapsed_window: string | null;
+  elapsed_period_days?: number | null;
   /** #rrggbb override for the ring colour; null = pressure colour. */
   ring_color: string | null;
   /** Low-balance notice line, compared only against `low_balance_currency`. */

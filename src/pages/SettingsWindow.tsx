@@ -15,7 +15,7 @@ const ANTIGRAVITY_DEFAULT_WINDOWS = [
   { id: "1-1", name: "Claude 与 GPT 模型 · 5小时限额" },
 ];
 import { TokenSpend } from "./TokenSpend";
-import { resetText, pickElapsedWindow } from "../presentation";
+import { resetText, pickElapsedWindow, timingWindows } from "../presentation";
 import { orderedIds, moveItem, applyOrder } from "../ordering";
 import { Switch, Section, Row, Field } from "./settings/shared";
 import { PROVIDERS, ROUTES, providerName, getPlaceholder, selectCls, inputCls, btnPrimary, btnGhost, ageText, accountRows } from "./settings/constants";
@@ -235,7 +235,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
 
   const handleAddAccount = (pid: string) => {
     const id = crypto.randomUUID();
-    patch(id, { provider_id: pid, label: providerName(pid), enabled: true, order: Object.values(settings.providers).reduce((m, c) => Math.max(m, c.order), -1) + 1, use_local: !!ROUTES[pid]?.local, credential_configured: false, primary_window: null, elapsed_window: null, ring_color: pid === "kimi" ? "#7AA5FF" : null, low_balance: null, low_balance_currency: null, mark_mode: null, bot_persona: null, bot_shape: null, bot_color: pid === "kimi" ? "#7AA5FF" : null, secondary_window: null, split_model_groups: false });
+    patch(id, { provider_id: pid, label: providerName(pid), enabled: true, order: Object.values(settings.providers).reduce((m, c) => Math.max(m, c.order), -1) + 1, use_local: !!ROUTES[pid]?.local, credential_configured: false, primary_window: null, elapsed_window: null, elapsed_period_days: null, ring_color: pid === "kimi" ? "#7AA5FF" : null, low_balance: null, low_balance_currency: null, mark_mode: null, bot_persona: null, bot_shape: null, bot_color: pid === "kimi" ? "#7AA5FF" : null, secondary_window: null, split_model_groups: false });
     setPickerOpen(false); setPickerQuery("");
     setView({ kind: "account", id });
     showToast("info", `已添加 ${providerName(pid)} 账号，完成配置后点击“保存”`);
@@ -699,7 +699,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
 
           {view.kind === "account" && current && (() => {
             const id = view.id, c = current, reading = usages.find(u => u.account_id === id), routes = ROUTES[c.provider_id] ?? {};
-            const isTesting = testingId === id, timedWindows = reading?.windows.filter(w => w.window_seconds && w.resets_at) ?? [];
+            const isTesting = testingId === id, timedWindows = reading ? timingWindows(reading,c).filter(w => w.window_seconds && w.resets_at) : [];
             const position = railOrder.indexOf(id) + 1;
             const effectivePrimaryWindow = c.primary_window || reading?.windows?.reduce((max, w) => (!max || w.used_percent > max.used_percent ? w : max), reading?.windows[0])?.id || null;
             const isDuplicateInner = !!(c.secondary_window && effectivePrimaryWindow && c.secondary_window === effectivePrimaryWindow);
@@ -926,6 +926,15 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                     </select>
                   </Field>
 
+                  <Field label="时间外环周期长度" hint="自动优先使用数据源周期；StepFun 套餐缺少完整账期时按 30 天规则估算。重置时间始终来自接口。">
+                    <select className={selectCls} value={c.elapsed_period_days==null?'auto':'custom'} onChange={e=>patch(id,{elapsed_period_days:e.target.value==='auto'?null:30})}>
+                      <option value="auto">自动识别周期（默认）</option><option value="custom">自定义周期长度</option>
+                    </select>
+                    {c.elapsed_period_days!=null&&<label className="block text-xs text-zinc-400 mt-2">周期天数（支持小数，1 小时至 366 天）
+                      <input aria-label="自定义周期天数" type="number" min={1/24} max={366} step="any" className={selectCls} value={c.elapsed_period_days} onChange={e=>{const n=e.target.valueAsNumber;if(Number.isFinite(n))patch(id,{elapsed_period_days:n})}}/>
+                      <span>按自定义周期估算；仅用于时间外环，不改变服务商真实额度或自动充值。</span>
+                    </label>}
+                  </Field>
                   <Field label="此账号时间外环使用的周期" hint={reading?.windows && reading.windows.length > 0
                     ? timedWindows.length === 0
                       ? "该账号的额度窗口未报告周期长度，外圈暂不可用。"
@@ -939,7 +948,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                         <option value={c.elapsed_window}>{c.elapsed_window}（已配置 · 等待读数）</option>
                       )}
                       {timedWindows.length > 0
-                        ? timedWindows.map(w => <option key={w.id} value={w.id}>{w.name} — {resetText(w.resets_at)}</option>)
+                        ? timedWindows.map(w => <option key={w.id} value={w.id}>{w.name} — {resetText(w.resets_at)} · {w.period_note}</option>)
                         : c.provider_id === "antigravity"
                         ? ANTIGRAVITY_DEFAULT_WINDOWS.map(w => <option key={w.id} value={w.id}>{w.name}</option>)
                         : null}
@@ -1073,7 +1082,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                     <div className="space-y-2.5">
                       {reading.windows.map(w => {
                         const isPrimary = c.primary_window === w.id || (!c.primary_window && w.used_percent === reading.primary_percent);
-                        const isTimed = pickElapsedWindow(reading.windows, c.elapsed_window ?? null)?.id === w.id;
+                        const isTimed = pickElapsedWindow(timingWindows(reading,c), c.elapsed_window ?? null)?.id === w.id;
                         return (
                           <div key={w.id} className="space-y-1">
                             <div className="flex justify-between items-center text-xs">
