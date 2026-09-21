@@ -18,5 +18,10 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // Rust 构建会重写 target/ 下的产物（链接 app_lib.dll 时文件被锁），
+    // vite 监视到会以 EBUSY 直接崩溃——忽略整个 target 目录。
+    watch: {
+      ignored: ["**/src-tauri/target/**"],
+    },
   }
 })

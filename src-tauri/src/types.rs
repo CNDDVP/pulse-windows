@@ -7,7 +7,7 @@ pub const PROVIDERS: &[(&str, &str)] = &[
     ("ollama", "Ollama Cloud"), ("zai", "z.ai"), ("zhipu", "Zhipu"),
     ("minimax", "MiniMax"), ("minimax-cn", "MiniMax CN"), ("volcengine", "Volcengine"),
     ("command-code", "Command Code"), ("deepseek", "DeepSeek"), ("devin", "Devin"),
-    ("xiaomi", "小米 Coding Plan"),
+    ("xiaomi", "小米 Coding Plan"), ("stepfun", "StepFun"),
 ];
 pub fn name(id: &str) -> String { PROVIDERS.iter().find(|p| p.0 == id).map(|p| p.1).unwrap_or(id).into() }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -46,6 +46,8 @@ pub struct ProviderConfig {
     pub use_local: bool, pub credential_configured: bool, pub primary_window: Option<String>,
     /// Window the outer elapsed-time ring tracks; `None` picks the soonest reset.
     pub elapsed_window: Option<String>,
+    /// None: automatic; custom elapsed-ring duration in days (not provider quota data).
+    pub elapsed_period_days: Option<f64>,
     /// `#rrggbb` override for the ring; `None` keeps the pressure colour.
     pub ring_color: Option<String>,
     /// `icon` (default) or `bot` — animated mark instead of the provider badge.
@@ -207,6 +209,7 @@ impl AppSettings {
             }
         }
         for (id,cfg) in &self.providers {
+            if cfg.elapsed_period_days.is_some_and(|d|!d.is_finite()||d<1.0/24.0||d>366.0) {return Err("自定义周期应为 1 小时至 366 天".into());}
             if !valid_id(id) || !PROVIDERS.iter().any(|p|p.0==cfg.provider_id) || cfg.label.len()>160 { return Err("账号配置无效".into()); }
             if cfg.ring_color.as_deref().is_some_and(|c|!(c.len()==7 && c.starts_with('#') && c[1..].bytes().all(|b|b.is_ascii_hexdigit()))) { return Err("圆环颜色无效".into()); }
             if cfg.low_balance.is_some_and(|v|!v.is_finite()||v<0.0) || cfg.low_balance_currency.as_deref().is_some_and(|c|c.is_empty()||c.len()>8) { return Err("余额阈值无效".into()); }

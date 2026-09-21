@@ -54,7 +54,7 @@ export function formatTimeAgo(dateStr:string|null|undefined,now=Date.now()):stri
 export function evaluateRail(settings:AppSettings,usages:ProviderUsage[],now=Date.now()):RailResult {
   const config=railConfig(settings),sources:RailSource[]=[],excluded:string[]=[],resetKeys:Record<string,number>={};
   const ids=config.scope==='all'?Object.keys(settings.providers).filter(id=>settings.providers[id].enabled):config.account_ids;
-  const yellow=config.custom_thresholds?config.yellow:75,red=config.custom_thresholds?config.red:90;
+  const yellow=config.yellow,red=config.red;
   for(const id of [...new Set(ids)]) {
     const account=settings.providers[id],usage=usages.find(u=>u.account_id===id);
     const name=account?.label||usage?.display_name||id;
@@ -70,7 +70,8 @@ export function evaluateRail(settings:AppSettings,usages:ProviderUsage[],now=Dat
       excluded.push(`${name} · ${b.currency} 此计量类型暂未配置预警规则`);
     }
 
-    if(usage.windows.length===0&&standardBalances.length>0&&Object.keys(rule.balances).length===0&&rule.mode!=='window'&&!account.primary_window){
+    const isPureBalance = account.primary_window === '__balance__';
+    if(usage.windows.length===0&&standardBalances.length>0&&Object.keys(rule.balances).length===0&&rule.mode!=='window'&&(!account.primary_window || isPureBalance)){
       excluded.push(...standardBalances.map(b=>`${name} · ${b.currency} 未配置余额阈值，未参与评级`));continue;
     }
     const timestamp=Date.parse(usage.last_success_at??'');
@@ -80,11 +81,12 @@ export function evaluateRail(settings:AppSettings,usages:ProviderUsage[],now=Dat
     }
     let windows=usage.windows;
     for(const w of windows){const at=Date.parse(w.resets_at??'');if(Number.isFinite(at))resetKeys[`${id}:${w.id}`]=at;}
-    const pin=rule.mode==='window'?rule.window_id:rule.mode==='primary'?account.primary_window:null;
-    if(pin) windows=windows.filter(w=>w.id===pin);
+    const pin=rule.mode==='window'?rule.window_id:(rule.mode==='primary'&&!isPureBalance?account.primary_window:null);
+    if(isPureBalance && rule.mode==='primary') windows=[];
+    else if(pin) windows=windows.filter(w=>w.id===pin);
     else if(rule.mode==='window') windows=[];
     else if(rule.mode==='primary'&&windows.length)windows=[windows.reduce((a,b)=>a.used_percent>=b.used_percent?a:b)];
-    if((pin||rule.mode==='window')&&!windows.length)add('unknown','window','所选额度周期不可用，等待该周期数据');
+    if((pin||(rule.mode==='window'&&!isPureBalance))&&!windows.length)add('unknown','window','所选额度周期不可用，等待该周期数据');
     for(const w of windows){
       if(!Number.isFinite(w.used_percent)||w.used_percent<0|| (w.resets_at!==null&&(!Number.isFinite(Date.parse(w.resets_at))||Date.parse(w.resets_at)<=now))) {
         add('unknown','window',`${w.name} 已重置或读数无效，等待更新`,{windowName:w.name});continue;

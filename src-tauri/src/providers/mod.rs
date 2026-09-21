@@ -6,6 +6,7 @@ pub mod command_code;
 pub mod devin;
 pub mod ollama;
 pub mod xiaomi;
+pub mod stepfun;
 
 use crate::{secrets::{SecretStore,WindowsSecrets},types::{AppSettings,ProviderConfig,ProviderUsage}};
 use std::{sync::Arc,time::Duration};
@@ -15,7 +16,7 @@ use serde_json::Value;
 pub const IMPLEMENTED:&[&str]=&[
     "claude","codex","antigravity","cursor","copilot","grok","grok-bot",
     "opencode","kimi","zai","zhipu","minimax","minimax-cn","deepseek",
-    "volcengine","command-code","devin","ollama","xiaomi"
+    "volcengine","command-code","devin","ollama","xiaomi","stepfun"
 ];
 
 pub fn is_network_error(code: &str) -> bool {
@@ -242,6 +243,13 @@ async fn fetch_inner(account:&str,cfg:&ProviderConfig,http:&reqwest::Client)->Pr
         r.source=if cfg.use_local && !cfg.credential_configured{"本地工具登录 → 服务接口"}else{"已保存凭据 → 服务接口"}.into();
         return r;
     }
+    if id=="stepfun"{
+        let answer=stepfun::fetch(&credential.token,http).await;
+        let mut r=match answer{Ok(v)=>parsers::parse(id,&v,chrono::Utc::now().timestamp()),Err(r)=>r};
+        r.scope=scope_of(&credential.token);
+        r.source=stepfun::source_label(&credential.token).into();
+        return r;
+    }
 
     let endpoint=match id{
         "claude"=>"https://api.anthropic.com/api/oauth/usage",
@@ -256,7 +264,8 @@ async fn fetch_inner(account:&str,cfg:&ProviderConfig,http:&reqwest::Client)->Pr
         "zhipu"=>"https://open.bigmodel.cn/api/monitor/usage/quota/limit",
         "minimax"=>"https://api.minimax.io/v1/token_plan/remains",
         "minimax-cn"=>"https://api.minimaxi.com/v1/token_plan/remains",
-        "deepseek"=>"https://api.deepseek.com/user/balance",_=>return ProviderUsage::problem(id,"unsupported","此 Provider 尚未配置服务地址")};
+        "deepseek"=>"https://api.deepseek.com/user/balance",
+        _=>return ProviderUsage::problem(id,"unsupported","此 Provider 尚未配置服务地址")};
     let mut request=if id=="grok-bot"{http.post(endpoint).json(&serde_json::json!({}))}else{http.get(endpoint)};
     if id=="cursor" || id=="grok-bot"{
         let Some(cookie)=credentials::cursor_cookie(&credential.token)else{return ProviderUsage::problem(id,"auth","Cursor 登录已失效或格式不匹配，请重新登录编辑器")};

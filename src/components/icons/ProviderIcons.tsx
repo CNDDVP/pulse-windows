@@ -74,6 +74,20 @@ export const CommandCodeIcon: React.FC<IconProps> = ({ className = "w-4 h-4", si
   </svg>
 );
 
+/** StepFun (阶跃星辰): 5-square "S" mark from official StepFun branding. */
+export const StepFunIcon: React.FC<IconProps> = ({ className = "w-4 h-4", size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
+    {/* Top row */}
+    <rect x="9.2" y="2.4" width="5.6" height="5.6" rx="0.8" />
+    <rect x="16.0" y="2.4" width="5.6" height="5.6" rx="0.8" />
+    {/* Middle row */}
+    <rect x="9.2" y="9.2" width="5.6" height="5.6" rx="0.8" />
+    {/* Bottom row */}
+    <rect x="2.4" y="16.0" width="5.6" height="5.6" rx="0.8" />
+    <rect x="9.2" y="16.0" width="5.6" height="5.6" rx="0.8" />
+  </svg>
+);
+
 export const ProviderIcon: React.FC<{ id: string; className?: string; size?: number }> = ({ id, className, size }) => {
   switch (id.toLowerCase()) {
     case "claude": return <ClaudeIcon className={className} size={size} />;
@@ -83,6 +97,7 @@ export const ProviderIcon: React.FC<{ id: string; className?: string; size?: num
     case "kimi": return <KimiIcon className={className} size={size} />;
     case "copilot": return <CopilotIcon className={className} size={size} />;
     case "deepseek": return <DeepSeekIcon className={className} size={size} />;
+    case "stepfun": return <StepFunIcon className={className} size={size} />;
     case "zai": return <ZaiIcon className={className} size={size} />;
     case "zhipu": return <ZhipuIcon className={className} size={size} />;
     case "grok": case "grok-bot": return <GrokIcon className={className} size={size} />;

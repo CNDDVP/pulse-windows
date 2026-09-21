@@ -119,3 +119,5 @@ it('non-custom thresholds follow warning_threshold changes', () => {
   const custom = { ...s, rail_warnings: { ...defaultRailWarnings(), custom_thresholds: true, yellow: 30, red: 50 } };
   expect(railConfig(custom).red).toBe(50);
 });
+
+it('automatic thresholds follow the general setting',()=>{const s=settings();s.warning_threshold=80;expect(evaluateRail(s,[usage('a',85)],now).level).toBe('red');expect(evaluateRail(s,[usage('a',65)],now).level).toBe('yellow');});

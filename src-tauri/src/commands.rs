@@ -228,20 +228,27 @@ pub async fn set_credential(account_id:String,secret:String,state:State<'_,AppSt
     let pid = settings.providers.get_mut(&account_id).ok_or("账号不存在")?.provider_id.clone();
     settings.providers.get_mut(&account_id).unwrap().credential_configured=true;
     if !settings.authorized_providers.contains(&pid) {
-        settings.authorized_providers.push(pid);
+        settings.authorized_providers.push(pid.clone());
     }
     settings.generation=settings.generation.wrapping_add(1);
     let had_error=state.config_error().is_some();
-    let had_cred=WindowsSecrets.get(&account_id).unwrap_or(None);
+    let had_cred=WindowsSecrets.get(&account_id)?;
+    let secret=if pid=="stepfun" {
+        crate::providers::credentials::merge_stepfun_credentials(had_cred.as_deref().unwrap_or(""), &secret)
+    } else {secret};
     let saved=tauri::async_runtime::spawn_blocking({let account_id=account_id.clone();move||{
         let put=WindowsSecrets.put(&account_id,secret.trim());
         if let Err(put_err)=put{
             // 凭据已改、设置未落盘（B14）：回滚旧凭据，不留半套状态。
-            if let Some(sec)=had_cred{let _=WindowsSecrets.put(&account_id,&sec);}
+            if let Some(sec)=&had_cred{let _=WindowsSecrets.put(&account_id,sec);}
             return Err(put_err);
         }
-        if had_error{crate::config::backup_settings()?;}
-        crate::config::save_settings(&settings)?;Ok::<_,String>(settings)
+        let persist=(|| {if had_error{crate::config::backup_settings()?;} crate::config::save_settings(&settings)})();
+        if let Err(error)=persist {
+            let rollback=if let Some(old)=&had_cred {WindowsSecrets.put(&account_id,old)} else {WindowsSecrets.delete(&account_id)};
+            return Err(match rollback {Ok(())=>error,Err(_)=>format!("{error}；凭据回滚失败，请重新检查凭据")});
+        }
+        Ok::<_,String>(settings)
     }}).await.map_err(|_|"凭据保存任务失败")??;
     *state.settings.lock().await=saved.clone();state.clear_config_error();
     state.bump_account_gen(&account_id).await;
