@@ -6,6 +6,7 @@ pub mod command_code;
 pub mod devin;
 pub mod ollama;
 pub mod xiaomi;
+pub mod stepfun;
 
 use crate::{secrets::{SecretStore,WindowsSecrets},types::{AppSettings,ProviderConfig,ProviderUsage}};
 use std::{sync::Arc,time::Duration};
@@ -242,6 +243,13 @@ async fn fetch_inner(account:&str,cfg:&ProviderConfig,http:&reqwest::Client)->Pr
         r.source=if cfg.use_local && !cfg.credential_configured{"本地工具登录 → 服务接口"}else{"已保存凭据 → 服务接口"}.into();
         return r;
     }
+    if id=="stepfun"{
+        let answer=stepfun::fetch(&credential.token,http).await;
+        let mut r=match answer{Ok(v)=>parsers::parse(id,&v,chrono::Utc::now().timestamp()),Err(r)=>r};
+        r.scope=scope_of(&credential.token);
+        r.source=stepfun::source_label(&credential.token).into();
+        return r;
+    }
 
     let endpoint=match id{
         "claude"=>"https://api.anthropic.com/api/oauth/usage",
@@ -257,7 +265,6 @@ async fn fetch_inner(account:&str,cfg:&ProviderConfig,http:&reqwest::Client)->Pr
         "minimax"=>"https://api.minimax.io/v1/token_plan/remains",
         "minimax-cn"=>"https://api.minimaxi.com/v1/token_plan/remains",
         "deepseek"=>"https://api.deepseek.com/user/balance",
-        "stepfun"=>"https://api.stepfun.com/v1/accounts",
         _=>return ProviderUsage::problem(id,"unsupported","此 Provider 尚未配置服务地址")};
     let mut request=if id=="grok-bot"{http.post(endpoint).json(&serde_json::json!({}))}else{http.get(endpoint)};
     if id=="cursor" || id=="grok-bot"{
@@ -271,9 +278,6 @@ async fn fetch_inner(account:&str,cfg:&ProviderConfig,http:&reqwest::Client)->Pr
     let mut answer=response(id,request.header("Accept","application/json")).await;
     if ["minimax","minimax-cn"].contains(&id) && answer.as_ref().err().and_then(|r|r.error_code.as_deref())==Some("not_found"){
         answer=response(id,http.get(endpoint.replace("/v1/token_plan/remains","/v1/api/openplatform/coding_plan/remains")).bearer_auth(&credential.token)).await;
-    }
-    if id=="stepfun" && answer.as_ref().err().and_then(|r|r.error_code.as_deref())==Some("not_found"){
-        answer=response(id,http.get("https://api.stepfun.com/step_plan/v1/accounts").bearer_auth(&credential.token).header("Accept","application/json")).await;
     }
     let mut r=match answer {Ok(v)=>parsers::parse(id,&v,chrono::Utc::now().timestamp()),Err(r)=>r};
     r.scope=scope_of(&credential.token);

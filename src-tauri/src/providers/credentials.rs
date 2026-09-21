@@ -56,9 +56,90 @@ pub fn cursor_cookie(token:&str)->Option<String>{
     if !account.bytes().all(|b|b.is_ascii_alphanumeric()||b"_-".contains(&b)){return None}
     Some(format!("WorkosCursorSessionToken={account}%3A%3A{token}"))
 }
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StepFunCredentials {
+    pub api_key: Option<String>,
+    pub oasis_token: Option<String>,
+}
+
+pub fn clean_oasis_token(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() { return None; }
+    if let Some(pos) = s.find("Oasis-Token=") {
+        let after = &s[pos + "Oasis-Token=".len()..];
+        let token = after.split(';').next()?.trim();
+        if !token.is_empty() { return Some(token.to_string()); }
+    }
+    Some(s.trim_matches(';').trim().to_string())
+}
+
+pub fn parse_stepfun_credentials(secret: &str) -> StepFunCredentials {
+    let s = secret.trim();
+    if s.starts_with('{') && s.ends_with('}') {
+        if let Ok(v) = serde_json::from_str::<Value>(s) {
+            let api_key = v.get("api_key")
+                .or_else(|| v.get("apiKey"))
+                .or_else(|| v.get("key"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|k| !k.is_empty())
+                .map(str::to_string);
+            let oasis_token = v.get("oasis_token")
+                .or_else(|| v.get("oasisToken"))
+                .or_else(|| v.get("token"))
+                .or_else(|| v.get("cookie"))
+                .and_then(Value::as_str)
+                .and_then(clean_oasis_token);
+            if api_key.is_some() || oasis_token.is_some() {
+                return StepFunCredentials { api_key, oasis_token };
+            }
+        }
+    }
+    if s.contains("Oasis-Token=") || s.contains("platform.stepfun.com") || s.starts_with("eyJ") {
+        StepFunCredentials {
+            api_key: None,
+            oasis_token: clean_oasis_token(s),
+        }
+    } else {
+        StepFunCredentials {
+            api_key: Some(s.to_string()),
+            oasis_token: None,
+        }
+    }
+}
+
+/// Blank/omitted fields preserve existing secrets; the delete command removes both.
+pub fn merge_stepfun_credentials(old: &str, update: &str) -> String {
+    let previous = parse_stepfun_credentials(old);
+    let incoming = parse_stepfun_credentials(update);
+    let nonempty = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
+    serde_json::json!({
+        "api_key": nonempty(incoming.api_key).or_else(|| nonempty(previous.api_key)),
+        "oasis_token": nonempty(incoming.oasis_token).or_else(|| nonempty(previous.oasis_token))
+    }).to_string()
+}
+
 #[cfg(test)] mod tests{
     use super::*;
     #[test]fn nested_claude(){assert_eq!(from_json("claude",&serde_json::json!({"claudeAiOauth":{"accessToken":"synthetic"}})).unwrap().token,"synthetic");}
     #[test]fn sqlite_utf16(){let b:Vec<u8>="synthetic".encode_utf16().flat_map(u16::to_le_bytes).collect();assert_eq!(decode_blob(&b).as_deref(),Some("synthetic"));}
     #[test]fn no_api_key_as_codex_oauth(){assert!(from_json("codex",&serde_json::json!({"OPENAI_API_KEY":"synthetic"})).is_none());}
+    #[test]fn test_stepfun_credentials_parsing(){
+        let c1 = parse_stepfun_credentials("Jbz085Nk3L7Yk294...");
+        assert_eq!(c1.api_key.as_deref(), Some("Jbz085Nk3L7Yk294..."));
+        assert_eq!(c1.oasis_token, None);
+
+        let c2 = parse_stepfun_credentials("Oasis-Token=xyz123; other=abc");
+        assert_eq!(c2.api_key, None);
+        assert_eq!(c2.oasis_token.as_deref(), Some("xyz123"));
+
+        let c3 = parse_stepfun_credentials(r#"{"api_key":"my-key","oasis_token":"Oasis-Token=token456"}"#);
+        assert_eq!(c3.api_key.as_deref(), Some("my-key"));
+        assert_eq!(c3.oasis_token.as_deref(), Some("token456"));
+
+        let c4 = parse_stepfun_credentials("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ...eyJhbGciOi...");
+        assert_eq!(c4.api_key, None);
+        assert_eq!(c4.oasis_token.as_deref(), Some("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ...eyJhbGciOi..."));
+    }
 }

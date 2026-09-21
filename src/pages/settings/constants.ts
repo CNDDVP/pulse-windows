@@ -20,7 +20,7 @@ export const ROUTES: Record<string, { local?: string; manual?: string }> = {
   kimi: { local: "Kimi Code CLI 登录", manual: "Bearer / Refresh Token" },
   opencode: { local: "OpenCode 本地登录", manual: "API Key" },
   deepseek: { manual: "API Key（sk-…）" },
-  stepfun: { manual: "API Key (默认或 Step Plan 专属 Key)" },
+  stepfun: { manual: "API Key 与 网页 Oasis-Token (可单独或同时配置)" },
   grok: { manual: "xAI Token" },
   "grok-bot": { local: "Cursor 编辑器登录（state.vscdb）", manual: "Cursor Session Token" },
   ollama: { manual: "Session Cookie（wos-session=…）" },
@@ -37,7 +37,7 @@ export const getPlaceholder = (pid: string) => {
     case "ollama": return "Session Cookie (如 wos-session=...)";
     case "devin": return "API Token [组织ID] 或留空读取 Windsurf";
     case "deepseek": return "sk-... (DeepSeek API Key)";
-    case "stepfun": return "输入 StepFun API Key（可前往 platform.stepfun.com 获取）";
+    case "stepfun": return "输入 StepFun API Key 或 Oasis-Token";
     case "kimi": return "Bearer Token / Refresh Token";
     default: return "输入 API Key / Token 凭据";
   }

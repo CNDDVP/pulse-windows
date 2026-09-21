@@ -1,6 +1,6 @@
 import type {ProviderUsage,UsageWindow} from "./types";
 export function percentText(usage:ProviderUsage,mode:"used"|"remaining"="used"){
-  if(!["live","stale"].includes(usage.state)||usage.primary_percent===null)return usage.balances?.length&&usage.state==="live"?"余额":"—";
+  if(!["live","stale"].includes(usage.state)||usage.primary_percent===null)return usage.balances?.length&&["live","stale"].includes(usage.state)?(usage.state==="stale"?"余额*":"余额"):"—";
   const n=mode==="remaining"?Math.max(0,100-usage.primary_percent):usage.primary_percent;
   return `${Number(n.toFixed(1))}%${usage.state==="stale"?"*":""}`;
 }
@@ -46,4 +46,14 @@ export function forecast(w:UsageWindow,now=Date.now()):string|null{
     case "risk":return "按窗口平均速度估算，可能在重置前用满";
     default:return null;
   }
+}
+
+/** Monetary balances and plan credits are different units and never interchangeable. */
+export function balanceText(currency:string,amount:number):string {
+  if(currency==='Credit')return `${amount>=1e8?(amount/1e8).toFixed(2)+' 亿':amount>=1e4?(amount/1e4).toFixed(2)+' 万':amount.toLocaleString('zh-CN',{maximumFractionDigits:2})} Credit`;
+  if(currency==='CNY')return `¥${amount.toFixed(2)}`;
+  return `${currency} ${amount.toFixed(2)}`;
+}
+export function balanceLabel(provider:string,currency:string):string {
+  return currency==='Credit'?'套餐剩余':provider==='stepfun'?'API 可用余额':'可用余额';
 }

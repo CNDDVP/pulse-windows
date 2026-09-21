@@ -1,3 +1,4 @@
+import {balanceText,balanceLabel} from "../presentation";
 import { connectCloseBridge, type CloseRequest } from "../closeBridge";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -58,6 +59,10 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
   const [search, setSearch] = useState("");
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
+  const [stepfunCredentials, setStepfunCredentials] = useState<Record<string, { apiKey: string; oasisToken: string }>>({});
+  const [showStepfunApiKey, setShowStepfunApiKey] = useState<Record<string, boolean>>({});
+  const [showStepfunOasisToken, setShowStepfunOasisToken] = useState<Record<string, boolean>>({});
+  const [showStepfunHelp, setShowStepfunHelp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -258,13 +263,27 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
     })();
   };
   const handleSaveCredential = async (id: string) => {
-    const secret = secrets[id]; if (!secret) return;
+    const c = settings.providers[id];
+    let secret = secrets[id];
+    if (c?.provider_id === "stepfun") {
+      const cred = stepfunCredentials[id];
+      if (cred && (cred.apiKey.trim() || cred.oasisToken.trim())) {
+        secret = JSON.stringify({
+          api_key: cred.apiKey.trim() || undefined,
+          oasis_token: cred.oasisToken.trim() || undefined,
+        });
+      }
+    }
+    if (!secret) return;
     setBusy(true);
     try {
       if (accountDirty(id) || !(id in appliedRef.current.providers)) await persist(settings, "");
       await invoke("set_credential", { accountId: id, secret });
       setSecrets(s => ({ ...s, [id]: "" }));
-      showToast("success", "凭据已安全存入 Windows 凭据管理器，正在获取最新读数…");
+      if (c?.provider_id === "stepfun") {
+        setStepfunCredentials(s => ({ ...s, [id]: { apiKey: "", oasisToken: "" } }));
+      }
+      showToast("success", "凭据已安全保存（未填写的 StepFun 凭据保留），正在获取最新读数…");
     } catch (e) { showToast("error", `凭据保存失败: ${String(e)}`); } finally { setBusy(false); }
   };
   const handleDeleteCredential = async (id: string) => {
@@ -278,10 +297,24 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
   const test = async (id: string) => {
     setTestingId(id);
     try {
+      const c = settings.providers[id];
+      let secret = secrets[id];
+      if (c?.provider_id === "stepfun") {
+        const cred = stepfunCredentials[id];
+        if (cred && (cred.apiKey.trim() || cred.oasisToken.trim())) {
+          secret = JSON.stringify({
+            api_key: cred.apiKey.trim() || undefined,
+            oasis_token: cred.oasisToken.trim() || undefined,
+          });
+        }
+      }
       // 若用户在输入框填写了新凭据，测试时自动一并保存，避免"先填后测却提示未发现可用凭据"
-      if (secrets[id]) {
-        await invoke("set_credential", { accountId: id, secret: secrets[id] });
+      if (secret) {
+        await invoke("set_credential", { accountId: id, secret });
         setSecrets(s => ({ ...s, [id]: "" }));
+        if (c?.provider_id === "stepfun") {
+          setStepfunCredentials(s => ({ ...s, [id]: { apiKey: "", oasisToken: "" } }));
+        }
       }
       if (accountDirty(id)) await persist(settings, "");
       const r = await invoke<ProviderUsage>("test_account", { accountId: id });
@@ -302,6 +335,8 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
   useEffect(() => { anyDirtyRef.current = anyDirty; }, [anyDirty]);
   const secretsRef = useRef(secrets);
   useEffect(() => { secretsRef.current = secrets; }, [secrets]);
+  const stepfunCredentialsRef = useRef(stepfunCredentials);
+  useEffect(() => { stepfunCredentialsRef.current = stepfunCredentials; }, [stepfunCredentials]);
   const settingsRef2 = useRef(settings);
   useEffect(() => { settingsRef2.current = settings; }, [settings]);
 
@@ -327,8 +362,18 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
           await invoke("set_credential", { accountId: id, secret: secret.trim() });
         }
       }
+      for (const [id, cred] of Object.entries(stepfunCredentialsRef.current)) {
+        if (cred && (cred.apiKey.trim() || cred.oasisToken.trim())) {
+          const secret = JSON.stringify({
+            api_key: cred.apiKey.trim() || undefined,
+            oasis_token: cred.oasisToken.trim() || undefined,
+          });
+          await invoke("set_credential", { accountId: id, secret });
+        }
+      }
       setSecrets({});
       setShowSecrets({});
+      setStepfunCredentials({});
       await invoke("confirm_close_settings", { requestId: closeModal.requestId, action: "save_and_hide" });
       setCloseModal(null);
     } catch (e) {
@@ -343,6 +388,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
     setSettings(appliedRef.current);
     setSecrets({});
     setShowSecrets({});
+    setStepfunCredentials({});
     await invoke("confirm_close_settings", { requestId: closeModal.requestId, action: "discard_and_hide" });
     setCloseModal(null);
   };
@@ -374,13 +420,16 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
     ready: () => invoke("settings_window_ready"),
     pending: () => invoke<CloseRequest | null>("pending_settings_close"),
     handle: async ({ request_id: requestId }) => {
-      const hasDraft = anyDirtyRef.current || Object.values(secretsRef.current).some(s => s && s.trim().length > 0);
+      const hasDraft = anyDirtyRef.current ||
+        Object.values(secretsRef.current).some(s => s && s.trim().length > 0) ||
+        Object.values(stepfunCredentialsRef.current).some(c => c && (c.apiKey.trim() || c.oasisToken.trim()));
       await invoke("acknowledge_close", { requestId, hasDraft });
       if (hasDraft) setCloseModal({ isOpen: true, requestId });
       else {
         await invoke("confirm_close_settings", { requestId, action: "hide" });
         setSecrets({});
         setShowSecrets({});
+        setStepfunCredentials({});
       }
     },
     error: error => console.error("关闭通道异常:", error),
@@ -690,20 +739,121 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                     <Row title="未保存凭据时读取本机工具登录" subtitle={routes.local}><Switch checked={c.use_local} onChange={v => patch(id, { use_local: v })} label="读取本机工具登录" /></Row>
                   )}
                   {routes.manual && (
-                    <div className="p-3.5 bg-zinc-950/60 rounded-xl border border-white/5 space-y-3">
-                      <div className="flex justify-between items-center text-xs">
-                        <span className={c.credential_configured ? "text-emerald-400 font-medium" : "text-zinc-400"}>{c.credential_configured ? "🔒 凭据已安全保存（Windows 凭据管理器）" : "尚未配置手动凭据"}</span>
-                        <span className="text-[11px] text-zinc-500">{routes.manual}</span>
-                      </div>
-                      <div className="flex gap-2">
-                        <div className="relative flex-1">
-                          <input type={showSecrets[id] ? "text" : "password"} className={`${inputCls} pr-9`} placeholder={c.credential_configured ? "输入新凭据以替换" : getPlaceholder(c.provider_id)} value={secrets[id] || ""} onChange={e => setSecrets(s => ({ ...s, [id]: e.target.value }))} autoComplete="off" spellCheck={false} aria-label="凭据" />
-                          <button type="button" onClick={() => setShowSecrets(s => ({ ...s, [id]: !s[id] }))} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 text-xs cursor-pointer" aria-label={showSecrets[id] ? "隐藏凭据" : "显示凭据"}>{showSecrets[id] ? "隐藏" : "显示"}</button>
+                    c.provider_id === "stepfun" ? (
+                      <div className="p-3.5 bg-zinc-950/60 rounded-xl border border-white/5 space-y-3">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className={c.credential_configured ? "text-emerald-400 font-medium" : "text-zinc-400"}>
+                            {c.credential_configured ? "🔒 凭据已安全保存（Windows 凭据管理器）" : "尚未配置 StepFun 凭据"}
+                          </span>
+                          <span className="text-[11px] text-zinc-500">双模式凭据（API Key / Oasis-Token）</span>
                         </div>
-                        <button disabled={locked || !secrets[id]} onClick={() => void handleSaveCredential(id)} className={btnPrimary}>保存凭据</button>
-                        {c.credential_configured && <button disabled={locked} onClick={() => void handleDeleteCredential(id)} className={confirmArmed === `cred:${id}` ? "px-3 py-1.5 bg-red-950/50 text-red-300 border border-red-900/60 rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer" : "px-3 py-1.5 bg-zinc-900 hover:bg-red-950/40 text-red-400 border border-zinc-800 hover:border-red-900/60 rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer"}>{confirmArmed === `cred:${id}` ? "确认移除？" : "删除凭据"}</button>}
+                        <div className="space-y-2.5">
+                          <div>
+                            <div className="flex justify-between text-xs text-zinc-300 mb-1">
+                              <span>API Key（用于查询账户余额 ¥，留空保留已保存值）</span>
+                              <span className="text-[11px] text-zinc-500">可选</span>
+                            </div>
+                            <div className="relative">
+                              <input
+                                type={showStepfunApiKey[id] ? "text" : "password"}
+                                className={`${inputCls} pr-9`}
+                                placeholder={c.credential_configured ? "输入新 API Key 以更新（留空则保留原配置）" : "Jbz085... 或默认 API Key"}
+                                value={stepfunCredentials[id]?.apiKey || ""}
+                                onChange={e => setStepfunCredentials(s => ({ ...s, [id]: { ...(s[id] || { apiKey: "", oasisToken: "" }), apiKey: e.target.value } }))}
+                                autoComplete="off"
+                                spellCheck={false}
+                                aria-label="StepFun API Key"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowStepfunApiKey(s => ({ ...s, [id]: !s[id] }))}
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 text-xs cursor-pointer"
+                              >
+                                {showStepfunApiKey[id] ? "隐藏" : "显示"}
+                              </button>
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="flex justify-between items-center text-xs text-zinc-300 mb-1">
+                              <span>网页 Oasis-Token / Cookie（用于查询 Step Plan Credit 套餐与周期限额）</span>
+                              <button
+                                type="button"
+                                onClick={() => setShowStepfunHelp(v => !v)}
+                                className="text-[11px] text-emerald-400 hover:underline cursor-pointer flex items-center gap-1"
+                              >
+                                <span>💡 如何获取？</span>
+                              </button>
+                            </div>
+                            <div className="relative">
+                              <input
+                                type={showStepfunOasisToken[id] ? "text" : "password"}
+                                className={`${inputCls} pr-9`}
+                                placeholder={c.credential_configured ? "输入新 Oasis-Token 以更新（留空则保留原配置）" : "Oasis-Token=... 或完整 Cookie"}
+                                value={stepfunCredentials[id]?.oasisToken || ""}
+                                onChange={e => setStepfunCredentials(s => ({ ...s, [id]: { ...(s[id] || { apiKey: "", oasisToken: "" }), oasisToken: e.target.value } }))}
+                                autoComplete="off"
+                                spellCheck={false}
+                                aria-label="StepFun Oasis-Token"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowStepfunOasisToken(s => ({ ...s, [id]: !s[id] }))}
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 text-xs cursor-pointer"
+                              >
+                                {showStepfunOasisToken[id] ? "隐藏" : "显示"}
+                              </button>
+                            </div>
+                          </div>
+
+                          {showStepfunHelp && (
+                            <div className="p-2.5 rounded-xl bg-zinc-900 border border-zinc-700/60 text-xs text-zinc-300 space-y-1.5 leading-relaxed">
+                              <div className="font-semibold text-zinc-200">如何获取 Oasis-Token：</div>
+                              <ol className="list-decimal list-inside space-y-1 text-zinc-400 text-[11px]">
+                                <li>在电脑浏览器打开 <span className="text-zinc-200 font-mono">platform.stepfun.com</span> 并保持登录。</li>
+                                <li>按 <kbd className="px-1 py-0.5 bg-zinc-800 rounded border border-zinc-700 font-mono">F12</kbd> 打开开发者工具，切换到 <span className="text-zinc-200">Console</span>（控制台）。</li>
+                                <li>输入 <code className="text-emerald-400 font-mono">document.cookie</code> 并回车。</li>
+                                <li>找到 <code className="text-zinc-200 font-mono">Oasis-Token=...</code>，将其值（或整串 cookie）复制并粘贴至上方输入框即可。</li>
+                              </ol>
+                            </div>
+                          )}
+
+                          <div className="flex gap-2 justify-end pt-1">
+                            <button
+                              disabled={locked || (!stepfunCredentials[id]?.apiKey && !stepfunCredentials[id]?.oasisToken)}
+                              onClick={() => void handleSaveCredential(id)}
+                              className={btnPrimary}
+                            >
+                              保存凭据
+                            </button>
+                            {c.credential_configured && (
+                              <button
+                                disabled={locked}
+                                onClick={() => void handleDeleteCredential(id)}
+                                className={confirmArmed === `cred:${id}` ? "px-3 py-1.5 bg-red-950/50 text-red-300 border border-red-900/60 rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer" : "px-3 py-1.5 bg-zinc-900 hover:bg-red-950/40 text-red-400 border border-zinc-800 hover:border-red-900/60 rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer"}
+                              >
+                                {confirmArmed === `cred:${id}` ? "确认移除？" : "删除凭据"}
+                              </button>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="p-3.5 bg-zinc-950/60 rounded-xl border border-white/5 space-y-3">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className={c.credential_configured ? "text-emerald-400 font-medium" : "text-zinc-400"}>{c.credential_configured ? "🔒 凭据已安全保存（Windows 凭据管理器）" : "尚未配置手动凭据"}</span>
+                          <span className="text-[11px] text-zinc-500">{routes.manual}</span>
+                        </div>
+                        <div className="flex gap-2">
+                          <div className="relative flex-1">
+                            <input type={showSecrets[id] ? "text" : "password"} className={`${inputCls} pr-9`} placeholder={c.credential_configured ? "输入新凭据以替换" : getPlaceholder(c.provider_id)} value={secrets[id] || ""} onChange={e => setSecrets(s => ({ ...s, [id]: e.target.value }))} autoComplete="off" spellCheck={false} aria-label="凭据" />
+                            <button type="button" onClick={() => setShowSecrets(s => ({ ...s, [id]: !s[id] }))} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 text-xs cursor-pointer" aria-label={showSecrets[id] ? "隐藏凭据" : "显示凭据"}>{showSecrets[id] ? "隐藏" : "显示"}</button>
+                          </div>
+                          <button disabled={locked || !secrets[id]} onClick={() => void handleSaveCredential(id)} className={btnPrimary}>保存凭据</button>
+                          {c.credential_configured && <button disabled={locked} onClick={() => void handleDeleteCredential(id)} className={confirmArmed === `cred:${id}` ? "px-3 py-1.5 bg-red-950/50 text-red-300 border border-red-900/60 rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer" : "px-3 py-1.5 bg-zinc-900 hover:bg-red-950/40 text-red-400 border border-zinc-800 hover:border-red-900/60 rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer"}>{confirmArmed === `cred:${id}` ? "确认移除？" : "删除凭据"}</button>}
+                        </div>
+                      </div>
+                    )
                   )}
                   <p className="text-[11px] text-zinc-500">数据来源：{reading?.source || "尚未获得读数"}</p>
                 </Section>
@@ -724,20 +874,20 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                       state: "live",
                       checked_at: new Date().toISOString(),
                       last_success_at: new Date().toISOString(),
-                      primary_percent: 42,
+                      primary_percent: c.primary_window === "__balance__" ? null : 42,
                       plan_name: null,
                       is_active: false,
                       retry_after_seconds: null,
                       duration_ms: null,
-                      windows: c.provider_id === "antigravity" ? [
+                      windows: c.primary_window === "__balance__" ? [] : (c.provider_id === "antigravity" ? [
                         { id: "0-0", name: "Gemini 模型 · 每周限额", used_fraction: 0.25, used_percent: 25, resets_at: new Date(Date.now() + 86400000 * 5).toISOString(), window_seconds: 604800, exhausted: false },
                         { id: "0-1", name: "Gemini 模型 · 5小时限额", used_fraction: 0.42, used_percent: 42, resets_at: new Date(Date.now() + 3600000 * 3).toISOString(), window_seconds: 18000, exhausted: false },
                         { id: "1-0", name: "Claude 与 GPT 模型 · 每周限额", used_fraction: 0.1, used_percent: 10, resets_at: new Date(Date.now() + 86400000 * 6).toISOString(), window_seconds: 604800, exhausted: false },
                         { id: "1-1", name: "Claude 与 GPT 模型 · 5小时限额", used_fraction: 0.68, used_percent: 68, resets_at: new Date(Date.now() + 3600000 * 2).toISOString(), window_seconds: 18000, exhausted: false },
                       ] : [
                         { id: "primary", name: "主要限额", used_fraction: 0.35, used_percent: 35, resets_at: new Date(Date.now() + 3600000 * 4).toISOString(), window_seconds: 18000, exhausted: false },
-                      ],
-                      balances: [],
+                      ]),
+                      balances: c.primary_window === "__balance__" || c.provider_id === "stepfun" ? [{ currency: "CNY", amount: 15.0 }] : [],
                       error_message: null,
                       error_code: null,
                       source: "预览模式",
@@ -759,10 +909,13 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                     );
                   })()}
 
-                  <Field label="主圆环显示的额度" hint={reading?.windows && reading.windows.length > 0 ? "圆环以该窗口的使用率与重置倒计时为准。" : c.provider_id === "antigravity" ? "支持选择 Antigravity 预设额度窗口；连接成功后将显示实时用量与重置倒计时。" : "尚未获取该账号的额度数据；配置凭据并连接成功后，可在此下拉指定具体的额度窗口。"}>
+                  <Field label="主圆环显示的额度" hint={c.primary_window === "__balance__" ? "纯余额模式：主圆环不绘制百分比圆弧，底部直接展示“余额”与实时账户数值。" : reading?.windows && reading.windows.length > 0 ? "圆环以该窗口的使用率与重置倒计时为准。" : c.provider_id === "antigravity" ? "支持选择 Antigravity 预设额度窗口；连接成功后将显示实时用量与重置倒计时。" : "尚未获取该账号的额度数据；配置凭据并连接成功后，可在此下拉指定具体的额度窗口。"}>
                     <select className={selectCls} value={c.primary_window || ""} onChange={e => patch(id, { primary_window: e.target.value || null })}>
                       <option value="">自动选择最高使用率（默认）</option>
-                      {c.primary_window && !reading?.windows?.some(w => w.id === c.primary_window) && !ANTIGRAVITY_DEFAULT_WINDOWS.some(w => c.provider_id === "antigravity" && w.id === c.primary_window) && (
+                      {(c.provider_id === "stepfun" || (reading?.balances && reading.balances.length > 0) || c.primary_window === "__balance__") && (
+                        <option value="__balance__">💰 纯余额模式 (不显示百分比圆环)</option>
+                      )}
+                      {c.primary_window && c.primary_window !== "__balance__" && !reading?.windows?.some(w => w.id === c.primary_window) && !ANTIGRAVITY_DEFAULT_WINDOWS.some(w => c.provider_id === "antigravity" && w.id === c.primary_window) && (
                         <option value={c.primary_window}>{c.primary_window}（已配置 · 等待读数）</option>
                       )}
                       {reading?.windows && reading.windows.length > 0
@@ -916,6 +1069,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
 
                 {reading && (reading.windows.length > 0 || reading.balances.length > 0) && (
                   <Section title="用量" icon="📈">
+                    {reading.error_message && <p className="text-xs text-amber-400 mb-2">{reading.error_message}</p>}
                     <div className="space-y-2.5">
                       {reading.windows.map(w => {
                         const isPrimary = c.primary_window === w.id || (!c.primary_window && w.used_percent === reading.primary_percent);
@@ -927,14 +1081,14 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                                 {isPrimary && <span className="text-[10px] bg-emerald-950/80 text-emerald-400 px-1.5 py-[2px] rounded border border-emerald-800/40">主额度</span>}
                                 {isTimed && settings.show_elapsed && <span className="text-[10px] bg-zinc-800 text-zinc-300 px-1.5 py-[2px] rounded border border-zinc-600/60">时间环</span>}
                               </span>
-                              <span className="font-mono text-zinc-200">{w.used_percent.toFixed(1)}% 已用</span>
+                              <span className="font-mono text-zinc-200">{Number(w.used_percent.toFixed(2))}% 已用</span>
                             </div>
                             <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden"><div className={`h-full rounded-full transition-all duration-500 ${w.exhausted || w.used_percent >= settings.warning_threshold ? "bg-red-500" : w.used_percent >= settings.warning_threshold - 15 ? "bg-amber-400" : "bg-emerald-500"}`} style={{ width: `${Math.min(100, Math.max(0, w.used_percent))}%` }} /></div>
                             <div className="text-[11px] text-zinc-500">{resetText(w.resets_at)}</div>
                           </div>
                         );
                       })}
-                      {reading.balances.map(b => <div key={b.currency} className="flex justify-between text-xs"><span className="text-zinc-300">余额 · {b.currency}</span><span className="font-mono text-zinc-200">{b.amount.toFixed(2)}</span></div>)}
+                      {reading.balances.map(b => <div key={b.currency} className="flex justify-between text-xs"><span className="text-zinc-300">{balanceLabel(c.provider_id,b.currency)}</span><span className="font-mono text-zinc-200">{balanceText(b.currency,b.amount)}</span></div>)}
                     </div>
                   </Section>
                 )}

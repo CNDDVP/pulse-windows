@@ -252,6 +252,50 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
         }
         "stepfun"=>{
             let mut reading=ProviderUsage::reading(id,vec![]);
+
+            if let Some(plan_rate) = v.get("plan_credit_rate_limit") {
+                if let Some(left) = number(&plan_rate["subscription_credit_left_rate"]) {
+                    let used_pct = (((1.0 - left) * 10000.0).round() / 100.0).clamp(0.0, 100.0);
+                    let reset_at = date(&plan_rate["subscription_credit_reset_time"]);
+                    add(&mut w, window("plan", "Credit 套餐额度", used_pct, &serde_json::to_value(reset_at).unwrap_or(Value::Null), None));
+                }
+                if let Some(buckets) = plan_rate["credit_buckets"].as_array() {
+                    let mut total_residual = 0.0;
+                    for b in buckets {
+                        if let Some(res) = number(&b["credit_residual"]) {
+                            total_residual += res;
+                        }
+                    }
+                    if buckets.iter().any(|b| number(&b["credit_residual"]).is_some()) {
+                        reading.balances.push(Balance { currency: "Credit".into(), amount: total_residual });
+                    }
+                }
+            }
+
+            let five_h_reset = v["five_hour_usage_reset_time"].as_i64()
+                .or_else(|| v["five_hour_usage_reset_time"].as_str().and_then(|s| s.parse().ok()))
+                .unwrap_or(0);
+            if five_h_reset > 0 {
+                if let Some(five_h) = number(&v["five_hour_usage_left_rate"]) {
+                    let used_pct = (((1.0 - five_h) * 10000.0).round() / 100.0).clamp(0.0, 100.0);
+                    let secs = if five_h_reset > 10_000_000_000 { five_h_reset / 1000 } else { five_h_reset };
+                    let reset_at = chrono::DateTime::from_timestamp(secs, 0).map(|dt| dt.to_rfc3339());
+                    add(&mut w, window("5h", "5小时限额", used_pct, &serde_json::to_value(reset_at).unwrap_or(Value::Null), Some(5 * 3600)));
+                }
+            }
+
+            let weekly_reset = v["weekly_usage_reset_time"].as_i64()
+                .or_else(|| v["weekly_usage_reset_time"].as_str().and_then(|s| s.parse().ok()))
+                .unwrap_or(0);
+            if weekly_reset > 0 {
+                if let Some(weekly) = number(&v["weekly_usage_left_rate"]) {
+                    let used_pct = (((1.0 - weekly) * 10000.0).round() / 100.0).clamp(0.0, 100.0);
+                    let secs = if weekly_reset > 10_000_000_000 { weekly_reset / 1000 } else { weekly_reset };
+                    let reset_at = chrono::DateTime::from_timestamp(secs, 0).map(|dt| dt.to_rfc3339());
+                    add(&mut w, window("weekly", "每周限额", used_pct, &serde_json::to_value(reset_at).unwrap_or(Value::Null), Some(7 * 86400)));
+                }
+            }
+
             if let Some(limits)=v["limits"].as_array(){
                 for (i,l) in limits.iter().enumerate(){
                     if let Some(p)=number(&l["percent"]).or_else(||number(&l["percentage"])){
@@ -266,28 +310,32 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
                 }
             }
             let total_balance=number(&v["balance"]);
-            let cash=number(&v["total_cash_balance"]);
-            let voucher=number(&v["total_voucher_balance"]);
             let credits=number(&v["credits"]).or_else(||number(&v["credit"])).or_else(||number(&v["total_credit"]));
 
             if let Some(amt)=total_balance{
                 reading.balances.push(Balance{currency:"CNY".into(),amount:amt});
-            }else if let (Some(c),Some(vo))=(cash,voucher){
-                reading.balances.push(Balance{currency:"CNY".into(),amount:c+vo});
-            }else if let Some(c)=cash{
-                reading.balances.push(Balance{currency:"CNY".into(),amount:c});
-            }else if let Some(vo)=voucher{
-                reading.balances.push(Balance{currency:"CNY".into(),amount:vo});
             }
 
             if let Some(c)=credits{
-                reading.balances.push(Balance{currency:"Credit".into(),amount:c});
+                if !reading.balances.iter().any(|b| b.currency == "Credit") {
+                    reading.balances.push(Balance{currency:"Credit".into(),amount:c});
+                }
             }
 
             if let Some(plan_name)=v.pointer("/plan/name").and_then(Value::as_str)
                 .or_else(||v.pointer("/token_plan/name").and_then(Value::as_str))
                 .or_else(||v["plan_name"].as_str()){
                 reading.plan_name=Some(normalize_plan_name(plan_name));
+            } else if v.get("plan_credit_rate_limit").is_some() {
+                let name = match v["plan_family"].as_i64().or_else(|| v["plan_family"].as_str().and_then(|s| s.parse().ok())) {
+                    Some(2) => "Credit 套餐",
+                    _ => "Step Plan",
+                };
+                reading.plan_name=Some(name.into());
+            }
+
+            if let Some(warn) = v["token_warning"].as_str() {
+                reading.error_message = Some(warn.to_string());
             }
 
             reading.windows=w;
@@ -295,7 +343,7 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
             if !reading.windows.is_empty()||!reading.balances.is_empty(){
                 reading.state="live".into();
                 reading.error_code=None;
-                reading.error_message=None;
+                reading.error_message=v["token_warning"].as_str().map(str::to_string);
             }
             return reading;
         }
@@ -367,6 +415,40 @@ fn count_window(id:&str,name:&str,v:&Value,seconds:Option<i64>)->Option<UsageWin
         assert_eq!(r.windows.len(),1);
         assert_eq!(r.windows[0].name,"Credit 套餐额度");
         assert_eq!(r.windows[0].used_percent,2.5);
+    }
+    #[test]fn stepfun_query_step_plan_rate_limit(){
+        let v=json!({
+            "status": 0,
+            "desc": "success",
+            "five_hour_usage_left_rate": 0.85,
+            "five_hour_usage_reset_time": 1792465684,
+            "weekly_usage_left_rate": 0.95,
+            "weekly_usage_reset_time": 1792500000,
+            "plan_credit_rate_limit": {
+                "subscription_credit_left_rate": 1.0,
+                "subscription_credit_reset_time": 1792465684,
+                "credit_buckets": [
+                    {
+                        "type": 1,
+                        "credit_total": 10000,
+                        "credit_residual": 10000,
+                        "expire_at": 1792465684,
+                        "next_reset_at": 1792465684
+                    }
+                ]
+            },
+            "balance": 15.0
+        });
+        let r=parse("stepfun",&v,0);
+        assert_eq!(r.state,"live");
+        assert_eq!(r.plan_name.as_deref(),Some("Step Plan"));
+        assert_eq!(r.windows.len(),3);
+        let plan_win = r.windows.iter().find(|w| w.id == "plan").unwrap();
+        assert_eq!(plan_win.used_percent, 0.0);
+        assert!(plan_win.resets_at.is_some());
+        let five_h_win = r.windows.iter().find(|w| w.id == "5h").unwrap();
+        assert_eq!(five_h_win.used_percent, 15.0);
+        assert_eq!(r.balances.len(), 2);
     }
     #[test]fn claude_current_and_legacy(){assert_eq!(parse("claude",&json!({"five_hour":{"utilization":30.0}}),0).windows[0].used_percent,30.0);assert_eq!(parse("claude",&json!({"limits":[{"kind":"session","percent":42.0}]}),0).windows[0].used_percent,42.0);}
     #[test]fn cursor_percent_not_fraction(){let r=parse("cursor",&json!({"individualUsage":{"plan":{"autoPercentUsed":42.0}}}),0);assert_eq!(r.windows[0].used_percent,42.0);assert_eq!(r.windows[0].used_fraction,0.42);}
