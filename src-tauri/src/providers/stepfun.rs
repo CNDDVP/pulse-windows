@@ -108,6 +108,18 @@ fn merge(
     Ok(Value::Object(merged))
 }
 
+// QueryStepPlanUsagesRequest uses start_time/to_time; from_time belongs to
+// StepPlanUsageRecord (the response). Encode protobuf int64 values as strings.
+fn usage_request_body(now: i64) -> Value {
+    serde_json::json!({
+        "startTime": now.saturating_sub(86400).to_string(),
+        "toTime": now.to_string(),
+        "granularHour": 1,
+        "pageSize": 200,
+        "page": 1
+    })
+}
+
 pub async fn fetch(secret: &str, http: &reqwest::Client) -> Result<Value, ProviderUsage> {
     let creds = credentials::parse_stepfun_credentials(secret);
     let plan = async {
@@ -128,18 +140,13 @@ pub async fn fetch(secret: &str, http: &reqwest::Client) -> Result<Value, Provid
     let usages = async {
         let token = creds.oasis_token.as_ref()?;
         let device = extract_device_id(token);
-        let from_time = chrono::Utc::now().timestamp().saturating_sub(86400);
         let mut req = http.post("https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanUsages")
             .header("Connect-Protocol-Version","1").header("Oasis-Appid","10300")
             .header("Oasis-Platform","web").header("Oasis-Token",token)
             .header("Origin","https://platform.stepfun.com").header("Referer","https://platform.stepfun.com/");
         if let Some(device)=&device{req=req.header("Oasis-Webid",device);}
         let cookie=credentials::stepfun_cookie(token,creds.cookie.as_deref(),device.as_deref());
-        let body = serde_json::json!({
-            "fromTime": from_time,
-            "pageSize": 200,
-            "page": 1
-        });
+        let body = usage_request_body(chrono::Utc::now().timestamp());
         Some(request(req.header("Cookie", cookie).json(&body), "用量明细", true).await)
     };
     let (plan, cash, usages) = tokio::join!(plan, cash, usages);
@@ -159,6 +166,22 @@ pub fn source_label(secret: &str) -> &'static str {
 #[cfg(test)] mod tests {
     use super::*;
     use serde_json::json;
+    #[test] fn usage_query_matches_dashboard_request_schema() {
+        let body = usage_request_body(1_790_000_000);
+        assert_eq!(body, json!({
+            "startTime": "1789913600", "toTime": "1790000000",
+            "granularHour": 1, "pageSize": 200, "page": 1
+        }));
+        assert!(body.get("fromTime").is_none());
+    }
+    #[test] fn usage_bad_request_preserves_plan_and_cash_without_token_renewal() {
+        let v = merge(Some(Ok(plan())), Some(Ok(json!({"balance":15.0}))),
+            Some(Err(problem("server", "用量明细：HTTP 400")))).unwrap();
+        assert_eq!(v["balance"], 15.0);
+        assert!(v.get("plan_credit_rate_limit").is_some());
+        assert_eq!(v["web_auth_required"], false);
+        assert!(v["token_warning"].as_str().unwrap().contains("HTTP 400"));
+    }
     #[test] fn rpc_success_is_one_not_zero() {
         for status in [json!(1),json!("1")] {
             let mut value=plan();value["status"]=status;
