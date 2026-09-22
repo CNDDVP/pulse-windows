@@ -57,8 +57,7 @@ fn build_ledger_json(rows:&[crate::ledger::Row])->Result<String,String>{
     })).map_err(|_|"导出数据序列化失败".into())
 }
 /// 同名文件已存在时追加 -2、-3 序号，绝不覆盖已有导出。
-fn unique_export_path(dir:&std::path::Path,stamp:&str,ext:&str)->std::path::PathBuf{
-    let base=format!("token-spend-{stamp}");
+fn unique_export_path(dir:&std::path::Path,base:&str,ext:&str)->std::path::PathBuf{
     let mut path=dir.join(format!("{base}.{ext}"));
     let mut n=2;
     while path.exists(){
@@ -77,7 +76,36 @@ pub fn export_ledger(rows:Vec<crate::ledger::Row>,format:String)->Result<String,
         _=>build_ledger_json(&rows),
     }?;
     std::fs::create_dir_all(&dir).map_err(|_|"无法创建导出目录")?;
-    let path=unique_export_path(&dir,&stamp,ext);
+    let path=unique_export_path(&dir,&format!("token-spend-{stamp}"),ext);
+    std::fs::write(&path,content).map_err(|e|format!("导出文件写入失败：{e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+/// 趋势仪表盘指标：以 daily_archive 为主数据源（事件重算取 max 补齐），
+/// active_seconds 为窗口内活跃总秒数（daily_active，跨来源不去重、并行累计）。
+/// 与 token_spend 同一道统计开关门禁；读取为纯查询，不走扫描、不可取消。
+#[tauri::command]
+pub async fn trend_metrics(state:State<'_,AppState>)->Result<crate::ledger::TrendMetrics,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
+    {
+        let s = state.settings.lock().await;
+        if !s.token_spend_enabled {
+            return Err("Token 消耗统计未启用；请在常规设置中开启".into());
+        }
+    }
+    tauri::async_runtime::spawn_blocking(move||crate::ledger::trend_report(&crate::ledger::ledger_db_path())).await.map_err(|_|"趋势任务失败")?
+}
+/// 趋势数据导出（仅 JSON，复用导出目录与不覆盖命名）。
+#[tauri::command]
+pub fn export_trend(metrics:crate::ledger::TrendMetrics)->Result<String,String>{
+    let stamp=chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let dir=crate::config::get_config_dir().join("exports");
+    let content=serde_json::to_string(&serde_json::json!({
+        "exported_at":chrono::Local::now().to_rfc3339(),
+        "app_version":env!("CARGO_PKG_VERSION"),
+        "metrics":metrics
+    })).map_err(|_|"导出数据序列化失败".to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|_|"无法创建导出目录")?;
+    let path=unique_export_path(&dir,&format!("token-trend-{stamp}"),"json");
     std::fs::write(&path,content).map_err(|e|format!("导出文件写入失败：{e}"))?;
     Ok(path.to_string_lossy().to_string())
 }
@@ -1102,14 +1130,16 @@ mod tests {
     #[test]
     fn export_filename_avoids_overwrite_with_sequence() {
         let d=tempfile::tempdir().unwrap();
-        let stamp="20260923-120000";
-        assert_eq!(unique_export_path(d.path(),stamp,"csv"),d.path().join("token-spend-20260923-120000.csv"));
+        let base="token-spend-20260923-120000";
+        assert_eq!(unique_export_path(d.path(),base,"csv"),d.path().join("token-spend-20260923-120000.csv"));
         std::fs::write(d.path().join("token-spend-20260923-120000.csv"),b"old").unwrap();
-        assert_eq!(unique_export_path(d.path(),stamp,"csv"),d.path().join("token-spend-20260923-120000-2.csv"));
+        assert_eq!(unique_export_path(d.path(),base,"csv"),d.path().join("token-spend-20260923-120000-2.csv"));
         std::fs::write(d.path().join("token-spend-20260923-120000-2.csv"),b"old").unwrap();
-        assert_eq!(unique_export_path(d.path(),stamp,"csv"),d.path().join("token-spend-20260923-120000-3.csv"));
+        assert_eq!(unique_export_path(d.path(),base,"csv"),d.path().join("token-spend-20260923-120000-3.csv"));
         // 扩展名互不影响：csv 重名不影响 json 基础名。
-        assert_eq!(unique_export_path(d.path(),stamp,"json"),d.path().join("token-spend-20260923-120000.json"));
+        assert_eq!(unique_export_path(d.path(),base,"json"),d.path().join("token-spend-20260923-120000.json"));
+        // 趋势导出走同一不覆盖命名，基础名不同。
+        assert_eq!(unique_export_path(d.path(),"token-trend-20260923-120000","json"),d.path().join("token-trend-20260923-120000.json"));
     }
 }
 

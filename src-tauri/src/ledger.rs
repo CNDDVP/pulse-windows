@@ -2,12 +2,15 @@
 use std::{collections::BTreeMap,fs::{self,File},io::{BufRead,BufReader,Read,Seek,SeekFrom},path::{Path,PathBuf}};
 use serde::{Serialize,Deserialize};use serde_json::Value;use sha2::{Digest,Sha256};
 use rusqlite::{Connection,params};
-#[derive(Default,Clone,Serialize,Deserialize)]struct State{model:String,totals:[u64;4],bad_lines:u64}
+// anomalies 记分项矛盾事件数，随 state 持久化跨扫描累计；#[serde(default)] 兼容
+// 升级前旧 state（缺字段），否则反序列化失败会把 codex totals 清零导致整段重复计数。
+#[derive(Default,Clone,Serialize,Deserialize)]#[serde(default)]struct State{model:String,totals:[u64;4],bad_lines:u64,anomalies:u64}
 #[derive(Debug,Clone,Serialize,Deserialize)]pub struct Row{pub source:String,pub model:String,pub day:String,pub hour:String,pub input:u64,pub output:u64,pub cache_read:u64,pub cache_write:u64,pub partial:bool}
 #[derive(Debug,Serialize)]pub struct ArchivedDay{pub day:String,pub source:String,pub model:String,pub input:u64,pub output:u64,pub cache_read:u64,pub cache_write:u64}
-#[derive(Debug,Serialize)]pub struct Summary{pub rows:Vec<Row>,pub scanned_files:usize,pub skipped_files:usize,pub changed_files:usize,pub days:u32,pub partial:bool,pub cost_estimate:Option<f64>,pub notes:Vec<String>,pub duration_ms:Option<u64>,pub coverage_gap:bool}
+#[derive(Debug,Serialize)]pub struct Summary{pub rows:Vec<Row>,pub scanned_files:usize,pub skipped_files:usize,pub changed_files:usize,pub days:u32,pub partial:bool,pub anomalies:u64,pub cost_estimate:Option<f64>,pub notes:Vec<String>,pub duration_ms:Option<u64>,pub coverage_gap:bool}
 struct Event{id:String,ts:i64,model:String,counts:[u64;4],partial:bool}
 fn count(v:&Value)->u64{v.as_u64().unwrap_or(0)}
+fn negative(v:&Value)->bool{v.as_f64().is_some_and(|n|n<0.0)}
 fn timestamp(v:&Value)->Option<i64>{
     if let Some(s)=v.as_str(){chrono::DateTime::parse_from_rfc3339(s).ok().map(|d|d.timestamp())}
     else{v.as_i64().map(|n|if n>100_000_000_000{n/1000}else{n})}
@@ -30,7 +33,10 @@ fn parse(source:&str,v:&Value,state:&mut State,offset:u64)->Option<Event>{
         };
         let counts=[delta[0].saturating_sub(delta[2]),delta[1],delta[2],0];
         if counts.iter().sum::<u64>()==0{return None}
-        return Some(Event{id:format!("{ts}-{:x}",Sha256::digest(serde_json::to_vec(&totals).ok()?)),ts,model:if state.model.is_empty(){"unknown".into()}else{state.model.clone()},counts,partial:reset||delta[2]>delta[0]||state.model.is_empty()});
+        // 分项守卫：totals 回退（reset）或缓存增量 > 输入增量（cached ⊆ input 语义被破坏）→ 计入异常；model 缺失只标 partial。
+        let anomaly=reset||delta[2]>delta[0];
+        if anomaly{state.anomalies+=1}
+        return Some(Event{id:format!("{ts}-{:x}",Sha256::digest(serde_json::to_vec(&totals).ok()?)),ts,model:if state.model.is_empty(){"unknown".into()}else{state.model.clone()},counts,partial:anomaly||state.model.is_empty()});
     }
     // ZCode CLI 的会话转录与 Claude Code 同构（assistant 消息带 message.usage），复用同一解析分支。
     if source=="claude"||source=="zcode"{
@@ -40,11 +46,16 @@ fn parse(source:&str,v:&Value,state:&mut State,offset:u64)->Option<Event>{
         // Claude Code writes "<synthetic>" assistant placeholders with an all-zero usage block.
         if counts.iter().all(|c|*c==0){return None}
         let id=m["id"].as_str().map(str::to_string).unwrap_or_else(||format!("offset-{offset}"));
-        return Some(Event{id,ts,model:m["model"].as_str().unwrap_or("unknown").into(),counts,partial:m["id"].is_null()||u["input_tokens"].is_null()||u["output_tokens"].is_null()});
+        // 分项守卫：id/分项缺失（现有语义，保持并纳入计数）+ 四分项负值（count() 会静默归零，属格式漂移）。
+        let anomaly=m["id"].is_null()||u["input_tokens"].is_null()||u["output_tokens"].is_null()||["input_tokens","output_tokens","cache_read_input_tokens","cache_creation_input_tokens"].iter().any(|k|negative(&u[k]));
+        if anomaly{state.anomalies+=1}
+        return Some(Event{id,ts,model:m["model"].as_str().unwrap_or("unknown").into(),counts,partial:anomaly});
     }
     if ["cline","roocode","kilocode"].contains(&source){
         if v["say"]!="api_req_started"{return None}let text:Value=serde_json::from_str(v["text"].as_str()?).ok()?;
         let ts=timestamp(&v["ts"])?;if text["tokensIn"].is_null()&&text["tokensOut"].is_null(){return None}
+        // 分项守卫：任一分项为负（count() 静默归零）→ 计入异常；本来源即部分格式覆盖，partial 恒真。
+        if ["tokensIn","tokensOut","cacheReads","cacheWrites"].iter().any(|k|negative(&text[k])){state.anomalies+=1}
         return Some(Event{id:format!("{ts}-{offset}"),ts,model:text["model"].as_str().unwrap_or("unknown").into(),counts:[count(&text["tokensIn"]),count(&text["tokensOut"]),count(&text["cacheReads"]),count(&text["cacheWrites"])],partial:true});
     }
     if source=="gemini"{
@@ -53,10 +64,14 @@ fn parse(source:&str,v:&Value,state:&mut State,offset:u64)->Option<Event>{
         let model=v["model"].as_str().or_else(|| v.pointer("/payload/model").and_then(Value::as_str)).unwrap_or("unknown");
         let id=v["id"].as_str().or_else(|| v.pointer("/payload/id").and_then(Value::as_str)).map(str::to_string).unwrap_or_else(||format!("offset-{offset}"));
         let ts=v.get("timestamp").or_else(|| v.pointer("/payload/timestamp")).and_then(timestamp)?;
+        // 分项守卫：分项负值，或 cached > input（Gemini 口径中 cached ⊆ input，saturating_sub 会静默掩盖该矛盾）。
+        if ["input","output","cached","tool"].iter().any(|k|negative(&u[k]))||cache>input{state.anomalies+=1}
         return Some(Event{id,ts,model:model.into(),counts:[input.saturating_sub(cache)+count(&u["tool"]),count(&u["output"]),cache,0],partial:true});
     }
     if source=="openclaw"{
         let m=&v["message"];if m["role"]!="assistant"{return None}let u=m.get("usage")?;
+        // 分项守卫：任一分项为负（count() 静默归零）→ 计入异常。
+        if ["input","output","cacheRead","cacheWrite"].iter().any(|k|negative(&u[k])){state.anomalies+=1}
         return Some(Event{id:v["id"].as_str().map(str::to_string).unwrap_or_else(||format!("offset-{offset}")),ts:timestamp(&v["timestamp"])?,model:m["model"].as_str().unwrap_or("unknown").into(),counts:[count(&u["input"]),count(&u["output"]),count(&u["cacheRead"]),count(&u["cacheWrite"])],partial:true});
     }
     None
@@ -109,7 +124,7 @@ where F: Fn() -> bool {
 fn database(path:&Path)->Result<Connection,String>{
     let db=Connection::open(path).map_err(|_|"无法打开统计缓存")?;
     db.busy_timeout(std::time::Duration::from_secs(2)).map_err(|_|"统计缓存锁定")?;
-    db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,source TEXT,size INTEGER,mtime INTEGER,prefix TEXT,offset INTEGER,state TEXT); CREATE TABLE IF NOT EXISTS events(path TEXT,source TEXT,event_id TEXT,ts INTEGER,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,partial INTEGER,PRIMARY KEY(path,event_id)); CREATE INDEX IF NOT EXISTS idx_events_source_ts ON events(source, ts); CREATE TABLE IF NOT EXISTS daily_archive(day TEXT,source TEXT,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,PRIMARY KEY(day,source,model)); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER);").map_err(|_|"无法初始化统计缓存")?;Ok(db)
+    db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,source TEXT,size INTEGER,mtime INTEGER,prefix TEXT,offset INTEGER,state TEXT); CREATE TABLE IF NOT EXISTS events(path TEXT,source TEXT,event_id TEXT,ts INTEGER,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,partial INTEGER,PRIMARY KEY(path,event_id)); CREATE INDEX IF NOT EXISTS idx_events_source_ts ON events(source, ts); CREATE TABLE IF NOT EXISTS daily_archive(day TEXT,source TEXT,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,PRIMARY KEY(day,source,model)); CREATE TABLE IF NOT EXISTS daily_active(day TEXT PRIMARY KEY,seconds INTEGER); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER);").map_err(|_|"无法初始化统计缓存")?;Ok(db)
 }
 pub fn scan(days:u32)->Result<Summary,String>{
     scan_with_cancel(days,&||false)
@@ -120,7 +135,7 @@ where F: Fn() -> bool + Send + Sync {
     if is_cancelled() { return Err("已取消".into()); }
     let root=crate::config::get_config_dir();fs::create_dir_all(&root).map_err(|_|"无法创建统计缓存")?;
     let (paths, truncated) = sources_with_cancel(is_cancelled)?;
-    scan_paths_with_cancel(days,&root.join("ledger-v1.sqlite"),paths,truncated,is_cancelled)
+    scan_paths_with_cancel(days,&ledger_db_path(),paths,truncated,is_cancelled)
 }
 pub fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool)->Result<Summary,String>{
     scan_paths_with_cancel(days,db_path,paths,truncated,&||false)
@@ -214,6 +229,7 @@ where F: Fn() -> bool + Send + Sync {
     {
         let tx=db.transaction().map_err(|_|"lock")?;
         archive_daily(&tx)?;
+        active_daily(&tx)?;
         tx.commit().map_err(|_|"commit")?;
     }
     let mut stmt=db.prepare("SELECT source,model,ts,MAX(input),MAX(output),MAX(cache_read),MAX(cache_write),MAX(partial) FROM events WHERE ts>=? GROUP BY source,event_id").map_err(|_|"统计查询失败")?;
@@ -238,14 +254,14 @@ where F: Fn() -> bool + Send + Sync {
     let cost_estimate = if any_cost { Some((total_cost * 100.0).round() / 100.0) } else { None };
     let coverage_gap=truncated;
     // B08：坏行状态持久化在 files.state——后续扫描跳过未变化文件时标记不丢。
-    let persisted_bad:u64={
-        let mut stmt=db.prepare("SELECT state FROM files WHERE state LIKE '%bad_lines%'").map_err(|_|"读取坏行状态失败")?;
-        let total=stmt.query_map([],|r|r.get::<_,String>(0)).map_err(|_|"读取坏行状态失败")?
-            .filter_map(|s|s.ok()).filter_map(|s|serde_json::from_str::<State>(&s).ok())
-            .map(|st|st.bad_lines).sum();
-        total
+    // 分项矛盾计数 anomalies 同存于 state：跨扫描累计，随全量重解析（前缀变更）重置重算。
+    let (persisted_bad,anomalies):(u64,u64)={
+        let mut stmt=db.prepare("SELECT state FROM files").map_err(|_|"读取坏行状态失败")?;
+        let mut acc=(0u64,0u64);
+        for st in stmt.query_map([],|r|r.get::<_,String>(0)).map_err(|_|"读取坏行状态失败")?.flatten().filter_map(|s|serde_json::from_str::<State>(&s).ok()){acc.0+=st.bad_lines;acc.1+=st.anomalies;}
+        acc
     };
-    let partial=skipped>0||persisted_bad>0||rows.iter().any(|r|r.partial)||coverage_gap;
+    let partial=skipped>0||persisted_bad>0||rows.iter().any(|r|r.partial)||coverage_gap||anomalies>0;
     let duration_ms=Some(scan_start.elapsed().as_millis() as u64);
     let mut notes=vec![
         "仅读取本机记录；缺失文件不代表零消耗。".into(),
@@ -265,7 +281,10 @@ where F: Fn() -> bool + Send + Sync {
     if unpriced>0{
         notes.push(format!("有 {unpriced} 组记录来自未知定价的模型，未计入费用估算（已计价 {priced} 组）。"));
     }
-    Ok(Summary{rows,scanned_files:scanned,skipped_files:skipped,changed_files:changed,days,partial,cost_estimate,notes,duration_ms,coverage_gap})
+    if anomalies>0{
+        notes.push(format!("发现 {anomalies} 条分项矛盾事件（分项为负或缓存增量大于输入增量等），已标记 partial，计数时请留意。"));
+    }
+    Ok(Summary{rows,scanned_files:scanned,skipped_files:skipped,changed_files:changed,days,partial,anomalies,cost_estimate,notes,duration_ms,coverage_gap})
 }
 
 /// 事件按 (本地时区 day,source,model) 聚合后 upsert 进 daily_archive。
@@ -274,11 +293,15 @@ where F: Fn() -> bool + Send + Sync {
 /// day 键的时区偏移在首次归档时冻结进 meta 表：归档只有 max-upsert、没有删除/回退路径，
 /// 若每次扫描都按当前系统时区切天，时区变更会把同一批事件重切到新 day 键而旧行永不修正
 /// （趋势按 day 求和即永久双计）；冻结偏移保证 day 键稳定，Summary 每次全量重算不受影响。
+/// day 键统一使用 meta 冻结的归档时区偏移（缺省回退当前本地偏移）。
+fn frozen_tz(db:&Connection)->chrono::FixedOffset{
+    let secs:Option<i64>=db.query_row("SELECT value FROM meta WHERE key='archive_tz_offset_secs'",[],|r|r.get(0)).ok();
+    secs.and_then(|s|i32::try_from(s).ok()).and_then(chrono::FixedOffset::east_opt).unwrap_or_else(||*chrono::Local::now().offset())
+}
 fn archive_daily(db:&Connection)->Result<(),String>{
     let now_off=chrono::Local::now().offset().local_minus_utc();
     db.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('archive_tz_offset_secs',?)",[now_off]).map_err(|_|"归档写入失败")?;
-    let secs:Option<i64>=db.query_row("SELECT value FROM meta WHERE key='archive_tz_offset_secs'",[],|r|r.get(0)).ok();
-    let tz=secs.and_then(|s|i32::try_from(s).ok()).and_then(chrono::FixedOffset::east_opt).unwrap_or_else(||*chrono::Local::now().offset());
+    let tz=frozen_tz(db);
     let mut stmt=db.prepare("SELECT source,model,ts,MAX(input),MAX(output),MAX(cache_read),MAX(cache_write) FROM events GROUP BY source,event_id").map_err(|_|"归档查询失败")?;
     let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,[r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?]))).map_err(|_|"归档读取失败")?;
     let mut buckets:BTreeMap<(String,String,String),[u64;4]>=BTreeMap::new();
@@ -292,6 +315,131 @@ pub fn archived_daily(db_path:&Path)->Result<Vec<ArchivedDay>,String>{
     let db=database(db_path)?;
     let mut stmt=db.prepare("SELECT day,source,model,input,output,cache_read,cache_write FROM daily_archive ORDER BY day ASC,source ASC,model ASC").map_err(|_|"归档读取失败")?;
     let rows=stmt.query_map([],|r|Ok(ArchivedDay{day:r.get(0)?,source:r.get(1)?,model:r.get(2)?,input:r.get(3)?,output:r.get(4)?,cache_read:r.get(5)?,cache_write:r.get(6)?})).map_err(|_|"归档读取失败")?;
+    Ok(rows.flatten().collect())
+}
+
+/// 趋势窗口默认 370 天（对标 token-monitor 的 370 天滚动窗）。
+pub const TREND_CAP_DAYS:u32=370;
+/// 单日趋势：tokens 为全口径 input+output+cache_read+cache_write（与归档列一致），
+/// per_source 按来源拆分（窗口内出现过的来源逐一列出，当日缺失补 0）。
+#[derive(Debug,Clone,Serialize,Deserialize)]pub struct DailyTrend{pub day:String,pub tokens:u64,pub per_source:BTreeMap<String,u64>}
+/// 趋势指标汇总：trend_metrics 命令返回值与趋势导出 JSON 共用同一形状。
+/// active_seconds 为窗口内（首日..=末日）活跃总秒数，由 trend_report 按 daily_active 填充
+/// （compute_metrics 是不含库查询的纯函数，此处恒 0）；跨 source 不去重、并行累计。
+#[derive(Debug,Clone,Serialize,Deserialize)]pub struct TrendMetrics{pub days:Vec<DailyTrend>,pub active_days:u64,pub current_streak:u64,pub longest_streak:u64,pub peak_day:Option<String>,pub peak_tokens:u64,pub active_seconds:u64}
+/// 账本库统一路径（scan 与趋势读取同源，避免两处拼接漂移）。
+pub fn ledger_db_path()->PathBuf{crate::config::get_config_dir().join("ledger-v1.sqlite")}
+/// 每日趋势序列（day 升序、逐日连续、缺日补 0），以 daily_archive 为主数据源：
+/// 归档是 max-upsert 快照，上次扫描后新增的消耗由 events 重算补齐——按 (day,source,model)
+/// 与归档值取 max（与归档写入同语义，重算变小不回退），再按 (day,source) 汇总。
+/// 切天与「今天」都按 frozen_tz 冻结时区的本地午夜（禁止 UTC，与归档口径一致），
+/// 窗口为最近 cap_days 天；更早的归档日不输出。
+pub fn daily_trends(db_path:&Path,cap_days:u32)->Result<Vec<DailyTrend>,String>{
+    if cap_days==0{return Ok(vec![])}
+    let db=database(db_path)?;
+    let tz=frozen_tz(&db);
+    let today=chrono::Utc::now().with_timezone(&tz).date_naive();
+    let first=today-chrono::Duration::days(cap_days as i64-1);
+    let mut merged:BTreeMap<(String,String,String),[u64;4]>=BTreeMap::new();
+    {
+        let mut stmt=db.prepare("SELECT day,source,model,input,output,cache_read,cache_write FROM daily_archive").map_err(|_|"趋势读取失败")?;
+        let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,[r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?]))).map_err(|_|"趋势读取失败")?;
+        for (day,source,model,c) in rows.flatten(){*merged.entry((day,source,model)).or_insert([0;4])=c;}
+    }
+    // events 重算值更大则取重算值：与 archive_daily 同查询、同冻结时区切天。
+    {
+        let mut stmt=db.prepare("SELECT source,model,ts,MAX(input),MAX(output),MAX(cache_read),MAX(cache_write) FROM events GROUP BY source,event_id").map_err(|_|"趋势读取失败")?;
+        let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,[r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?]))).map_err(|_|"趋势读取失败")?;
+        for (source,model,ts,c) in rows.flatten(){
+            let Some(day)=chrono::DateTime::from_timestamp(ts,0).map(|d|d.with_timezone(&tz).format("%Y-%m-%d").to_string())else{continue};
+            let e=merged.entry((day,source,model)).or_insert([0;4]);
+            for i in 0..4{e[i]=e[i].max(c[i]);}
+        }
+    }
+    let mut per_day_source:BTreeMap<(String,String),u64>=BTreeMap::new();
+    let mut sources=std::collections::BTreeSet::new();
+    // per_source 契约（见 DailyTrend 注释）：只列「窗口内出现过的来源」——daily_archive 无删除路径，
+    // 更早历史的归档日会永久留存，不得把这些来源以 0 值带进窗口内每一天的 per_source。
+    // day 键恒为 "%Y-%m-%d"，字典序即日期序。
+    let (first_key,today_key)=(first.format("%Y-%m-%d").to_string(),today.format("%Y-%m-%d").to_string());
+    for ((day,source,_model),c) in &merged{
+        *per_day_source.entry((day.clone(),source.clone())).or_insert(0)+=c[0]+c[1]+c[2]+c[3];
+        if day.as_str()>=first_key.as_str()&&day.as_str()<=today_key.as_str(){sources.insert(source.clone());}
+    }
+    let mut out=Vec::with_capacity(cap_days as usize);
+    let mut d=first;
+    while d<=today{
+        let day=d.format("%Y-%m-%d").to_string();
+        let mut tokens=0u64;let mut per_source=BTreeMap::new();
+        for s in &sources{let v=per_day_source.get(&(day.clone(),s.clone())).copied().unwrap_or(0);per_source.insert(s.clone(),v);tokens+=v;}
+        out.push(DailyTrend{day,tokens,per_source});
+        d+=chrono::Duration::days(1);
+    }
+    Ok(out)
+}
+/// 活跃天数：tokens>0 的天数。
+pub fn active_days(days:&[DailyTrend])->u64{days.iter().filter(|d|d.tokens>0).count() as u64}
+/// 当前连续天数：对齐 token-monitor computeStreaks，从序列末尾（冻结时区今天）回走，
+/// 今天不活跃（tokens=0）即 0，遇断档停止。
+pub fn current_streak(days:&[DailyTrend])->u64{days.iter().rev().take_while(|d|d.tokens>0).count() as u64}
+/// 最长连续天数：排序扫连续段——按日历日相邻判定（跨月/跨年用日期运算，不按序号），
+/// 中断（断档日或缺口）后重新起段。
+pub fn longest_streak(days:&[DailyTrend])->u64{
+    let mut best=0u64;let mut run=0u64;let mut prev:Option<chrono::NaiveDate>=None;
+    for d in days{
+        let Ok(date)=chrono::NaiveDate::parse_from_str(&d.day,"%Y-%m-%d")else{continue};
+        run=if d.tokens>0{if prev.is_some_and(|p|date==p+chrono::Duration::days(1)){run+1}else{1}}else{0};
+        best=best.max(run);prev=Some(date);
+    }
+    best
+}
+/// 峰值单日：tokens 最大的 day（并列取最早）；空数据返回 None。
+pub fn peak_day(days:&[DailyTrend])->Option<(String,u64)>{
+    days.iter().fold(None,|acc:Option<(String,u64)>,d|match acc{
+        Some((_,max)) if max>=d.tokens=>acc,
+        _=>Some((d.day.clone(),d.tokens)),
+    })
+}
+/// 纯函数指标汇总（trend_metrics 命令与导出共用）；active_seconds 恒 0，由 trend_report 查库填充。
+pub fn compute_metrics(days:&[DailyTrend])->TrendMetrics{
+    let (peak_day,peak_tokens)=peak_day(days).map(|(d,t)|(Some(d),t)).unwrap_or((None,0));
+    TrendMetrics{days:days.to_vec(),active_days:active_days(days),current_streak:current_streak(days),longest_streak:longest_streak(days),peak_day,peak_tokens,active_seconds:0}
+}
+/// 读取趋势并计算指标（trend_metrics 命令入口）。active_seconds 汇总 daily_active 中
+/// 落在窗口（首日..=末日）内的天：跨 source 不去重、并行累计；窗口外的历史峰值不计入。
+pub fn trend_report(db_path:&Path)->Result<TrendMetrics,String>{
+    let days=daily_trends(db_path,TREND_CAP_DAYS)?;
+    let mut m=compute_metrics(&days);
+    if let (Some(first),Some(last))=(days.first(),days.last()){
+        m.active_seconds=daily_active(db_path)?.into_iter().filter(|(d,_)|d.as_str()>=first.day.as_str()&&d.as_str()<=last.day.as_str()).map(|(_,s)|s).sum();
+    }
+    Ok(m)
+}
+
+/// 每日活跃秒数：同 source 内按 ts 升序，相邻事件间隔 ≤5 分钟（≤300s）视为同一活动段，
+/// 段时长 = Σ min(间隔,300s)——段内间隔本就 ≤300s，>300s 即切段不计时（长会话跨小时不膨胀）；
+/// 段计入起始日（较早事件的冻结时区 day 键，跨天段不拆分）。跨 source 不去重：
+/// 同时开多个工具按并行累计。与 daily_archive 同语义 max-upsert：重算变小不回退，
+/// 源日志清理后保留历史峰值。事件先按 (source,event_id) 去重（同 archive_daily，跨文件移动不双计）。
+fn active_daily(db:&Connection)->Result<(),String>{
+    let tz=frozen_tz(db);
+    let mut stmt=db.prepare("SELECT source,MIN(ts) AS mts FROM events GROUP BY source,event_id ORDER BY source,mts").map_err(|_|"活跃时长读取失败")?;
+    let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).map_err(|_|"活跃时长读取失败")?;
+    let mut active:BTreeMap<String,u64>=BTreeMap::new();
+    let mut prev:Option<(String,i64)>=None;
+    for (source,ts) in rows.flatten(){
+        if let Some((ps,pts))=&prev{if *ps==source{let gap=ts-*pts;if gap>0&&gap<=300{if let Some(day)=chrono::DateTime::from_timestamp(*pts,0).map(|d|d.with_timezone(&tz).format("%Y-%m-%d").to_string()){*active.entry(day).or_insert(0)+=gap as u64;}}}}
+        prev=Some((source,ts));
+    }
+    let mut up=db.prepare("INSERT INTO daily_active(day,seconds) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET seconds=MAX(seconds,excluded.seconds)").map_err(|_|"活跃时长写入失败")?;
+    for (day,seconds) in &active{up.execute(params![day,*seconds]).map_err(|_|"活跃时长写入失败")?;}
+    Ok(())
+}
+/// 读取每日活跃秒数（day 升序），供「活跃时间」指标卡与导出使用。
+pub fn daily_active(db_path:&Path)->Result<Vec<(String,u64)>,String>{
+    let db=database(db_path)?;
+    let mut stmt=db.prepare("SELECT day,seconds FROM daily_active ORDER BY day ASC").map_err(|_|"活跃时长读取失败")?;
+    let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u64>(1)?))).map_err(|_|"活跃时长读取失败")?;
     Ok(rows.flatten().collect())
 }
 
@@ -477,11 +625,14 @@ fn estimate_model_cost(model: &str, counts: &[u64; 4]) -> Option<f64> {
         let (frozen_day,local_day)=(day_of(frozen),day_of(*chrono::Local::now().offset()));
         assert_ne!(frozen_day,local_day,"test setup must place the event on different days under the two offsets");
         let v=json!({"type":"assistant","timestamp":chrono::DateTime::from_timestamp(ts,0).unwrap().to_rfc3339(),"message":{"id":"m1","model":"x","usage":{"input_tokens":10,"output_tokens":2}}});
-        let file=d.path().join("tz.jsonl");fs::write(&file,format!("{v}\n")).unwrap();
+        let v2=json!({"type":"assistant","timestamp":chrono::DateTime::from_timestamp(ts+60,0).unwrap().to_rfc3339(),"message":{"id":"m2","model":"x","usage":{"input_tokens":5,"output_tokens":1}}});
+        let file=d.path().join("tz.jsonl");fs::write(&file,format!("{v}\n{v2}\n")).unwrap();
         scan_paths(90,&db_path,vec![("claude".into(),file)],false).unwrap();
         let rows=archived_daily(&db_path).unwrap();
         assert_eq!(rows.len(),1);
         assert_eq!(rows[0].day,frozen_day,"archive day keys must follow the offset frozen at first archive, not the current system timezone");
+        // 活跃时长同用冻结偏移切天：60s 段计入 frozen_day。
+        assert_eq!(daily_active(&db_path).unwrap(),vec![(frozen_day,60)],"active seconds must land on the frozen day key too");
     }
     #[test]fn zcode_transcripts_reuse_claude_parsing(){
         let mut s=State::default();
@@ -516,6 +667,253 @@ fn estimate_model_cost(model: &str, counts: &[u64; 4]) -> Option<f64> {
         assert_eq!(s.changed_files,1);assert_eq!(s.rows.len(),1);
         assert_eq!(s.rows[0].source,"zcode");assert_eq!(s.rows[0].model,"glm-5");
         assert_eq!((s.rows[0].input,s.rows[0].output,s.rows[0].cache_read,s.rows[0].cache_write),(11,4,6,2));
+    }
+    #[test]fn claude_component_contradiction_is_flagged_and_counted(){
+        let mut s=State::default();
+        let mk=|id:&str,usage:Value|json!({"type":"assistant","timestamp":"2026-09-17T00:00:00Z","message":{"id":id,"model":"x","usage":usage}});
+        let ok=mk("m1",json!({"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":3,"cache_creation_input_tokens":1}));
+        let e=parse("claude",&ok,&mut s,0).unwrap();assert!(!e.partial);assert_eq!(e.counts,[10,5,3,1]);assert_eq!(s.anomalies,0);
+        let bad=mk("m2",json!({"input_tokens":10,"output_tokens":-5,"cache_read_input_tokens":-3}));
+        let e=parse("claude",&bad,&mut s,1).unwrap();assert!(e.partial);assert_eq!(e.counts,[10,0,0,0],"negative components must be flagged, not silently zeroed into trend numbers");assert_eq!(s.anomalies,1);
+        let e=parse("claude",&mk("m3",json!({"input_tokens":7,"output_tokens":2})),&mut s,2).unwrap();
+        assert!(!e.partial);assert_eq!(s.anomalies,1,"a following clean event must not be affected");
+    }
+    #[test]fn zcode_contradiction_fixtures_are_flagged_and_counted(){
+        let mut s=State::default();
+        let ok=json!({"type":"assistant","timestamp":"2026-09-20T08:00:00Z","message":{"id":"z1","model":"glm-5","usage":{"input_tokens":11,"output_tokens":4}}});
+        assert!(!parse("zcode",&ok,&mut s,0).unwrap().partial);assert_eq!(s.anomalies,0);
+        // 现有语义纳入计数：usage 对象存在但 input_tokens 缺失 → partial + 异常。
+        let miss=json!({"type":"assistant","timestamp":"2026-09-20T08:00:01Z","message":{"id":"z2","model":"glm-5","usage":{"output_tokens":4}}});
+        let e=parse("zcode",&miss,&mut s,1).unwrap();assert!(e.partial);assert_eq!(e.counts,[0,4,0,0]);assert_eq!(s.anomalies,1);
+        // 分项负值 → partial + 异常。
+        let neg=json!({"type":"assistant","timestamp":"2026-09-20T08:00:02Z","message":{"id":"z3","model":"glm-5","usage":{"input_tokens":-8,"output_tokens":4}}});
+        let e=parse("zcode",&neg,&mut s,2).unwrap();assert!(e.partial);assert_eq!(e.counts,[0,4,0,0]);assert_eq!(s.anomalies,2);
+    }
+    #[test]fn codex_cached_delta_contradiction_is_flagged_and_counted(){
+        let mut s=State{model:"gpt-4".into(),..Default::default()};
+        let mk=|i:i64,c:i64,o:i64|json!({"type":"event_msg","timestamp":"2026-09-17T00:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":i,"cached_input_tokens":c,"output_tokens":o}}}});
+        // 正常增量：cached 增量 ≤ input 增量，不受影响。
+        let e=parse("codex",&mk(100,30,20),&mut s,0).unwrap();assert!(!e.partial);assert_eq!(e.counts,[70,20,30,0]);assert_eq!(s.anomalies,0);
+        // delta 分量矛盾：缓存增量 60 > 输入增量 40（无 totals 回退），标 partial 并计数。
+        let e=parse("codex",&mk(140,90,25),&mut s,1).unwrap();
+        assert!(e.partial);assert_eq!(e.counts,[0,5,60,0]);assert_eq!(s.anomalies,1);
+        // 回到正常增量：不再标矛盾。
+        let e=parse("codex",&mk(160,100,30),&mut s,2).unwrap();assert!(!e.partial);assert_eq!(e.counts,[10,5,10,0]);assert_eq!(s.anomalies,1);
+    }
+    #[test]fn gemini_component_contradiction_is_flagged_and_counted(){
+        let mut s=State::default();
+        let mk=|i:i64,c:i64|json!({"type":"gemini","timestamp":"2026-09-17T00:00:00Z","model":"gemini-2.5-pro","tokens":{"input":i,"output":50,"cached":c,"tool":0}});
+        let e=parse("gemini",&mk(100,30),&mut s,0).unwrap();assert_eq!(e.counts,[70,50,30,0]);assert_eq!(s.anomalies,0);
+        // 来源内矛盾：cached > input（cached ⊆ input 口径），saturating_sub 不再静默掩盖。
+        let e=parse("gemini",&mk(10,30),&mut s,1).unwrap();assert_eq!(e.counts,[0,50,30,0]);assert_eq!(s.anomalies,1);
+        // 分项负值同样计数。
+        let e=parse("gemini",&mk(-5,0),&mut s,2).unwrap();assert_eq!(e.counts,[0,50,0,0]);assert_eq!(s.anomalies,2);
+    }
+    #[test]fn editor_sources_component_contradiction_is_flagged_and_counted(){
+        for source in ["cline","roocode","kilocode"]{
+            let mut s=State::default();
+            let mk=|tin:i64|json!({"say":"api_req_started","ts":"2026-09-17T00:00:00Z","text":json!({"tokensIn":tin,"tokensOut":5,"cacheReads":3,"cacheWrites":1,"model":"x"}).to_string()});
+            let e=parse(source,&mk(10),&mut s,0).unwrap();assert_eq!(e.counts,[10,5,3,1]);assert_eq!(s.anomalies,0);
+            let e=parse(source,&mk(-10),&mut s,1).unwrap();assert_eq!(e.counts,[0,5,3,1]);assert_eq!(s.anomalies,1);
+        }
+    }
+    #[test]fn openclaw_component_contradiction_is_flagged_and_counted(){
+        let mut s=State::default();
+        let mk=|cr:i64|json!({"id":"o1","timestamp":"2026-09-17T00:00:00Z","message":{"role":"assistant","model":"x","usage":{"input":10,"output":5,"cacheRead":cr,"cacheWrite":1}}});
+        let e=parse("openclaw",&mk(3),&mut s,0).unwrap();assert_eq!(e.counts,[10,5,3,1]);assert_eq!(s.anomalies,0);
+        let e=parse("openclaw",&mk(-3),&mut s,1).unwrap();assert_eq!(e.counts,[10,5,0,1]);assert_eq!(s.anomalies,1);
+    }
+    #[test]fn legacy_state_without_anomalies_still_deserializes(){
+        // 升级前持久化的 state 无 anomalies 字段；反序列化失败会清空 codex totals，导致升级后整段重复计数。
+        let s:State=serde_json::from_str(r#"{"model":"gpt","totals":[100,20,30,0],"bad_lines":2}"#).unwrap();
+        assert_eq!(s.totals,[100,20,30,0]);assert_eq!(s.bad_lines,2);assert_eq!(s.anomalies,0);
+    }
+    #[test]fn scan_surfaces_component_anomalies_in_summary(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");let file=d.path().join("a.jsonl");
+        let ok=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"m1","model":"x","usage":{"input_tokens":10,"output_tokens":5}}});
+        let bad=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"m2","model":"x","usage":{"input_tokens":10,"output_tokens":-5}}});
+        fs::write(&file,format!("{ok}\n{bad}\n")).unwrap();
+        let s=scan_paths(7,&db,vec![("claude".into(),file)],false).unwrap();
+        assert_eq!(s.anomalies,1);assert!(s.rows[0].partial);assert!(s.partial);
+        assert!(s.notes.iter().any(|n|n.contains("1 条分项矛盾")),"anomaly count must surface in notes");
+        // 正常数据：计数为 0、无对应 note。
+        let d2=tempfile::tempdir().unwrap();let f2=d2.path().join("b.jsonl");fs::write(&f2,format!("{ok}\n")).unwrap();
+        let clean=scan_paths(7,&d2.path().join("db2"),vec![("claude".into(),f2)],false).unwrap();
+        assert_eq!(clean.anomalies,0);assert!(!clean.partial);assert!(!clean.notes.iter().any(|n|n.contains("分项矛盾")));
+    }
+    #[test]fn daily_active_dense_events_sum_gaps_within_segment(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");let file=d.path().join("a.jsonl");
+        let t0=chrono::Utc::now().timestamp();
+        let mk=|id:&str,ts:i64|json!({"type":"assistant","timestamp":chrono::DateTime::from_timestamp(ts,0).unwrap().to_rfc3339(),"message":{"id":id,"model":"x","usage":{"input_tokens":1,"output_tokens":1}}});
+        // 密集：60s 间隔的三事件同一活动段，段长=60+60=120s。
+        fs::write(&file,format!("{}\n{}\n{}\n",mk("a",t0),mk("b",t0+60),mk("c",t0+120))).unwrap();
+        scan_paths(7,&db,vec![("claude".into(),file.clone())],false).unwrap();
+        assert_eq!(daily_active(&db).unwrap().iter().map(|(_,s)|*s).sum::<u64>(),120);
+        // 重算变小（只剩单个事件，无相邻间隔）不得降低：与 daily_archive 同语义 max-upsert 防回退。
+        fs::write(&file,format!("{}\n",mk("solo",t0+120))).unwrap();
+        scan_paths(7,&db,vec![("claude".into(),file)],false).unwrap();
+        assert_eq!(daily_active(&db).unwrap().iter().map(|(_,s)|*s).sum::<u64>(),120,"a smaller recomputed activity must not lower daily_active");
+    }
+    #[test]fn daily_active_sparse_gaps_break_segments(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let t0=chrono::Utc::now().timestamp();
+        let mk=|id:&str,ts:i64|json!({"type":"assistant","timestamp":chrono::DateTime::from_timestamp(ts,0).unwrap().to_rfc3339(),"message":{"id":id,"model":"x","usage":{"input_tokens":1,"output_tokens":1}}});
+        // 恰 300s（≤5min）计入，301s 切段不计，再 300s 计入：claude 合计 600s；zcode 全稀疏（700s 间隔）计 0。
+        let f1=d.path().join("c.jsonl");fs::write(&f1,format!("{}\n{}\n{}\n{}\n",mk("a",t0),mk("b",t0+300),mk("c",t0+601),mk("d",t0+901))).unwrap();
+        let f2=d.path().join("z.jsonl");fs::write(&f2,format!("{}\n{}\n",mk("e",t0),mk("f",t0+700))).unwrap();
+        scan_paths(7,&db,vec![("claude".into(),f1),("zcode".into(),f2)],false).unwrap();
+        assert_eq!(daily_active(&db).unwrap().iter().map(|(_,s)|*s).sum::<u64>(),600);
+    }
+    #[test]fn daily_active_cross_day_segment_counts_into_starting_day(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");let file=d.path().join("a.jsonl");
+        let base=chrono::Local::now().date_naive();
+        let t1=base.and_hms_opt(23,59,0).unwrap().and_local_timezone(chrono::Local).earliest().unwrap();
+        let t2=t1+chrono::Duration::minutes(2);
+        let mk=|id:&str,ts:chrono::DateTime<chrono::Local>|json!({"type":"assistant","timestamp":ts.to_rfc3339(),"message":{"id":id,"model":"x","usage":{"input_tokens":1,"output_tokens":1}}});
+        fs::write(&file,format!("{}\n{}\n",mk("a",t1),mk("b",t2))).unwrap();
+        scan_paths(7,&db,vec![("claude".into(),file)],false).unwrap();
+        assert_eq!(daily_active(&db).unwrap(),vec![(t1.format("%Y-%m-%d").to_string(),120)],"a segment crossing midnight must land entirely on the starting day");
+    }
+    #[test]fn daily_active_empty_when_no_events(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        scan_paths(7,&db,vec![],false).unwrap();
+        assert!(daily_active(&db).unwrap().is_empty());
+    }
+    #[test]fn daily_active_parallel_sources_are_summed_without_dedup(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let t0=chrono::Utc::now().timestamp();
+        let mk=|id:&str,ts:i64|json!({"type":"assistant","timestamp":chrono::DateTime::from_timestamp(ts,0).unwrap().to_rfc3339(),"message":{"id":id,"model":"x","usage":{"input_tokens":1,"output_tokens":1}}});
+        let f1=d.path().join("c.jsonl");fs::write(&f1,format!("{}\n{}\n",mk("a",t0),mk("b",t0+60))).unwrap();
+        let f2=d.path().join("z.jsonl");fs::write(&f2,format!("{}\n{}\n",mk("a",t0),mk("b",t0+60))).unwrap();
+        scan_paths(7,&db,vec![("claude".into(),f1),("zcode".into(),f2)],false).unwrap();
+        assert_eq!(daily_active(&db).unwrap().iter().map(|(_,s)|*s).sum::<u64>(),120,"parallel sources must accumulate, not dedupe");
+    }
+    fn trend(day:&str,tokens:u64)->DailyTrend{DailyTrend{day:day.into(),tokens,per_source:BTreeMap::new()}}
+    #[test]
+    fn trend_metric_edge_cases(){
+        // 空数据：全 0，峰值为 None。
+        let empty:Vec<DailyTrend>=vec![];
+        assert_eq!(active_days(&empty),0);assert_eq!(current_streak(&empty),0);assert_eq!(longest_streak(&empty),0);assert_eq!(peak_day(&empty),None);
+        // 月界：01-30..01-31 与 02-02..02-03 各 2 天连续段，中间 02-01 断档；今天（末尾 02-04）不活跃。
+        let days=vec![trend("2026-01-30",10),trend("2026-01-31",20),trend("2026-02-01",0),trend("2026-02-02",5),trend("2026-02-03",7),trend("2026-02-04",0)];
+        assert_eq!(active_days(&days),4);
+        assert_eq!(current_streak(&days),0,"an inactive today must zero the current streak even when yesterday was active");
+        assert_eq!(longest_streak(&days),2);
+        assert_eq!(peak_day(&days),Some(("2026-01-31".into(),20)));
+        // 今天活跃：current 从末尾回走 2 天（02-05、02-06）。
+        let mut tail=days.clone();tail.push(trend("2026-02-05",1));tail.push(trend("2026-02-06",2));
+        assert_eq!(current_streak(&tail),2);assert_eq!(longest_streak(&tail),2);
+        // 跨月连续：01-31 与 02-01 相邻即连续段，跨月不中断。
+        let across=vec![trend("2026-01-29",0),trend("2026-01-30",1),trend("2026-01-31",1),trend("2026-02-01",1),trend("2026-02-02",1),trend("2026-02-03",0)];
+        assert_eq!(longest_streak(&across),4);assert_eq!(current_streak(&across),0);
+        // 跨年连续同理。
+        let year=vec![trend("2025-12-30",1),trend("2025-12-31",1),trend("2026-01-01",1),trend("2026-01-02",1)];
+        assert_eq!(longest_streak(&year),4);
+        // 峰值并列取最早。
+        let tie=vec![trend("2026-02-02",9),trend("2026-02-03",9)];
+        assert_eq!(peak_day(&tie),Some(("2026-02-02".into(),9)));
+        // compute_metrics 汇总一致。
+        let m=compute_metrics(&tail);
+        assert_eq!(m.active_days,6);assert_eq!(m.current_streak,2);assert_eq!(m.longest_streak,2);assert_eq!(m.peak_day.as_deref(),Some("2026-01-31"));assert_eq!(m.peak_tokens,20);assert_eq!(m.days.len(),8);
+    }
+    #[test]
+    fn daily_trends_empty_db_is_zero_filled(){
+        let d=tempfile::tempdir().unwrap();let db_path=d.path().join("cache.db");
+        assert!(daily_trends(&db_path,0).unwrap().is_empty(),"cap_days=0 must yield an empty window");
+        let trends=daily_trends(&db_path,7).unwrap();
+        assert_eq!(trends.len(),7);
+        assert!(trends.iter().all(|t|t.tokens==0&&t.per_source.is_empty()),"a fresh database must produce zero-filled days with no sources");
+        // day 升序且逐日连续，末尾为今天。
+        assert!(trends.windows(2).all(|w|chrono::NaiveDate::parse_from_str(&w[1].day,"%Y-%m-%d").unwrap()-chrono::NaiveDate::parse_from_str(&w[0].day,"%Y-%m-%d").unwrap()==chrono::Duration::days(1)));
+        let today=chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+        assert_eq!(trends.last().unwrap().day,today);
+    }
+    #[test]
+    fn daily_trends_merges_archive_with_event_recompute_by_max(){
+        let d=tempfile::tempdir().unwrap();let db_path=d.path().join("cache.db");
+        let db=database(&db_path).unwrap();
+        // 冻结时区与测试进程本地偏移一致，day 断言才稳定（与现有 tz 冻结测试同法）。
+        let off=chrono::Local::now().offset().local_minus_utc();
+        db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('archive_tz_offset_secs',?)",[off]).unwrap();
+        let tz=chrono::FixedOffset::east_opt(off).unwrap();
+        let today=chrono::Utc::now().with_timezone(&tz).date_naive();
+        let day1=today-chrono::Duration::days(2);let day2=today-chrono::Duration::days(1);
+        let ts_of=|date:chrono::NaiveDate|date.and_hms_opt(12,0,0).unwrap().and_utc().timestamp()-off as i64;
+        let d1=day1.format("%Y-%m-%d").to_string();let d2=day2.format("%Y-%m-%d").to_string();let dnow=today.format("%Y-%m-%d").to_string();
+        // 归档：d1 两个来源；today 一个来源（上次扫描时的较小值）。
+        db.execute("INSERT INTO daily_archive VALUES(?,?,?,?,?,?,?)",params![d1,"claude","x",100,20,7,3]).unwrap();
+        db.execute("INSERT INTO daily_archive VALUES(?,?,?,?,?,?,?)",params![d1,"zcode","glm-5",11,4,6,2]).unwrap();
+        db.execute("INSERT INTO daily_archive VALUES(?,?,?,?,?,?,?)",params![dnow,"claude","x",5,1,0,0]).unwrap();
+        // 窗口外的旧归档日不得输出。
+        db.execute("INSERT INTO daily_archive VALUES(?,?,?,?,?,?,?)",params!["2000-01-01","claude","x",1,1,0,0]).unwrap();
+        // events 重算：d1 更小（不得降低归档）；today 更大（取重算值，模拟上次扫描后的新增消耗）。
+        db.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?)",params!["p1","claude","e1",ts_of(day1),"x",30,5,0,0,0]).unwrap();
+        db.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?)",params!["p2","claude","e2",ts_of(today),"x",50,10,0,0,0]).unwrap();
+        drop(db);
+        let trends=daily_trends(&db_path,370).unwrap();
+        assert_eq!(trends.len(),370);
+        assert_eq!(trends[0].day,(today-chrono::Duration::days(369)).format("%Y-%m-%d").to_string());
+        assert_ne!(trends.iter().any(|t|t.day=="2000-01-01"),true,"archive days older than the window must not be output");
+        let by:BTreeMap<&str,&DailyTrend>=trends.iter().map(|t|(t.day.as_str(),t)).collect();
+        // d1：归档 claude 130 + zcode 23 = 153；重算 35 更小不回退。缺失来源补 0。
+        let t1=by[d1.as_str()];
+        assert_eq!(t1.tokens,153);
+        assert_eq!(t1.per_source.get("claude"),Some(&130));
+        assert_eq!(t1.per_source.get("zcode"),Some(&23));
+        // 中间空档日补 0：来源仍逐一列出、值为 0。
+        let mid=by[d2.as_str()];
+        assert_eq!(mid.tokens,0);
+        assert_eq!(mid.per_source.get("claude"),Some(&0));
+        // today：events 重算 60 大于归档 6 → 取重算值。
+        let tnow=by[dnow.as_str()];
+        assert_eq!(tnow.tokens,60,"a larger recomputed day total must replace the stale archive value");
+        // 全窗口指标与 7 天小窗口并存。
+        let m=compute_metrics(&trends);
+        assert_eq!(m.peak_day.as_deref(),Some(d1.as_str()));assert_eq!(m.peak_tokens,153);assert_eq!(active_days(&trends),2);
+        assert_eq!(daily_trends(&db_path,7).unwrap().len(),7);
+        assert_eq!(daily_trends(&db_path,7).unwrap()[6].day,dnow);
+    }
+    #[test]
+    fn daily_trends_per_source_lists_only_sources_seen_within_window(){
+        let d=tempfile::tempdir().unwrap();let db_path=d.path().join("cache.db");
+        let db=database(&db_path).unwrap();
+        // 冻结时区与测试进程本地偏移一致，day 断言才稳定（与上方测试同法）。
+        let off=chrono::Local::now().offset().local_minus_utc();
+        db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('archive_tz_offset_secs',?)",[off]).unwrap();
+        let tz=chrono::FixedOffset::east_opt(off).unwrap();
+        let today=chrono::Utc::now().with_timezone(&tz).date_naive();
+        let d1=(today-chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+        let dnow=today.format("%Y-%m-%d").to_string();
+        // 窗口内 d1：claude。窗口外 400 天前：已停用的来源 retired——daily_archive 无删除路径，
+        // 这行会永久留存，但不得把 retired 以 0 值带进窗口内每一天的 per_source。
+        db.execute("INSERT INTO daily_archive VALUES(?,?,?,?,?,?,?)",params![d1,"claude","x",100,20,7,3]).unwrap();
+        let old=(today-chrono::Duration::days(400)).format("%Y-%m-%d").to_string();
+        db.execute("INSERT INTO daily_archive VALUES(?,?,?,?,?,?,?)",params![old,"retired","old-model",500,50,0,0]).unwrap();
+        drop(db);
+        let trends=daily_trends(&db_path,370).unwrap();
+        assert_eq!(trends.len(),370);
+        for t in &trends{
+            assert!(t.per_source.get("retired").is_none(),"a source only seen before the window must not appear in per_source of {}",t.day);
+        }
+        let by:BTreeMap<&str,&DailyTrend>=trends.iter().map(|t|(t.day.as_str(),t)).collect();
+        // d1 数值不受影响。
+        assert_eq!(by[d1.as_str()].tokens,130);
+        assert_eq!(by[d1.as_str()].per_source.get("claude"),Some(&130));
+        // 窗口内出现过的来源仍逐一列出：today 无消耗也补 claude=0，且不带 retired。
+        assert_eq!(by[dnow.as_str()].per_source.get("claude"),Some(&0));
+        assert_eq!(by[dnow.as_str()].per_source.len(),1);
+    }
+    #[test]
+    fn trend_report_active_seconds_sums_only_window_days(){
+        let d=tempfile::tempdir().unwrap();let db_path=d.path().join("cache.db");
+        let today=chrono::Local::now().date_naive();
+        let db=database(&db_path).unwrap();
+        // 窗口内今天 3600s + 窗口外 400 天前 7200s（max-upsert 留存的旧峰值）。
+        db.execute("INSERT INTO daily_active(day,seconds) VALUES(?,?)",params![today.format("%Y-%m-%d").to_string(),3600]).unwrap();
+        db.execute("INSERT INTO daily_active(day,seconds) VALUES(?,?)",params![(today-chrono::Duration::days(400)).format("%Y-%m-%d").to_string(),7200]).unwrap();
+        drop(db);
+        let m=trend_report(&db_path).unwrap();
+        assert_eq!(m.active_seconds,3600,"active seconds outside the 370-day window must not be summed");
     }
 }
 

@@ -18,13 +18,13 @@
 | 8 | 自定义扫描路径 | 🗓 仅少量 env override | Round 5：每来源可配置附加目录 |
 | 9 | WSL 用量合并 | 🗓 无 | Round 5（Windows 适用） |
 | 10 | 已删除会话用量保留（日归档） | 🔨 本轮落地 daily_archive（max-upsert） | 工作流 dwfrun-0b481add |
-| 11 | 趋势仪表盘（热力图/streak/K线/堆叠柱） | 📋 docs/DASHBOARD_METRICS_PLAN.md 项目二 | Round 3 |
-| 12 | 活跃天数/连续天数/峰值单日 | 📋 同上 | Round 3 |
-| 13 | 活跃时长（activeMs） | 📋 同上 项目三 | Round 3 |
-| 14 | 数据导出 CSV/JSON | 🔨 本轮落地 export_ledger + 前端按钮 | 工作流 dwfrun-0b481add |
+| 11 | 趋势仪表盘（热力图/streak/K线/堆叠柱） | ✅ Round 3：TrendDashboard（趋势 tab，370 天窗口） | |
+| 12 | 活跃天数/连续天数/峰值单日 | ✅ Round 3：trend_metrics 指标卡 | |
+| 13 | 活跃时长（activeMs） | ✅ Round 3：daily_active 表 + 指标卡（跨来源不去重口径已标注） | |
+| 14 | 数据导出 CSV/JSON | ✅ Round 2/3：export_ledger + export_trend | |
 | 15 | 订阅记录（订阅价 vs 用量倍数） | 🗓 无 | Round 4 |
 | 16 | 供应商状态页视图 | 🗓 无 | Round 5 低优先 |
-| 17 | 账本分项一致性守卫 | 📋 DASHBOARD_METRICS_PLAN.md 项目一 | Round 3 |
+| 17 | 账本分项一致性守卫 | ✅ Round 3：按来源守卫规则 + Summary 异常计数 | |
 
 ## 多设备与分发
 
