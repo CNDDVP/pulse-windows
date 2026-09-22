@@ -168,6 +168,9 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
         <Row title="Token 消耗统计" subtitle="启用本地 Token 消耗扫描与历史记录分析。">
           <Switch checked={settings.token_spend_enabled} onChange={v => update({ token_spend_enabled: v })} label="Token 消耗统计" />
         </Row>
+        <Row title="WSL 用量（实验性）" subtitle="开启后经 wsl.exe 只读读取默认 WSL 发行版内的 Claude Code / Qwen Code 会话日志（~/.claude、~/.qwen 的 projects 目录，仅 .jsonl），与 Windows 侧同来源合并统计；文件路径键加 wsl: 前缀，同会话双侧重复按事件 id 折叠。独立文件数预算 2000、单文件上限 256KB；wsl.exe 不可用或读取失败时静默跳过并在统计说明中标注。SQLite 类来源（OpenCode 等）不支持 WSL 读取。">
+          <Switch checked={settings.token_spend_wsl ?? false} disabled={!settings.token_spend_enabled} onChange={v => update({ token_spend_wsl: v })} label="WSL 用量" />
+        </Row>
         <div className="pt-2 border-t border-white/5 space-y-3">
           <div className="flex items-center justify-between">
             <div className="text-xs text-zinc-300 font-medium">已授权服务商 ({settings.authorized_providers?.length || 0} / {PROVIDERS.length})</div>

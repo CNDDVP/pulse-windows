@@ -235,6 +235,11 @@ pub struct AppSettings {
     /// 诚实口径：与默认扫描根只按文件路径去重——同一文件复制进多个目录（或目录嵌套在默认根内）
     /// 会以不同路径重复计数（README 与设置说明披露）。
     pub token_spend_extra_paths: BTreeMap<String, Vec<String>>,
+    /// WSL 用量（Round5B 项目二，opt-in 默认关）：开启后经 wsl.exe 只读读取默认发行版内的
+    /// claude/qwen projects 转录（文件型来源），路径键加 `wsl:` 前缀与 Windows 侧天然区分；
+    /// 独立文件数预算 2000，wsl.exe 不可用/超时/无数据一律静默降级并在 Summary.notes 标注。
+    /// SQLite 类来源（OpenCode 等）不做 WSL 读取（需 headless agent，README 注明）。
+    pub token_spend_wsl: bool,
     /// 成本显示币种（Round4 项目二）：仅 "USD" | "CNY"；换算只发生在前端展示层，
     /// 成本估算入库与导出始终保持 USD 原值。
     pub display_currency: String,
@@ -259,6 +264,7 @@ impl Default for AppSettings {
             notifications:NotificationSettings::default(), hotkeys:HotkeySettings::default(),
             subscriptions:BTreeMap::new(),
             token_spend_extra_paths:BTreeMap::new(),
+            token_spend_wsl:false,
             display_currency:"USD".into(), usd_cny_rate:7.2,
             providers }
     }
@@ -382,6 +388,17 @@ mod tests{
         root.as_object_mut().unwrap().remove("token_spend_extra_paths");
         let s:AppSettings=serde_json::from_value(root).unwrap();
         assert!(s.token_spend_extra_paths.is_empty());
+    }
+    #[test]fn token_spend_wsl_defaults_off_and_tolerates_old_settings(){
+        // Round5B 项目二：WSL 用量 opt-in——默认关；旧 settings.json 缺该字段时 serde default 兜底为关。
+        assert!(!AppSettings::default().token_spend_wsl);
+        let mut root=serde_json::to_value(AppSettings::default()).unwrap();
+        root.as_object_mut().unwrap().remove("token_spend_wsl");
+        let s:AppSettings=serde_json::from_value(root).unwrap();
+        assert!(!s.token_spend_wsl);
+        let mut root=serde_json::to_value(AppSettings::default()).unwrap();
+        root.as_object_mut().unwrap().insert("token_spend_wsl".into(),serde_json::json!(true));
+        assert!(serde_json::from_value::<AppSettings>(root).unwrap().token_spend_wsl);
     }
     #[test]fn display_currency_and_rate_validate(){
         let mut s=AppSettings::default();

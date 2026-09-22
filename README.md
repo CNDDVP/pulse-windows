@@ -71,6 +71,7 @@
 ### 🧮 本地 Token 消耗审计引擎（Token Spend）与费用估算
 
 - 内置高性能 SQLite 缓存与流式日志解析器，支持对 **Claude Code**、**Codex**、**Gemini**、**Cline**、**Roo Code**、**Kilo Code**、**OpenClaw**、**ZCode CLI**、**Qwen CLI**、**OpenCode** 进行多维本地使用量聚合与审计；各来源可按设置追加自定义扫描目录（`token_spend_extra_paths`，每来源上限 20 条，绝对路径），缺失目录静默跳过。
+- **WSL 用量（opt-in，默认关）**：开启后经 `wsl.exe` 只读读取**默认发行版**内的 Claude Code / Qwen Code 会话日志（`~/.claude/projects`、`~/.qwen/projects`，仅 `.jsonl` 文件型来源），与 Windows 侧同来源合并统计；文件路径键加 `wsl:` 前缀，同会话双侧重复按事件 id 折叠不双计。命令构造防注入：读取/发现一律 `wsl.exe -e` 直接 exec（不经 shell），路径过严格字符白名单后才参与命令。独立文件数预算 2000、单文件上限 256KB；`wsl.exe` 不可用/超时/发行版无数据一律静默降级并在统计说明（notes）中标注。**不做** SQLite 类来源（如 OpenCode 的 storage 库）的 WSL 读取——需在发行版内运行 headless agent，复杂度与收益不成比例，此类来源仅支持 Windows 侧。
 - 内置主流公有云模型单价库，自动估算历史 Token 的云端美金费用。
 
 ### 🔔 通知、快捷键与应用内更新

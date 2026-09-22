@@ -28,8 +28,12 @@ pub async fn token_spend(days:u32,state:State<'_,AppState>)->Result<crate::ledge
         return Err("已取消".into());
     }
     // Round5A 项目四：自定义扫描路径随本次扫描的设置快照传入（扫描期快照不变）。
-    let extra_paths=state.settings.lock().await.token_spend_extra_paths.clone();
-    tauri::async_runtime::spawn_blocking(move||crate::ledger::scan_with_cancel(days, &is_cancelled, extra_paths)).await.map_err(|_|"统计任务失败")?
+    // Round5B 项目二：WSL 用量开关（opt-in 默认关）同快照传入。
+    let (extra_paths,wsl_enabled)={
+        let s=state.settings.lock().await;
+        (s.token_spend_extra_paths.clone(),s.token_spend_wsl)
+    };
+    tauri::async_runtime::spawn_blocking(move||crate::ledger::scan_with_cancel(days, &is_cancelled, extra_paths,wsl_enabled)).await.map_err(|_|"统计任务失败")?
 }
 #[tauri::command]
 pub fn cancel_token_spend(state:State<'_,AppState>){
@@ -110,6 +114,35 @@ pub async fn trend_metrics(state:State<'_,AppState>)->Result<crate::ledger::Tren
         }
     }
     tauri::async_runtime::spawn_blocking(move||crate::ledger::trend_report(&crate::ledger::ledger_db_path())).await.map_err(|_|"趋势任务失败")?
+}
+/// Round5B 项目一：会话级明细列表（会话 = 一个转录文件，或 ZCode CLI 库的一个 session 键）。
+/// 按 events.path 聚合、末次活动倒序分页（每页默认 50）；只读统计字段与文件名尾段 /
+/// CLI session 键等元数据，不含任何转录正文。与 trend_metrics 同一道统计开关门禁。
+#[tauri::command]
+pub async fn token_spend_sessions(source:Option<String>,offset:u32,limit:u32,state:State<'_,AppState>)->Result<Vec<crate::ledger::SessionRow>,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
+    {
+        let s = state.settings.lock().await;
+        if !s.token_spend_enabled {
+            return Err("Token 消耗统计未启用；请在常规设置中开启".into());
+        }
+    }
+    let source=source.filter(|s|!s.is_empty());
+    tauri::async_runtime::spawn_blocking(move||crate::ledger::sessions(&crate::ledger::ledger_db_path(),source.as_deref(),offset,limit)).await.map_err(|_|"会话列表任务失败")?
+}
+/// Round5B 项目一：单个会话的逐事件明细（ts 升序，上限 500 条，超出 truncated=true 并回传 total）。
+/// path 为会话列表回传的查询键（不可逆 path_key 或其 `{path_key}#{session}` 复合路径），
+/// 全路径不出 Rust。
+#[tauri::command]
+pub async fn token_spend_session_detail(path:String,state:State<'_,AppState>)->Result<crate::ledger::SessionDetail,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
+    {
+        let s = state.settings.lock().await;
+        if !s.token_spend_enabled {
+            return Err("Token 消耗统计未启用；请在常规设置中开启".into());
+        }
+    }
+    tauri::async_runtime::spawn_blocking(move||crate::ledger::session_detail(&crate::ledger::ledger_db_path(),&path)).await.map_err(|_|"会话明细任务失败")?
 }
 /// 趋势数据导出（仅 JSON，复用导出目录与不覆盖命名）。
 #[tauri::command]
@@ -1026,6 +1059,17 @@ pub async fn test_network_connection(state: State<'_, AppState>, target: Option<
 #[tauri::command]
 pub fn get_profile_info()->crate::config::AppProfile{
     crate::config::get_profile()
+}
+
+/// Round5B 项目三：供应商服务状态（Statuspage 系公开端点）。
+/// 走应用既有代理设置（共享 state.http，代理设置变更时已整体重建）；并发拉取，
+/// 每家 10 秒预算，单家失败只把该家标 unavailable（unknown 灰灯），不阻塞其他。
+/// 公开状态数据、不涉本地隐私，故不挂 token_spend 统计开关门禁。
+#[tauri::command]
+pub async fn fetch_provider_status(state:State<'_,AppState>)->Result<Vec<crate::provider_status::ProviderStatus>,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
+    let http=state.http.read().await.clone();
+    Ok(crate::provider_status::fetch_all(&http).await)
 }
 
 #[tauri::command]

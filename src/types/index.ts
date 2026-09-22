@@ -83,6 +83,9 @@ export interface AppSettings {
   /** Round5A 项目四：自定义扫描路径（来源 → 绝对路径目录列表，每来源上限 20）。
    *  与默认扫描根只按文件路径去重：同一文件复制进多个目录（或目录嵌套默认根内）会重复计数。 */
   token_spend_extra_paths?: Record<string, string[]>;
+  /** Round5B 项目二：WSL 用量（opt-in 默认关）：开启后经 wsl.exe 只读读取默认发行版内的
+   *  claude/qwen projects 转录并合并统计；不可用/失败静默降级并在统计说明中标注。 */
+  token_spend_wsl?: boolean;
   notifications: NotificationSettings; hotkeys: HotkeySettings;
   providers: Record<string, ProviderConfig>;
 }

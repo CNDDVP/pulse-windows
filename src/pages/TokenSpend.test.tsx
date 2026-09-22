@@ -97,3 +97,18 @@ it('model group rows expand to the four-way breakdown with hit rates; the totals
   // 汇总行：全窗口命中率 = 30/(60+30+10) = 30.0%。
   expect(screen.getByText(/合计 · 全窗口缓存命中率 30\.0%/)).toBeTruthy();
 });
+
+it('the sessions tab lazily mounts SessionList and fetches the first page only when opened',async()=>{
+  invoke.mockImplementation((name:string)=>name==='token_spend_sessions'
+    ?Promise.resolve([{source:'claude',path:'k1',session:null,title:'s1.jsonl',note:null,first_ts:1787509531,last_ts:1787519531,input:10,output:2,cache_read:0,cache_write:0,cost_estimate:null,events:1,models:1}])
+    :Promise.resolve());
+  render(<TokenSpend/>);
+  await act(async()=>{});
+  // 未进「会话」tab 前不请求会话列表。
+  expect(invoke.mock.calls.filter(c=>c[0]==='token_spend_sessions')).toHaveLength(0);
+  await act(async()=>{fireEvent.click(screen.getByText('会话'))});
+  const calls=invoke.mock.calls.filter(c=>c[0]==='token_spend_sessions');
+  expect(calls).toHaveLength(1);
+  expect(calls[0][1]).toEqual({source:null,offset:0,limit:50});
+  expect(screen.getByText(/s1\.jsonl/)).toBeTruthy();
+});

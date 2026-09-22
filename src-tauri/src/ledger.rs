@@ -1,5 +1,5 @@
 //! Read-only local token ledger. No transcript text, prompts or paths leave Rust.
-use std::{collections::BTreeMap,fs::{self,File},io::{BufRead,BufReader,Read,Seek,SeekFrom},path::{Path,PathBuf}};
+use std::{collections::{BTreeMap,BTreeSet},fs::{self,File},io::{BufRead,BufReader,Read,Seek,SeekFrom},path::{Path,PathBuf}};
 use serde::{Serialize,Deserialize};use serde_json::Value;use sha2::{Digest,Sha256};
 use rusqlite::{Connection,params};
 // anomalies 记分项矛盾事件数，随 state 持久化跨扫描累计；#[serde(default)] 兼容
@@ -191,20 +191,22 @@ where F: Fn() -> bool {
 fn database(path:&Path)->Result<Connection,String>{
     let db=Connection::open(path).map_err(|_|"无法打开统计缓存")?;
     db.busy_timeout(std::time::Duration::from_secs(2)).map_err(|_|"统计缓存锁定")?;
-    db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,source TEXT,size INTEGER,mtime INTEGER,prefix TEXT,offset INTEGER,state TEXT); CREATE TABLE IF NOT EXISTS events(path TEXT,source TEXT,event_id TEXT,ts INTEGER,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,partial INTEGER,PRIMARY KEY(path,event_id)); CREATE INDEX IF NOT EXISTS idx_events_source_ts ON events(source, ts); CREATE TABLE IF NOT EXISTS daily_archive(day TEXT,source TEXT,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,PRIMARY KEY(day,source,model)); CREATE TABLE IF NOT EXISTS daily_active(day TEXT PRIMARY KEY,seconds INTEGER); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER);").map_err(|_|"无法初始化统计缓存")?;Ok(db)
+    db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,source TEXT,size INTEGER,mtime INTEGER,prefix TEXT,offset INTEGER,state TEXT); CREATE TABLE IF NOT EXISTS events(path TEXT,source TEXT,event_id TEXT,ts INTEGER,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,partial INTEGER,PRIMARY KEY(path,event_id)); CREATE INDEX IF NOT EXISTS idx_events_source_ts ON events(source, ts); CREATE TABLE IF NOT EXISTS daily_archive(day TEXT,source TEXT,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,PRIMARY KEY(day,source,model)); CREATE TABLE IF NOT EXISTS daily_active(day TEXT PRIMARY KEY,seconds INTEGER); CREATE TABLE IF NOT EXISTS session_titles(path TEXT PRIMARY KEY,title TEXT NOT NULL); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER);").map_err(|_|"无法初始化统计缓存")?;Ok(db)
 }
 pub fn scan(days:u32)->Result<Summary,String>{
-    scan_with_cancel(days,&||false,BTreeMap::new())
+    scan_with_cancel(days,&||false,BTreeMap::new(),false)
 }
 /// `extra` 为设置 token_spend_extra_paths（来源 → 附加扫描目录，已按绝对路径/上限校验）；
-/// 调用方（token_spend 命令）从内存设置快照传入，扫描期快照不变。
-pub fn scan_with_cancel<F>(days:u32,is_cancelled:&F,extra:BTreeMap<String,Vec<String>>)->Result<Summary,String>
+/// `wsl_enabled` 为设置 token_spend_wsl（Round5B 项目二，opt-in 默认关）。
+/// 两者均由调用方（token_spend 命令）从内存设置快照传入，扫描期快照不变。
+pub fn scan_with_cancel<F>(days:u32,is_cancelled:&F,extra:BTreeMap<String,Vec<String>>,wsl_enabled:bool)->Result<Summary,String>
 where F: Fn() -> bool + Send + Sync {
+    let runner:WslRunner<'_>=&|args:&[String],timeout_ms:u64|wsl_process_runner(args,timeout_ms);
     if ![7,30,90].contains(&days){return Err("统计区间无效".into())}
     if is_cancelled() { return Err("已取消".into()); }
     let root=crate::config::get_config_dir();fs::create_dir_all(&root).map_err(|_|"无法创建统计缓存")?;
     let (paths, truncated) = sources_with_cancel(is_cancelled,&extra)?;
-    scan_paths_with_cancel(days,&ledger_db_path(),paths,truncated,is_cancelled)
+    scan_paths_with_wsl(days,&ledger_db_path(),paths,truncated,wsl_enabled,runner,is_cancelled)
 }
 pub fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool)->Result<Summary,String>{
     scan_paths_with_cancel(days,db_path,paths,truncated,&||false)
@@ -230,13 +232,19 @@ where F: Fn() -> bool + Send + Sync {
             // 每轮扫描都触发 ~万行全量重投影。
             let mtime=if is_zdb{sqlite_effective_mtime(&path)}else{metadata.modified().ok().and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok()).map(|t|t.as_nanos().min(i64::MAX as u128) as i64).unwrap_or(0)};
             let path_key=format!("{:x}",Sha256::digest(path.to_string_lossy().as_bytes()));
+            // Round5B 项目一：会话标题（文件名尾段）随扫描写入，未变化文件同样走到此处（REPLACE 幂等），
+            // 升级后旧库缺标题行也能在下次扫描补齐。失败不影响统计（标题属最佳努力元数据）。
+            // 全路径不出 Rust：对外只暴露该尾段与不可逆 path_key。
+            let _=db.execute("INSERT OR REPLACE INTO session_titles VALUES(?,?)",params![path_key,path.file_name().and_then(|s|s.to_str()).unwrap_or("未知文件")]);
             let old:Option<(u64,i64,String,u64,String)>=db.query_row("SELECT size,mtime,prefix,offset,state FROM files WHERE path=?",[&path_key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).ok();
             // Round5A 项目一：ZCode CLI 信封权威根——不作为 jsonl 解析，改走 model_usage 投影（注释见该函数）。
             if is_zdb{
                 if old.as_ref().is_some_and(|(size,time,_,_,_)|*size==metadata.len()&&*time==mtime){return Ok(())}
                 if old.is_none()&&mtime>0&&mtime<window_start_ns{return Ok(())}
                 let tx=db.transaction().map_err(|_|"lock")?;
-                tx.execute("DELETE FROM events WHERE path=?",[&path_key]).map_err(|_|"db")?;
+                // 事件按 session 键写入复合路径（`{path_key}#{session}`），重建时按父键全删。
+                tx.execute("DELETE FROM events WHERE substr(path,1,64)=?",[&path_key]).map_err(|_|"db")?;
+                tx.execute("DELETE FROM session_titles WHERE substr(path,1,64)=?",[&path_key]).map_err(|_|"db")?;
                 let mut st=State::default();
                 let n=zcode_cli_db_events(&path,&tx,&path_key,&mut st)?;
                 tx.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?)",params![path_key,source,metadata.len(),mtime,"",0i64,serde_json::to_string(&st).map_err(|_|"state")?]).map_err(|_|"checkpoint")?;
@@ -307,6 +315,10 @@ where F: Fn() -> bool + Send + Sync {
     if is_cancelled() { return Err("已取消".into()); }
     // Only clean up deleted/moved files when discovery was complete and no files errored out.
     // If discovery was truncated, deleting files outside `live` would falsely wipe unvisited records.
+    // 会话路径（Round5B 项目一）：ZCode CLI 库投影按 session 键写入 `{path_key}#{session}` 复合
+    // 路径；path_key 恒为 64 位小写十六进制（不含 '#'），故 `substr(path,1,64)` 对普通路径是
+    // 自身、对复合路径是其父文件——清理时父文件已删除/移动的复合事件与标题随之清亡，
+    // 父文件在场的（含本轮未变化而未重投影的库）全部保留。
     if !truncated && skipped==0 {
         let tx=db.transaction().map_err(|_|"lock")?;
         tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS live(path TEXT PRIMARY KEY); DELETE FROM live;").map_err(|_|"db")?;
@@ -314,8 +326,11 @@ where F: Fn() -> bool + Send + Sync {
             let mut insert=tx.prepare("INSERT OR IGNORE INTO live VALUES(?)").map_err(|_|"db")?;
             for key in &live{insert.execute([key]).map_err(|_|"db")?;}
         }
-        tx.execute("DELETE FROM events WHERE path NOT IN (SELECT path FROM live)",[]).map_err(|_|"db")?;
-        tx.execute("DELETE FROM files WHERE path NOT IN (SELECT path FROM live)",[]).map_err(|_|"db")?;
+        // Round5B 项目二：WSL 条目（files.source='wsl' 标记）不参与 Windows live 清理——
+        // 其保留/删除由 WSL 阶段按「本轮发现集 + 开关状态」自行管理（wsl.exe 暂时不可用 ≠ 文件已删除）。
+        tx.execute("DELETE FROM events WHERE substr(path,1,64) NOT IN (SELECT path FROM live) AND substr(path,1,64) NOT IN (SELECT path FROM files WHERE source='wsl')",[]).map_err(|_|"db")?;
+        tx.execute("DELETE FROM session_titles WHERE substr(path,1,64) NOT IN (SELECT path FROM live) AND substr(path,1,64) NOT IN (SELECT path FROM files WHERE source='wsl')",[]).map_err(|_|"db")?;
+        tx.execute("DELETE FROM files WHERE path NOT IN (SELECT path FROM live) AND source<>'wsl'",[]).map_err(|_|"db")?;
         tx.commit().map_err(|_|"commit")?;
     }
     // 已删除会话用量保留：events 随源日志清理而消失（Claude Code 默认 30 天）。
@@ -428,14 +443,31 @@ fn sqlite_effective_mtime(path:&Path)->i64{
 /// 5) 历史取舍：rollout jsonl 早至 2026-08-03、db usage 自 2026-08-23 起——db 更短但 jsonl 不可读
 ///    （预算超限）且与 db 重叠，取 db 是唯一不双计的选择；更早消耗如实缺失（与"缺失文件不代表
 ///    零消耗"同口径，不伪造）。
+/// 6) Round5B 项目一会话维度：model_usage 实测含 `session_id` 列（9,878 行 176 个不同值、0 个
+///    NULL），投影含 session 维度——每行事件写入复合路径 `{path_key}#{session_id}`，会话列表与
+///    逐会话明细即按其切分。未来 schema 漂移（列消失）时降级为单会话 `#{whole-library}` 整体聚合，
+///    由 SessionRow.note 诚实标注「无会话拆分」，不跳过该库（真实消耗不能因维度缺失而丢失）。
+///    session_id 为 NULL 的个别行（实测不存在）同样并入整体聚合行。session 键是 CLI 元数据，
+///    非转录正文，投影不读取任何消息内容。
+pub const ZCODE_WHOLE_LIBRARY_SESSION:&str="whole-library";
 fn zcode_cli_db_events(path:&Path,tx:&rusqlite::Transaction,path_key:&str,state:&mut State)->Result<usize,String>{
     let src=rusqlite::Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|_|"zcode cli 库打不开")?;
     src.busy_timeout(std::time::Duration::from_secs(2)).map_err(|_|"zcode cli 库锁定")?;
-    let mut stmt=src.prepare("SELECT id,model_id,status,started_at,input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens FROM model_usage").map_err(|_|"zcode cli 库查询失败")?;
+    // session 维度存在性按列探测：缺列（schema 漂移）→ 整体聚合降级，不致命。
+    let has_session:bool=src.query_row("SELECT COUNT(*) FROM pragma_table_info('model_usage') WHERE name='session_id'",[],|r|r.get::<_,i64>(0)).map_err(|_|"zcode cli 库查询失败")?!=0;
+    let sql=if has_session{
+        "SELECT id,model_id,status,started_at,input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens,session_id FROM model_usage"
+    }else{
+        "SELECT id,model_id,status,started_at,input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens,NULL FROM model_usage"
+    };
+    let mut stmt=src.prepare(sql).map_err(|_|"zcode cli 库查询失败")?;
     let mut ins=tx.prepare("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?)").map_err(|_|"db")?;
-    let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,i64>(6)?,r.get::<_,i64>(7)?))).map_err(|_|"zcode cli 库读取失败")?;
+    let mut ins_title=tx.prepare("INSERT OR REPLACE INTO session_titles VALUES(?,?)").map_err(|_|"db")?;
+    let whole_path=format!("{path_key}#{ZCODE_WHOLE_LIBRARY_SESSION}");
+    let whole_title=path.file_name().and_then(|s|s.to_str()).unwrap_or("ZCode CLI 库").to_string();
+    let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,i64>(6)?,r.get::<_,i64>(7)?,r.get::<_,Option<String>>(8)?))).map_err(|_|"zcode cli 库读取失败")?;
     let mut n=0usize;
-    for (id,model,status,started_at,input,output,cache_read,cache_write) in rows.flatten(){
+    for (id,model,status,started_at,input,output,cache_read,cache_write,session) in rows.flatten(){
         // 分项守卫：列值负数（count 语义会静默归零）→ 计入异常并钳 0；全零行跳过。
         let raw=[input,output,cache_read,cache_write];
         if raw.iter().any(|c|*c<0){state.anomalies+=1}
@@ -449,10 +481,287 @@ fn zcode_cli_db_events(path:&Path,tx:&rusqlite::Transaction,path_key:&str,state:
         let ts=(started_at/1000).max(0);
         let empty=model.as_deref().map(str::is_empty).unwrap_or(true);
         let unknown=empty||model.is_none();
-        ins.execute(params![path_key,"zcode",id,ts,if unknown{"unknown"}else{model.as_deref().unwrap_or_default()},counts[0],counts[1],counts[2],counts[3],(anomaly||status!="completed"||unknown) as u8]).map_err(|_|"record")?;
+        // 会话路径：有 session 维度且该行带 session_id → 复合路径；否则并入整体聚合行。
+        let sess=session.filter(|s|!s.is_empty());
+        let epath=match &sess{Some(s)=>format!("{path_key}#{s}"),None=>whole_path.clone()};
+        ins.execute(params![&epath,"zcode",id,ts,if unknown{"unknown"}else{model.as_deref().unwrap_or_default()},counts[0],counts[1],counts[2],counts[3],(anomaly||status!="completed"||unknown) as u8]).map_err(|_|"record")?;
+        // 会话标题：session 键本身（CLI 元数据）；整体聚合行用库文件名 + 诚实标注。
+        let title=match &sess{Some(s)=>s.clone(),None=>whole_title.clone()};
+        ins_title.execute(params![&epath,title]).map_err(|_|"record")?;
         n+=1;
     }
     Ok(n)
+}
+
+// ---------- Round5B 项目二：WSL 用量（opt-in，默认关） ----------
+//
+// 安全模型（命令注入防护，纵深三层）：
+// 1) 发现与读取一律 `wsl.exe -e <argv>` 直接 exec，不经发行版 shell——WSL 路径永不进入
+//    `sh -c` 命令串，引号/分号/$ 等元字符没有任何解释者；
+// 2) 每个 WSL 路径在进入命令构造前过字符白名单（[A-Za-z0-9/._-]，并拒绝 ".."）：含空格/
+//    引号/分号/$/反引号的恶意路径一律拒绝（跳过，绝不拼接）——即便某些 wsl.exe 版本对
+//    argv 转发存在重新分词的怪癖，白名单字符也不携带任何元语义；
+// 3) 家目录探测的命令串为常量（`echo $HOME`），展开结果同样过白名单后才用于拼接扫描根。
+//
+// 诚实降级：wsl.exe 缺失/超时/家目录异常/发行版无数据 → 静默跳过（不报错、不崩溃），
+// Summary.notes 标注；既有 WSL 记录保留——files 表以 source='wsl' 标记的条目豁免 Windows
+// live 清理（wsl.exe 暂时不可用 ≠ WSL 文件已删除），保留/删除由 WSL 阶段按「本轮发现集 +
+// 开关状态」自行管理。同会话双计风险：WSL 与 Windows 若挂载同一目录会被两次收集，
+// 事件 id 稳定来源按 (source,event_id) 折叠（Round 5a 已验证该机制）。SQLite 类来源
+// （OpenCode 等）不做 WSL 读取（需 headless agent，复杂度不成比例；README 注明）。
+
+/// WSL 来源独立文件数预算：发现超出预算的文件不读取，notes 标注可能缺口。
+pub const WSL_FILE_BUDGET:usize=2000;
+/// WSL 单文件读取上限（计划口径 256KB），超出沿用 large 跳过语义。
+pub const WSL_FILE_MAX_BYTES:u64=256*1024;
+/// 单条 wsl.exe 命令超时（家目录探测与逐文件读取同用）：挂起的 WSL 不阻塞整轮扫描。
+pub const WSL_CMD_TIMEOUT_MS:u64=15_000;
+/// 连续读取失败上限：达到即中止本轮 WSL 阶段，避免 wsl.exe 半途不可用时按超时串行拖死整轮扫描。
+pub const WSL_MAX_CONSECUTIVE_FAILURES:usize=5;
+/// files 表 WSL 条目的来源标记：仅用于清理豁免与开关联动删除的判定；events 行仍用真实来源
+/// （claude/qwen，与 Windows 侧同来源聚合，同会话由 (source,event_id) 折叠）。
+const WSL_FILES_MARKER:&str="wsl";
+/// wsl.exe 不可用/超时/家目录异常时的静默降级标注（Summary.notes）。
+pub const WSL_NOTE_UNAVAILABLE:&str="WSL：未检测到可用发行版或读取失败，本轮已跳过 WSL 来源；既有 WSL 记录保留。";
+/// wsl.exe 家目录探测 argv：命令串为常量，无任何用户数据插值；`-e` 不走登录 shell（无 motd）。
+pub fn wsl_home_argv()->Vec<String>{vec!["-e".into(),"sh".into(),"-c".into(),"echo $HOME".into()]}
+/// WSL 单文件读取 argv：`wsl.exe -e cat -- <path>`。`-e` 直接 exec、不经 shell；路径作为单个
+/// argv 元素传递，`--` 终结选项解析（纵深防御：合法路径以 / 开头本就不会被当选项）。
+pub fn wsl_read_argv(path:&str)->Vec<String>{vec!["-e".into(),"cat".into(),"--".into(),path.into()]}
+/// WSL 文件发现 argv：GNU find 直接 exec，输出 `路径\t大小\tmtime@` 供断点续扫比对
+/// （-printf 为 GNU 扩展；BusyBox find 不支持 → 退出非零，按「该根无数据」处理，诚实降级）。
+pub fn wsl_find_argv(root:&str)->Vec<String>{
+    vec!["-e".into(),"find".into(),root.into(),"-type".into(),"f".into(),"-name".into(),"*.jsonl".into(),"-printf".into(),"%p\t%s\t%T@\n".into()]
+}
+/// WSL 允许的扫描根（$HOME 过白名单后拼接固定后缀）：claude 与 qwen 的 projects 目录。
+pub fn wsl_roots(home:&str)->Vec<String>{vec![format!("{home}/.claude/projects"),format!("{home}/.qwen/projects")]}
+/// 扫描根序号 → 解析来源（与 Windows 侧同名来源聚合；zcode/OpenCode 等 SQLite 类不做 WSL 读取）。
+fn wsl_root_source(i:usize)->&'static str{if i==0{"claude"}else{"qwen"}}
+/// wsl.exe 命令执行器注入点：args 为完整 argv（含 "-e" 前缀），超时到点必须返回 Err。
+pub type WslRunner<'a>=&'a dyn Fn(&[String],u64)->Result<Vec<u8>,String>;
+/// wsl.exe 执行器的错误文案（wsl_find_err_transient 按其前缀分类瞬时/良性失败，措辞勿改）。
+const WSL_ERR_SPAWN:&str="wsl.exe 启动失败";
+const WSL_ERR_TIMEOUT:&str="wsl.exe 超时";
+const WSL_ERR_WAIT:&str="wsl.exe 等待失败";
+const WSL_ERR_NONZERO:&str="wsl.exe 返回非零退出码";
+/// wsl.exe 全路径（%SystemRoot%\System32\wsl.exe）：裸名会走「应用目录优先」的搜索顺序，
+/// 安装/便携目录下的同名二进制可遮蔽真实 wsl.exe 并以应用身份运行任意代码——与更新器对
+/// powershell 用 System32 全路径同口径。SystemRoot 缺失（非标准环境）回退裸名。
+fn wsl_exe()->std::path::PathBuf{
+    std::env::var_os("SystemRoot").map(|r|{let mut p=std::path::PathBuf::from(r);p.push("System32");p.push("wsl.exe");p})
+        .unwrap_or_else(||std::path::PathBuf::from("wsl.exe"))
+}
+/// find 失败分类：wsl.exe 启动失败/超时/等待失败 = 暂时不可用（本轮发现集不完整，保留集清理
+/// 必须跳过，防误删仍在 WSL 侧的文件条目）；find 退出非零（目录缺失/无数据/BusyBox 不支持
+/// -printf）= 良性「该根为空」。其余错误串按良性处理（生产执行器只产生上述四类文案）。
+fn wsl_find_err_transient(e:&str)->bool{
+    e.starts_with(WSL_ERR_SPAWN)||e.starts_with(WSL_ERR_TIMEOUT)||e.starts_with(WSL_ERR_WAIT)
+}
+/// 生产执行器：spawn wsl.exe（CREATE_NO_WINDOW 防 GUI 弹控制台），后台线程持续排空 stdout
+/// 防管道写端把子进程卡死，主线程轮询超时后 kill。退出非零视为该命令失败（调用方降级）。
+fn wsl_process_runner(args:&[String],timeout_ms:u64)->Result<Vec<u8>,String>{
+    use std::io::Read;use std::process::{Command,Stdio};
+    let mut cmd=Command::new(wsl_exe());
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {use std::os::windows::process::CommandExt;const CREATE_NO_WINDOW:u32=0x0800_0000;cmd.creation_flags(CREATE_NO_WINDOW);}
+    let mut child=cmd.spawn().map_err(|e|format!("{WSL_ERR_SPAWN}：{e}"))?;
+    let stdout=child.stdout.take().ok_or_else(||"wsl.exe 输出管道不可用".to_string())?;
+    let reader=std::thread::spawn(move||{let mut r=stdout;let mut buf=Vec::new();let _=r.read_to_end(&mut buf);buf});
+    let start=std::time::Instant::now();
+    let status:Result<std::process::ExitStatus,String>=loop{
+        match child.try_wait(){
+            Ok(Some(st))=>break Ok(st),
+            Ok(None)=>{},
+            Err(e)=>break Err(format!("{WSL_ERR_WAIT}：{e}")),
+        }
+        if start.elapsed().as_millis() as u64>=timeout_ms{
+            let _=child.kill();let _=child.wait();
+            break Err(format!("{WSL_ERR_TIMEOUT}（>{timeout_ms}ms）"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    let out=reader.join().unwrap_or_default();
+    match status{Ok(st) if st.success()=>Ok(out),Ok(_)=>Err(WSL_ERR_NONZERO.into()),Err(e)=>Err(e)}
+}
+/// $HOME 白名单：绝对 POSIX 路径、仅 [A-Za-z0-9/._-]、拒绝 ".."、长度 ≤256。
+/// 含空格等异常家目录 → 整个 WSL 阶段静默降级（不进入任何命令构造）。
+pub fn valid_wsl_home(home:&str)->bool{
+    !home.is_empty()&&home.len()<=256&&home.starts_with('/')&&!home.contains("..")
+        &&home.bytes().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'/'|b'.'|b'_'|b'-'))
+}
+/// WSL 转录路径白名单（安全关键，见模块头注释）：绝对路径、字符白名单、拒 ".."、以 .jsonl
+/// 结尾、必须落在允许根内。未过校验的发现结果一律静默跳过，绝不进入命令构造。
+pub fn valid_wsl_path(path:&str,roots:&[String])->bool{
+    !path.is_empty()&&path.len()<=1024&&path.starts_with('/')&&!path.contains("..")
+        &&path.ends_with(".jsonl")
+        &&path.bytes().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'/'|b'.'|b'_'|b'-'))
+        &&roots.iter().any(|r|path.starts_with(&format!("{r}/")))
+}
+/// WSL 文件路径键：sha256("wsl:"+POSIX 路径)——与 Windows 侧 sha256(路径) 天然不同键，
+/// 跨侧无需去重；同会话双计由 (source,event_id) 折叠兜底（模块头注释）。
+pub fn wsl_path_key(path:&str)->String{format!("{:x}",Sha256::digest(format!("wsl:{path}").as_bytes()))}
+/// 会话标题用文件名尾段（与 Windows 侧同口径，全路径不出 Rust）。
+fn wsl_file_name(path:&str)->&str{path.rsplit('/').next().unwrap_or(path)}
+/// find 输出行解析：`路径\t大小\tmtime@`（%T@ 为秒的小数形式 → 存纳秒）；畸形行跳过。
+fn parse_wsl_find_output(out:&[u8])->Vec<(String,u64,i64)>{
+    String::from_utf8_lossy(out).lines().filter_map(|line|{
+        let mut it=line.rsplitn(3,'\t');
+        let mtime=it.next()?;let size=it.next()?;let path=it.next()?;
+        let size=size.parse::<u64>().ok()?;let secs=mtime.parse::<f64>().ok()?;
+        Some((path.trim().to_string(),size,(secs*1e9) as i64))
+    }).collect()
+}
+/// 开关关闭：显式清除全部 WSL 条目（events/标题/files 标记行），与 Windows live 清理互补
+/// （关闭语义 = 不并入也不保留）。
+fn purge_wsl_entries(db:&Connection)->Result<(),String>{
+    db.execute("DELETE FROM events WHERE path IN (SELECT path FROM files WHERE source='wsl')",[]).map_err(|_|"db")?;
+    db.execute("DELETE FROM session_titles WHERE path IN (SELECT path FROM files WHERE source='wsl')",[]).map_err(|_|"db")?;
+    db.execute("DELETE FROM files WHERE source='wsl'",[]).map_err(|_|"db")?;
+    Ok(())
+}
+/// 一轮 WSL 阶段的结果（供 notes 与 partial 标记组装；不做全局状态）。
+#[derive(Default,Debug)]
+pub struct WslOutcome{pub discovered:usize,pub read:usize,pub unchanged:usize,pub failed:usize,pub large:usize,pub bad_lines:u64,pub budget_truncated:bool,pub aborted:bool,pub find_failed:bool}
+/// WSL 阶段：家目录探测 → 逐根发现 → 白名单校验 → 保留集维护 → 逐文件读取入库。
+/// 任一环节失败都不致命：单根 find 退出非零（目录缺失/不支持 -printf）按「该根为空」处理；
+/// wsl.exe 启动失败/超时则本轮发现集不可信——find_failed=true 使保留集清理整体跳过
+/// （wsl.exe 暂时不可用 ≠ 文件已删除，误删对已滑出扫描窗口的文件是永久丢失）；单文件失败
+/// 计数跳过，连续失败达上限中止，整体失败（wsl.exe 缺失/家目录无效）返回 Err 由调用方降级。
+fn wsl_scan_phase<F>(runner:WslRunner<'_>,db:&mut Connection,window_start_ns:i64,is_cancelled:&F)->Result<WslOutcome,String>
+where F:Fn()->bool{
+    let mut o=WslOutcome::default();
+    let raw_home=runner(&wsl_home_argv(),WSL_CMD_TIMEOUT_MS)?;
+    let home=String::from_utf8_lossy(&raw_home).trim().to_string();
+    if !valid_wsl_home(&home){return Err("WSL 家目录无效".into())}
+    let roots=wsl_roots(&home);
+    // 发现：逐根 find；退出非零（目录缺失/无数据/不支持 -printf）按「该根为空」处理，不算失败；
+    // wsl.exe 启动失败/超时属暂时不可用 → find_failed=true，本轮保留集清理跳过（模块头注释）。
+    let mut entries:Vec<(String,String,u64,i64)>=vec![];// (路径, 来源, 大小, mtime_ns)
+    for (i,root) in roots.iter().enumerate(){
+        let out=match runner(&wsl_find_argv(root),WSL_CMD_TIMEOUT_MS){
+            Ok(v)=>v,
+            Err(e)=>{if wsl_find_err_transient(&e){o.find_failed=true;}continue},
+        };
+        for (path,size,mtime_ns) in parse_wsl_find_output(&out){
+            if !valid_wsl_path(&path,&roots){continue}// 恶意/越界路径：跳过，绝不进入命令构造
+            o.discovered+=1;
+            entries.push((path,wsl_root_source(i).to_string(),size,mtime_ns));
+        }
+    }
+    entries.sort_by(|a,b|a.0.cmp(&b.0));entries.dedup_by(|a,b|a.0==b.0);
+    o.budget_truncated=o.discovered>WSL_FILE_BUDGET;
+    entries.truncate(WSL_FILE_BUDGET);
+    // 保留集维护：本轮发现之外的既有 WSL 条目按「WSL 侧文件已删除」清理（开启态唯一删除路径）。
+    // 发现集不完整时不得清理——任一根 find 瞬时失败 / 文件数超预算截断，都意味着「不在本轮
+    // 发现集」≠「WSL 侧已删除」（与 Windows 侧 `!truncated && skipped==0` 守卫同口径）；
+    // 误删的文件若 mtime 已滑出扫描窗口将永不重读，丢失是永久性的。
+    if !o.find_failed&&!o.budget_truncated{
+        let live:BTreeSet<String>=entries.iter().map(|(p,_,_,_)|wsl_path_key(p)).collect();
+        let stale:Vec<String>={
+            let mut stmt=db.prepare("SELECT path FROM files WHERE source='wsl'").map_err(|_|"db")?;
+            let rows=stmt.query_map([],|r|r.get::<_,String>(0)).map_err(|_|"db")?;
+            rows.flatten().filter(|k|!live.contains(k)).collect()
+        };
+        for key in &stale{
+            db.execute("DELETE FROM events WHERE path=?",[key]).map_err(|_|"db")?;
+            db.execute("DELETE FROM session_titles WHERE path=?",[key]).map_err(|_|"db")?;
+            db.execute("DELETE FROM files WHERE path=? AND source='wsl'",[key]).map_err(|_|"db")?;
+        }
+    }
+    // 读取：size+mtime 未变直接沿用既有事件（断点续扫）；变化的全量重读（先删后插，幂等）。
+    // 新文件且 mtime 早于窗口 → 与 Windows 侧同口径不解析（其事件必在窗口外，懒解析）。
+    let mut consecutive=0usize;
+    for (path,source,size,mtime_ns) in entries{
+        if is_cancelled(){return Err("已取消".into())}
+        let key=wsl_path_key(&path);
+        let ck:Option<(u64,i64)>=db.query_row("SELECT size,mtime FROM files WHERE path=? AND source='wsl'",[&key],|r|Ok((r.get(0)?,r.get(1)?))).ok();
+        if ck.is_some_and(|(s,m)|s==size&&m==mtime_ns){o.unchanged+=1;continue}
+        if ck.is_none()&&mtime_ns>0&&mtime_ns<window_start_ns{continue}
+        // 读前预检：find 已回传文件大小，超大文件直接按 large 跳过——不再把整文件经 wsl.exe
+        // 管道整体缓冲后才丢弃（与 Windows 侧读前预检同口径），也避免超大文件读满超时被误计
+        // 为 failed 连锁中止本阶段。读取后的上限检查保留作兜底（find 与 cat 之间文件变大）。
+        if size>WSL_FILE_MAX_BYTES{o.large+=1;continue}
+        let out=match runner(&wsl_read_argv(&path),WSL_CMD_TIMEOUT_MS){
+            Ok(v)=>v,
+            Err(_)=>{o.failed+=1;consecutive+=1;
+                if consecutive>=WSL_MAX_CONSECUTIVE_FAILURES{o.aborted=true;break}
+                continue}
+        };
+        consecutive=0;
+        if out.len() as u64>WSL_FILE_MAX_BYTES{o.large+=1;continue}
+        let tx=db.transaction().map_err(|_|"lock")?;
+        tx.execute("DELETE FROM events WHERE path=?",[&key]).map_err(|_|"db")?;
+        tx.execute("DELETE FROM session_titles WHERE path=?",[&key]).map_err(|_|"db")?;
+        let mut st=State::default();
+        {
+            let mut ins=tx.prepare("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path,event_id) DO UPDATE SET input=MAX(input,excluded.input),output=MAX(output,excluded.output),cache_read=MAX(cache_read,excluded.cache_read),cache_write=MAX(cache_write,excluded.cache_write),partial=MAX(partial,excluded.partial)").map_err(|_|"db")?;
+            let mut offset=0u64;
+            for raw in out.split(|b|*b==b'\n'){
+                let line_start=offset;offset+=raw.len() as u64+1;
+                if raw.is_empty(){continue}
+                match serde_json::from_slice::<Value>(raw){
+                    Ok(v)=>if let Some(event)=parse(&source,&v,&mut st,line_start){
+                        // offset 兜底 id 带路径命名空间（与 Windows 侧同规则）；真实消息 id 裸存，
+                        // 跨 WSL/Windows 副本由 (source,event_id) 折叠。
+                        let id=if event.id.starts_with("offset-"){format!("{key}/{}",event.id)}else{event.id};
+                        ins.execute(params![key,source,id,event.ts,event.model,event.counts[0],event.counts[1],event.counts[2],event.counts[3],event.partial as u8]).map_err(|_|"record")?;
+                    },
+                    Err(_)=>{st.bad_lines+=1;o.bad_lines+=1;}
+                }
+            }
+        }
+        tx.execute("INSERT OR REPLACE INTO session_titles VALUES(?,?)",params![key,wsl_file_name(&path)]).map_err(|_|"db")?;
+        tx.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?)",params![key,WSL_FILES_MARKER,size,mtime_ns,"",0i64,serde_json::to_string(&st).map_err(|_|"state")?]).map_err(|_|"db")?;
+        tx.commit().map_err(|_|"commit")?;
+        o.read+=1;
+    }
+    Ok(o)
+}
+/// 生产扫描 = Windows 来源发现 + WSL 阶段 + 主扫描（账本库走全局路径）。
+pub fn scan_paths_with_wsl<F>(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool,wsl_enabled:bool,runner:WslRunner<'_>,is_cancelled:&F)->Result<Summary,String>
+where F: Fn() -> bool + Send + Sync {
+    let (wsl_notes,wsl_bad_lines,wsl_partial)=run_wsl_phase(days,db_path,wsl_enabled,runner,is_cancelled)?;
+    let mut summary=scan_paths_with_cancel(days,db_path,paths,truncated,is_cancelled)?;
+    summary.notes.extend(wsl_notes);
+    summary.skipped_files+=wsl_bad_lines as usize;
+    summary.partial|=wsl_partial;
+    Ok(summary)
+}
+/// WSL 阶段编排：开启 → 执行并组装 notes；关闭 → 清空既有 WSL 条目。
+/// 任何失败都不致命（返回空 notes + 降级标注），只有取消向上传播。
+fn run_wsl_phase<F>(days:u32,db_path:&Path,wsl_enabled:bool,runner:WslRunner<'_>,is_cancelled:&F)->Result<(Vec<String>,u64,bool),String>
+where F:Fn()->bool{
+    let mut wsl_notes:Vec<String>=vec![];let mut wsl_bad_lines=0u64;
+    let mut db=database(db_path)?;
+    if !wsl_enabled{
+        purge_wsl_entries(&db)?;
+        return Ok((wsl_notes,0,false));
+    }
+    let wsl_partial;
+    // 窗口起点与 scan_paths_with_cancel 同式（本地时区当日 00:00 的纳秒），用于懒解析比对。
+    let today=chrono::Local::now().date_naive();let first=today-chrono::Duration::days(days as i64-1);
+    let window_start_ns=first.and_hms_opt(0,0,0).and_then(|t|t.and_local_timezone(chrono::Local).single()).and_then(|t|t.timestamp_nanos_opt()).unwrap_or(0);
+    match wsl_scan_phase(runner,&mut db,window_start_ns,is_cancelled){
+        Ok(o)=>{
+            wsl_bad_lines=o.bad_lines;
+            if o.discovered>0{
+                wsl_notes.push(format!("WSL：默认发行版并入 {} 个转录文件（claude/qwen；本轮新读 {}、未变 {}）。",o.read+o.unchanged,o.read,o.unchanged));
+            }else if !o.find_failed{
+                // 发现瞬时失败时不冒充「未发现」结论（根本没看到），由下方发现失败说明承担。
+                wsl_notes.push("WSL：默认发行版未发现 claude/qwen 转录文件。".into());
+            }
+            if o.find_failed{wsl_notes.push("WSL：部分扫描根发现失败（wsl.exe 启动失败/超时），本轮保留既有 WSL 记录、未做清理。".into());}
+            if o.budget_truncated{wsl_notes.push(format!("WSL：发现的文件数达独立预算上限（{}），超出部分未读取，统计可能存在缺口；为防误删，本轮未清理既有 WSL 记录。",WSL_FILE_BUDGET));}
+            if o.failed>0{wsl_notes.push(format!("WSL：{} 个文件读取失败已跳过。",o.failed));}
+            if o.aborted{wsl_notes.push("WSL：读取连续失败，已提前中止本轮 WSL 来源；既有 WSL 记录保留。".into());}
+            if o.large>0{wsl_notes.push(format!("WSL：{} 个文件超过 {}KB 上限未读取。",o.large,WSL_FILE_MAX_BYTES/1024));}
+            wsl_partial=o.failed>0||o.large>0||o.budget_truncated||o.aborted||o.bad_lines>0||o.find_failed;
+        },
+        Err(e) if e=="已取消"=>return Err(e),
+        Err(_)=>{wsl_notes.push(WSL_NOTE_UNAVAILABLE.into());wsl_partial=true;}
+    }
+    Ok((wsl_notes,wsl_bad_lines,wsl_partial))
 }
 
 /// Round4 项目三口径披露：month_cost_by_source 实际覆盖「本月 ∩ 扫描窗口」。
@@ -648,6 +957,90 @@ fn estimate_model_cost(model: &str, counts: &[u64; 4]) -> Option<f64> {
     };
     let cost = (counts[0] as f64 * in_p + counts[1] as f64 * out_p + counts[2] as f64 * cr_p + counts[3] as f64 * cw_p) / 1_000_000.0;
     Some(cost)
+}
+
+/// Round5B 项目一：会话分页大小（每页 50）与逐事件明细上限（500，超出标注截断）。
+pub const SESSION_PAGE_SIZE:u32=50;
+pub const SESSION_DETAIL_CAP:usize=500;
+/// 单参数上限防御：分页大小超过该值按上限截取，避免一次性拖出全部会话。
+pub const SESSION_PAGE_MAX:u32=200;
+/// 会话与事件 key 的分隔符：path_key 恒为 64 位小写十六进制（不含 '#'），首现 '#' 即会话边界。
+const SESSION_KEY_SEP:char='#';
+/// 复合会话路径 = `{path_key}#{session}`；整体聚合降级行用固定合成键（真实 session_id 恒带
+/// sess_ 前缀，不会撞名）。
+fn split_session_path(path:&str)->Option<(&str,&str)>{path.split_once(SESSION_KEY_SEP)}
+/// ZCode CLI 库降级行（无 session 维度）的诚实标注文案。
+pub const ZCODE_WHOLE_LIBRARY_NOTE:&str="按 CLI 库整体聚合，无会话拆分";
+/// 会话级行：一个转录文件（jsonl/session 文件）或 ZCode CLI 库的一个 session 键 = 一个会话。
+/// `path` 是明细查询键（不可逆 path_key 或其复合路径），全路径不出 Rust；
+/// `title` 只含文件名尾段或 CLI session 键，不含任何转录正文。
+#[derive(Debug,Clone,Serialize)]
+pub struct SessionRow{pub source:String,pub path:String,pub session:Option<String>,pub title:String,pub note:Option<String>,pub first_ts:i64,pub last_ts:i64,pub input:u64,pub output:u64,pub cache_read:u64,pub cache_write:u64,pub cost_estimate:Option<f64>,pub events:u64,pub models:u64}
+/// 会话内单事件（逐次调用的 token 拆分）；ts 为 epoch 秒。
+#[derive(Debug,Clone,Serialize)]
+pub struct SessionEvent{pub ts:i64,pub model:String,pub input:u64,pub output:u64,pub cache_read:u64,pub cache_write:u64}
+/// 会话明细：按 ts 升序的逐事件列表（上限 SESSION_DETAIL_CAP，超出 truncated=true）+ 总事件数。
+#[derive(Debug,Clone,Serialize)]
+pub struct SessionDetail{pub path:String,pub total:u64,pub truncated:bool,pub events:Vec<SessionEvent>}
+/// 会话列表：按 events.path 聚合（ZCode CLI 库按其 session 键的复合路径），先按
+/// (source,event_id) 去重（与 Summary 同口径，跨文件移动不双计），再按 (source,path,model)
+/// 分桶取 SUM，Rust 侧按 (source,path) 折成会话行。多模型会话的各模型桶 MAX(ts) 不同，
+/// SQL 桶序会被其他会话的桶隔开——折叠不能只看相邻桶（会把一会话拆成多行、数值均为部分值），
+/// 必须按键全量聚合后再统一按「末次活动倒序 + 稳定次序键（source,path）」排序分页。
+/// cost 口径与 Summary 一致：已知定价模型的分桶求和，全未知定价 → None（显示「—」，不当 0）。
+pub fn sessions(db_path:&Path,source:Option<&str>,offset:u32,limit:u32)->Result<Vec<SessionRow>,String>{
+    if limit==0{return Err("会话分页大小无效".into())}
+    let limit=limit.min(SESSION_PAGE_MAX);
+    let db=database(db_path)?;
+    let mut stmt=db.prepare("SELECT d.source,d.path,d.model,SUM(d.input),SUM(d.output),SUM(d.cache_read),SUM(d.cache_write),COUNT(*),MIN(d.ts),MAX(d.ts) FROM (SELECT source,path,event_id,ts,model,MAX(input) AS input,MAX(output) AS output,MAX(cache_read) AS cache_read,MAX(cache_write) AS cache_write FROM events GROUP BY source,event_id) d WHERE (?1 IS NULL OR d.source=?1) GROUP BY d.source,d.path,d.model").map_err(|_|"会话查询失败")?;
+    let rows=stmt.query_map(params![source],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,[r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?],r.get::<_,u64>(7)?,r.get::<_,i64>(8)?,r.get::<_,i64>(9)?))).map_err(|_|"会话读取失败")?;
+    struct Acc{first:i64,last:i64,input:u64,output:u64,cache_read:u64,cache_write:u64,events:u64,cost:f64,any_cost:bool,models:BTreeSet<String>}
+    // 键控聚合：同会话的模型桶无需相邻（见函数注释），按 (source,path) 折叠到同一行。
+    let mut all:Vec<(SessionRow,Acc)>=vec![];
+    let mut index:BTreeMap<(String,String),usize>=BTreeMap::new();
+    for (bsource,bpath,model,c,count,first,last) in rows.flatten(){
+        let i=*index.entry((bsource.clone(),bpath.clone())).or_insert_with(||{
+            all.push((SessionRow{source:bsource.clone(),path:bpath.clone(),session:split_session_path(&bpath).map(|(_,s)|s.to_string()),title:String::new(),note:None,first_ts:first,last_ts:last,input:0,output:0,cache_read:0,cache_write:0,cost_estimate:None,events:0,models:0},Acc{first,last,input:0,output:0,cache_read:0,cache_write:0,events:0,cost:0.0,any_cost:false,models:BTreeSet::new()}));
+            all.len()-1
+        });
+        let a=&mut all[i].1;
+        a.first=a.first.min(first);a.last=a.last.max(last);
+        a.input+=c[0];a.output+=c[1];a.cache_read+=c[2];a.cache_write+=c[3];a.events+=count;
+        a.models.insert(model.clone());
+        if let Some(cost)=estimate_model_cost(&model,&c){a.cost+=cost;a.any_cost=true;}
+    }
+    // 聚合完成后统一排序：末次活动倒序 + 稳定次序键（source,path），SQL 桶序不再参与。
+    all.sort_by(|a,b|b.1.last.cmp(&a.1.last).then_with(||a.0.source.cmp(&b.0.source)).then_with(||a.0.path.cmp(&b.0.path)));
+    let start=(offset as usize).min(all.len());
+    let end=(start+limit as usize).min(all.len());
+    let mut titles=db.prepare("SELECT title FROM session_titles WHERE path=?").map_err(|_|"会话标题读取失败")?;
+    let mut out=Vec::with_capacity(end-start);
+    for (mut row,a) in all.into_iter().skip(start).take(end-start){
+        // 模型数在分页前已折算完毕（一会话多模型取并集），随行返回。
+        row.first_ts=a.first;row.last_ts=a.last;row.input=a.input;row.output=a.output;row.cache_read=a.cache_read;row.cache_write=a.cache_write;row.events=a.events;row.models=a.models.len() as u64;
+        row.cost_estimate=if a.any_cost{Some((a.cost*100.0).round()/100.0)}else{None};
+        // 标题：优先扫描期写入的文件名尾段（ZCode 整体聚合行写的是库文件名）；
+        // 缺失（旧库升级后未重扫）回退 session 键 / 短 key，不编造文件名。
+        let sess=row.session.clone();
+        row.title=titles.query_row(params![row.path],|r|r.get::<_,String>(0)).ok()
+            .unwrap_or_else(||match sess.as_deref(){Some(s)=>s.to_string(),None=>format!("{}…",&row.path[..row.path.len().min(8)])});
+        // ZCode CLI 库降级行（合成键 whole-library）诚实标注：无会话维度。
+        if sess.as_deref()==Some(ZCODE_WHOLE_LIBRARY_SESSION){row.note=Some(ZCODE_WHOLE_LIBRARY_NOTE.into());}
+        out.push(row);
+    }
+    Ok(out)
+}
+/// 会话明细：单会话（events.path 精确匹配）逐事件列表，ts 升序，最多 SESSION_DETAIL_CAP 条，
+/// 超出 truncated=true 并回传 total（前端标注「共 N 条，仅显示前 500 条」）。
+/// 只读统计字段，不触碰任何转录正文。
+pub fn session_detail(db_path:&Path,path:&str)->Result<SessionDetail,String>{
+    let db=database(db_path)?;
+    let total:u64=db.query_row("SELECT COUNT(*) FROM events WHERE path=?",[path],|r|r.get(0)).map_err(|_|"会话明细读取失败")?;
+    let mut stmt=db.prepare("SELECT ts,model,input,output,cache_read,cache_write FROM events WHERE path=? ORDER BY ts ASC,event_id ASC LIMIT ?").map_err(|_|"会话明细读取失败")?;
+    let rows=stmt.query_map(params![path,SESSION_DETAIL_CAP as i64],|r|Ok(SessionEvent{ts:r.get(0)?,model:r.get(1)?,input:r.get(2)?,output:r.get(3)?,cache_read:r.get(4)?,cache_write:r.get(5)?})).map_err(|_|"会话明细读取失败")?;
+    let events:Vec<SessionEvent>=rows.flatten().collect();
+    let truncated=total as usize>events.len();
+    Ok(SessionDetail{path:path.into(),total,truncated,events})
 }
 #[cfg(test)]mod tests{
     use super::*;use serde_json::json;
@@ -871,20 +1264,21 @@ fn estimate_model_cost(model: &str, counts: &[u64; 4]) -> Option<f64> {
         assert_eq!(s.rows[0].source,"zcode");assert_eq!(s.rows[0].model,"glm-5");
         assert_eq!((s.rows[0].input,s.rows[0].output,s.rows[0].cache_read,s.rows[0].cache_write),(11,4,6,2));
     }
-    /// 合成 ZCode CLI 库 fixture：仅建 model_usage 中被投影的列（与真实表同名列；真实表还有几十个
-    /// 未引用列，SELECT 不受影响）。值形态对齐真实探查：cached ⊆ input、started_at 毫秒。
+    /// 合成 ZCode CLI 库 fixture：建 model_usage 中被投影的列（与真实表同名列；真实表还有几十个
+    /// 未引用列，SELECT 不受影响；session_id 为 Round5B 项目一新增投影列，真实表实测存在）。
+    /// 值形态对齐真实探查：cached ⊆ input、started_at 毫秒、session_id 恒非空 sess_*。
     fn zcode_db_fixture()->(tempfile::TempDir,PathBuf){
         let d=tempfile::tempdir().unwrap();
         let path=d.path().join("db.sqlite");
         let c=rusqlite::Connection::open(&path).unwrap();
-        c.execute_batch("CREATE TABLE model_usage(id TEXT PRIMARY KEY,model_id TEXT,status TEXT,started_at INTEGER,input_tokens INTEGER,output_tokens INTEGER,cache_read_input_tokens INTEGER,cache_creation_input_tokens INTEGER);").unwrap();
-        let mut ins=c.prepare("INSERT INTO model_usage VALUES(?,?,?,?,?,?,?,?)").unwrap();
+        c.execute_batch("CREATE TABLE model_usage(id TEXT PRIMARY KEY,model_id TEXT,status TEXT,started_at INTEGER,input_tokens INTEGER,output_tokens INTEGER,cache_read_input_tokens INTEGER,cache_creation_input_tokens INTEGER,session_id TEXT);").unwrap();
+        let mut ins=c.prepare("INSERT INTO model_usage VALUES(?,?,?,?,?,?,?,?,?)").unwrap();
         // 376501 输入含 376384 缓存读（真实行形态）：非缓存输入=117。
-        ins.execute(params!["u1","GLM-5.3","completed",1_787_509_531_012i64,376_501i64,44,376_384,0]).unwrap();
+        ins.execute(params!["u1","GLM-5.3","completed",1_787_509_531_012i64,376_501i64,44,376_384,0,"sess_a"]).unwrap();
         // 全零行必须跳过（synthetic 语义同 claude）。
-        ins.execute(params!["u2","GLM-5.3","completed",1_787_509_531_013i64,0,0,0,0]).unwrap();
+        ins.execute(params!["u2","GLM-5.3","completed",1_787_509_531_013i64,0,0,0,0,"sess_a"]).unwrap();
         // 非完成状态：计真实消耗但降级 partial（模型取不同名，避免与前一行合并进同一 day/hour 桶）。
-        ins.execute(params!["u3","GLM-5.3-Flash","error",1_787_509_531_014i64,1_000,50,0,0]).unwrap();
+        ins.execute(params!["u3","GLM-5.3-Flash","error",1_787_509_531_014i64,1_000,50,0,0,"sess_b"]).unwrap();
         drop(ins);c.close().unwrap();
         (d,path)
     }
@@ -1347,6 +1741,557 @@ fn estimate_model_cost(model: &str, counts: &[u64; 4]) -> Option<f64> {
         drop(db);
         let m=trend_report(&db_path).unwrap();
         assert_eq!(m.active_seconds,3600,"active seconds outside the 370-day window must not be summed");
+    }
+
+    // ---------- Round5B 项目一：会话级明细（列表 / 分页 / 明细截断 / ZCode session 维度） ----------
+
+    /// 两份 claude 转录 + 一份 codex 会话：按末次活动倒序、标题=文件名尾段、四分项求和、
+    /// 事件数/模型数、成本（已知定价模型才计）、逐事件明细 ts 升序。
+    #[test]
+    fn sessions_aggregate_by_path_ordered_by_last_activity(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let t0=chrono::Utc::now().timestamp()-3_600;
+        let claude=|id:&str,ts:i64,input:u64|json!({"type":"assistant","timestamp":chrono::DateTime::from_timestamp(ts,0).unwrap().to_rfc3339(),"message":{"id":id,"model":"claude-sonnet","usage":{"input_tokens":input,"output_tokens":10}}});
+        let f1=d.path().join("alpha.jsonl");
+        fs::write(&f1,format!("{}\n{}\n",claude("a1",t0,1_000_000),claude("a2",t0+100,500_000))).unwrap();
+        let f2=d.path().join("beta.jsonl");
+        fs::write(&f2,format!("{}\n",claude("b1",t0+50,10))).unwrap();
+        let f3=d.path().join("rollout.jsonl");
+        fs::write(&f3,format!("{}\n{}\n",json!({"type":"turn_context","payload":{"model":"gpt-4o"}}),json!({"type":"event_msg","timestamp":chrono::DateTime::from_timestamp(t0+200,0).unwrap().to_rfc3339(),"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}}}))).unwrap();
+        scan_paths(7,&db,vec![("claude".into(),f1),("claude".into(),f2),("codex".into(),f3)],false).unwrap();
+        let rows=sessions(&db,None,0,SESSION_PAGE_SIZE).unwrap();
+        assert_eq!(rows.len(),3);
+        // 末次活动倒序：rollout(t0+200) > alpha(t0+100) > beta(t0+50)。
+        assert_eq!(rows.iter().map(|r|r.title.as_str()).collect::<Vec<_>>(),vec!["rollout.jsonl","alpha.jsonl","beta.jsonl"]);
+        let alpha=&rows[1];
+        assert_eq!(alpha.source,"claude");assert_eq!(alpha.events,2);assert_eq!(alpha.models,1);
+        assert_eq!((alpha.input,alpha.output),(1_500_000,20));
+        assert_eq!((alpha.first_ts,alpha.last_ts),(t0,t0+100));
+        assert_eq!(alpha.session,None,"jsonl 会话不带复合 session 键");
+        assert_eq!(alpha.note,None);
+        // 成本：1.5M 非缓存输入 @3.0/M + 20 输出 @15/M ≈ 4.5003 → 两位小数 4.5。
+        assert_eq!(alpha.cost_estimate,Some(4.5));
+        // 明细：ts 升序、上限内不截断。
+        let detail=session_detail(&db,&rows[1].path).unwrap();
+        assert_eq!(detail.total,2);assert!(!detail.truncated);
+        assert_eq!(detail.events.iter().map(|e|e.ts).collect::<Vec<_>>(),vec![t0,t0+100]);
+        assert_eq!((detail.events[0].input,detail.events[0].output),(1_000_000,10));
+        // 来源筛选：只保留该来源的会话。
+        assert_eq!(sessions(&db,Some("claude"),0,SESSION_PAGE_SIZE).unwrap().len(),2);
+        let codex=sessions(&db,Some("codex"),0,SESSION_PAGE_SIZE).unwrap();
+        assert_eq!(codex.len(),1);assert_eq!(codex[0].title,"rollout.jsonl");
+        assert_eq!(sessions(&db,Some("zcode"),0,SESSION_PAGE_SIZE).unwrap().len(),0);
+    }
+
+    #[test]
+    fn sessions_multimodel_session_stays_one_row_when_buckets_interleave(){
+        // 回归：会话中途切模型 → (source,path,model) 多桶、各桶 MAX(ts) 不同，其他会话的桶
+        // 会按桶序隔开同会话的桶（sonnet@+100 → beta@+75 → haiku@+50）。相邻折叠会把 alpha
+        // 拆成两行（tokens/事件数/模型数均为部分值，且多占一个分页席位）；必须按 (source,path)
+        // 全量聚合为 2 行，alpha 四分项/事件数/模型数合并、成本分桶计价后求和。
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let t0=chrono::Utc::now().timestamp()-3_600;
+        let ev=|id:&str,ts:i64,model:&str,input:u64|json!({"type":"assistant","timestamp":chrono::DateTime::from_timestamp(ts,0).unwrap().to_rfc3339(),"message":{"id":id,"model":model,"usage":{"input_tokens":input,"output_tokens":10}}});
+        let f1=d.path().join("alpha.jsonl");
+        fs::write(&f1,format!("{}\n{}\n",ev("a1",t0+100,"claude-sonnet",1_000_000),ev("a2",t0+50,"claude-haiku",500_000))).unwrap();
+        let f2=d.path().join("beta.jsonl");
+        fs::write(&f2,format!("{}\n",ev("b1",t0+75,"claude-sonnet",10))).unwrap();
+        scan_paths(7,&db,vec![("claude".into(),f1),("claude".into(),f2)],false).unwrap();
+        let rows=sessions(&db,None,0,SESSION_PAGE_SIZE).unwrap();
+        assert_eq!(rows.len(),2,"a transcript with two models must not split into two rows");
+        // 末次活动倒序：alpha(t0+100) > beta(t0+75)。
+        assert_eq!(rows.iter().map(|r|r.title.as_str()).collect::<Vec<_>>(),vec!["alpha.jsonl","beta.jsonl"]);
+        let alpha=&rows[0];
+        assert_eq!((alpha.input,alpha.output),(1_500_000,20),"both model buckets must fold into the session row");
+        assert_eq!(alpha.events,2);assert_eq!(alpha.models,2);
+        assert_eq!((alpha.first_ts,alpha.last_ts),(t0+50,t0+100));
+        // 成本：sonnet 1M@3.0+10@15 + haiku 0.5M@0.8+10@4 ≈ 3.40019 → 两位小数 3.4（分桶计价求和）。
+        assert_eq!(alpha.cost_estimate,Some(3.4));
+        // 明细仍覆盖整会话（两模型事件都在）。
+        let detail=session_detail(&db,&alpha.path).unwrap();
+        assert_eq!(detail.total,2);
+        assert_eq!(detail.events.iter().map(|e|e.model.as_str()).collect::<Vec<_>>(),vec!["claude-haiku","claude-sonnet"]);
+    }
+
+    #[test]
+    fn sessions_pagination_windows_and_zero_limit_are_rejected(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let t0=chrono::Utc::now().timestamp()-3_600;
+        let mut paths=vec![];
+        for (i,name) in ["a","b","c"].iter().enumerate(){
+            let f=d.path().join(format!("{name}.jsonl"));
+            let v=json!({"type":"assistant","timestamp":chrono::DateTime::from_timestamp(t0+300-(i as i64)*100,0).unwrap().to_rfc3339(),"message":{"id":format!("m{name}"),"model":"x","usage":{"input_tokens":1,"output_tokens":1}}});
+            fs::write(&f,format!("{v}\n")).unwrap();
+            paths.push(("claude".into(),f));
+        }
+        scan_paths(7,&db,paths,false).unwrap();
+        fn titles(rs:&[SessionRow])->Vec<&str>{rs.iter().map(|r|r.title.as_str()).collect()}
+        assert_eq!(titles(&sessions(&db,None,0,SESSION_PAGE_SIZE).unwrap()),vec!["a.jsonl","b.jsonl","c.jsonl"]);
+        assert_eq!(titles(&sessions(&db,None,0,2).unwrap()),vec!["a.jsonl","b.jsonl"],"page size 2 keeps last-activity-desc order");
+        assert_eq!(titles(&sessions(&db,None,2,2).unwrap()),vec!["c.jsonl"]);
+        assert_eq!(titles(&sessions(&db,None,1,1).unwrap()),vec!["b.jsonl"],"offset windows into the ordered list");
+        assert!(sessions(&db,None,10,2).unwrap().is_empty(),"offset beyond the end yields an empty page");
+        assert!(sessions(&db,None,0,0).is_err(),"limit=0 must be rejected, not treated as unbounded");
+    }
+
+    #[test]
+    fn session_detail_truncates_at_500_events(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let t0=chrono::Utc::now().timestamp()-4_000;
+        let mut body=String::new();
+        for i in 0..600{
+            let v=json!({"type":"assistant","timestamp":chrono::DateTime::from_timestamp(t0+i,0).unwrap().to_rfc3339(),"message":{"id":format!("m{i}"),"model":"claude-sonnet","usage":{"input_tokens":i,"output_tokens":1}}});
+            body.push_str(&format!("{v}\n"));
+        }
+        let f=d.path().join("big.jsonl");fs::write(&f,body).unwrap();
+        scan_paths(7,&db,vec![("claude".into(),f)],false).unwrap();
+        let rows=sessions(&db,None,0,SESSION_PAGE_SIZE).unwrap();
+        assert_eq!(rows.len(),1);assert_eq!(rows[0].events,600);
+        let detail=session_detail(&db,&rows[0].path).unwrap();
+        assert_eq!(detail.total,600);
+        assert_eq!(detail.events.len(),SESSION_DETAIL_CAP,"detail is hard-capped at 500 events");
+        assert!(detail.truncated,"600 events must be flagged truncated");
+        assert_eq!(detail.events[0].ts,t0);
+        assert_eq!(detail.events[499].ts,t0+499,"detail is chronological from the earliest event");
+        assert_eq!(detail.events[499].input,499);
+    }
+
+    #[test]
+    fn zcode_cli_db_sessions_split_by_session_id(){
+        let (d,dbf)=zcode_db_fixture();let db=d.path().join("cache.db");
+        let s=scan_paths(90,&db,vec![("zcode".into(),dbf.clone())],false).unwrap();
+        assert_eq!(s.changed_files,1);
+        let rows=sessions(&db,None,0,SESSION_PAGE_SIZE).unwrap();
+        assert_eq!(rows.len(),2,"sess_a(1 event) + sess_b(1 event)；全零行跳过");
+        let a=rows.iter().find(|r|r.session.as_deref()==Some("sess_a")).unwrap();
+        let b=rows.iter().find(|r|r.session.as_deref()==Some("sess_b")).unwrap();
+        assert_eq!(a.title,"sess_a");assert_eq!(b.title,"sess_b");
+        assert!(a.note.is_none()&&b.note.is_none());
+        assert_eq!((a.input,a.output,a.cache_read),(117,44,376_384));
+        assert_eq!((b.input,b.output),(1_000,50));
+        // 逐会话明细只含本会话事件。
+        let da=session_detail(&db,&a.path).unwrap();
+        assert_eq!(da.total,1);
+        assert_eq!((da.events[0].input,da.events[0].cache_read),(117,376_384));
+        // Summary 口径不受复合路径影响。
+        let sb:Vec<&Row>=s.rows.iter().filter(|r|r.model=="GLM-5.3").collect();
+        assert_eq!(sb.len(),1);assert_eq!(sb[0].input,117);
+        // 幂等重扫（库未变）后复合会话与标题仍在：live 清理按父键放行（substr 修正）。
+        let b2=scan_paths(90,&db,vec![("zcode".into(),dbf)],false).unwrap();
+        assert_eq!(b2.changed_files,0);
+        let rows2=sessions(&db,None,0,SESSION_PAGE_SIZE).unwrap();
+        assert_eq!(rows2.len(),2);
+        assert_eq!(rows2.iter().map(|r|r.title.as_str()).collect::<Vec<_>>(),rows.iter().map(|r|r.title.as_str()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn zcode_cli_db_without_session_column_aggregates_whole_library(){
+        // schema 漂移（session_id 列消失）：整库降级为单会话，诚实标注「无会话拆分」，消耗不丢。
+        let d=tempfile::tempdir().unwrap();let dbf=d.path().join("db.sqlite");
+        let c=rusqlite::Connection::open(&dbf).unwrap();
+        c.execute_batch("CREATE TABLE model_usage(id TEXT PRIMARY KEY,model_id TEXT,status TEXT,started_at INTEGER,input_tokens INTEGER,output_tokens INTEGER,cache_read_input_tokens INTEGER,cache_creation_input_tokens INTEGER);").unwrap();
+        c.execute("INSERT INTO model_usage VALUES('u1','GLM-5.3','completed',1_787_509_531_012,100,5,0,0)",[]).unwrap();
+        drop(c);
+        // 有 session 列但个别行 session_id 为 NULL：该行并入整体聚合行（实测不存在，防御分支）。
+        // 投影只认字面名 db.sqlite（is_zdb 判定），故第二库放独立目录、同名。
+        let d2=tempfile::tempdir().unwrap();let dbf2=d2.path().join("db.sqlite");
+        let c2=rusqlite::Connection::open(&dbf2).unwrap();
+        c2.execute_batch("CREATE TABLE model_usage(id TEXT PRIMARY KEY,model_id TEXT,status TEXT,started_at INTEGER,input_tokens INTEGER,output_tokens INTEGER,cache_read_input_tokens INTEGER,cache_creation_input_tokens INTEGER,session_id TEXT);").unwrap();
+        c2.execute("INSERT INTO model_usage VALUES('x1','glm','completed',1_787_509_531_012,10,1,0,0,'sess_x')",[]).unwrap();
+        c2.execute("INSERT INTO model_usage VALUES('x2','glm','completed',1_787_509_531_013,20,2,0,0,NULL)",[]).unwrap();
+        drop(c2);
+        let db=d.path().join("cache.db");
+        // 同一轮扫描同时带上两个库：live 清理按本轮发现集生效，分轮扫描会清掉上一轮的事件。
+        scan_paths(90,&db,vec![("zcode".into(),dbf),("zcode".into(),dbf2)],false).unwrap();
+        let rows=sessions(&db,None,0,SESSION_PAGE_SIZE).unwrap();
+        assert_eq!(rows.len(),3,"第一库整体聚合 + 第二库 sess_x + NULL 行整体聚合");
+        let wholes:Vec<&SessionRow>=rows.iter().filter(|r|r.session.as_deref()==Some(ZCODE_WHOLE_LIBRARY_SESSION)).collect();
+        assert_eq!(wholes.len(),2);
+        assert!(wholes.iter().any(|r|(r.input,r.output)==(100,5)),"无 session 列的库按整体聚合保留全部消耗");
+        let db2w=wholes.iter().find(|r|(r.input,r.output)==(20,2)).unwrap();
+        assert_eq!(db2w.title,"db.sqlite");
+        assert_eq!(db2w.note.as_deref(),Some(ZCODE_WHOLE_LIBRARY_NOTE));
+        assert!(rows.iter().any(|r|r.session.as_deref()==Some("sess_x")&&(r.input,r.output)==(10,1)));
+    }
+
+    #[test]
+    fn session_titles_survive_unchanged_rescans_and_die_with_their_file(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let f=d.path().join("keep.jsonl");
+        let v=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"k1","model":"x","usage":{"input_tokens":1,"output_tokens":1}}});
+        fs::write(&f,format!("{v}\n")).unwrap();
+        scan_paths(7,&db,vec![("claude".into(),f.clone())],false).unwrap();
+        // 未变化重扫：清理照常执行，标题与事件都必须存活。
+        let again=scan_paths(7,&db,vec![("claude".into(),f.clone())],false).unwrap();
+        assert_eq!(again.changed_files,0);
+        let rows=sessions(&db,None,0,SESSION_PAGE_SIZE).unwrap();
+        assert_eq!(rows.len(),1);assert_eq!(rows[0].title,"keep.jsonl");
+        // 文件删除后：事件、标题、会话一并消失。
+        fs::remove_file(&f).unwrap();
+        scan_paths(7,&db,vec![],false).unwrap();
+        assert!(sessions(&db,None,0,SESSION_PAGE_SIZE).unwrap().is_empty());
+    }
+
+    // ---------- Round5B 项目二：WSL 用量（opt-in 默认关） ----------
+
+    /// 测试用 argv 路由键（参数含空格/制表符，用不可见分隔符拼 key）。
+    fn argv_key(args:&[String])->String{args.join("\u{1}")}
+    /// find %T@ 输出形态的「现在」时刻（窗口内的 mtime，避免懒解析跳过干扰断言）。
+    fn wsl_test_mtime()->String{
+        let ns=chrono::Utc::now().timestamp_nanos_opt().unwrap();
+        format!("{}.{:09}",ns.div_euclid(1_000_000_000),ns.rem_euclid(1_000_000_000))
+    }
+
+    #[test]
+    fn wsl_path_whitelist_rejects_injection_vectors(){
+        // 安全关键 fixture（计划明确要求）：含引号/分号/$ 等元字符、穿越、根外、非 jsonl 的
+        // 路径必须被白名单拒绝，绝不进入命令构造。
+        let roots=wsl_roots("/home/u");
+        let bad=[
+            "/home/u/.claude/projects/a;reboot.jsonl",            // 分号
+            "/home/u/.claude/projects/$(curl evil).jsonl",        // 命令替换
+            "/home/u/.claude/projects/`id`.jsonl",                // 反引号
+            "/home/u/.claude/projects/\"quoted\".jsonl",          // 双引号
+            "/home/u/.claude/projects/'sq'.jsonl",                // 单引号
+            "/home/u/.claude/projects/a b.jsonl",                 // 空格（argv 转发歧义）
+            "/home/u/.claude/projects/a\nb.jsonl",                // 换行（不得进入命令构造/拆散 find 输出行）
+            "/home/u/.claude/projects/a|b.jsonl",                 // 管道
+            "/home/u/.claude/projects/a&b.jsonl",                 // 后台执行
+            "/home/u/.claude/projects/../../etc/cron.d/x.jsonl",  // 目录穿越
+            "/etc/shadow.jsonl",                                  // 允许根之外
+            "/home/other/.claude/projects/x.jsonl",               // 他人家目录（根前缀不匹配）
+            "relative/path.jsonl",                                // 相对路径
+            "/home/u/.claude/projects/x.txt",                     // 非 .jsonl
+            "C:\\Users\\x\\.claude\\projects\\a.jsonl",           // Windows 路径形态
+            "",                                                   // 空串
+        ];
+        for p in bad{assert!(!valid_wsl_path(p,&roots),"{p:?} must be rejected by the whitelist")}
+        assert!(!valid_wsl_path("/home/u/.claude/projects/a\u{0}.jsonl",&roots),"NUL must be rejected");
+        let good=["/home/u/.claude/projects/D--proj/8f0c-uuid.jsonl","/home/u/.qwen/projects/p2/sess-9.jsonl"];
+        for p in good{assert!(valid_wsl_path(p,&roots),"{p} must pass the whitelist")}
+        // 家目录白名单同样拒绝元字符/相对/穿越。
+        assert!(valid_wsl_home("/home/u"));assert!(valid_wsl_home("/root"));
+        for h in ["","relative","/home/u x","/home/u;id","/home/u$(x)","/home/u`id`","/home/../etc","/home/u\u{0}x","/home/u\"q\""]{
+            assert!(!valid_wsl_home(h),"{h:?} home must be rejected");
+        }
+    }
+
+    #[test]
+    fn wsl_command_construction_never_interpolates_paths_into_a_shell(){
+        // 防注入第二层证明：读取走 `wsl.exe -e cat -- <path>`，路径是单个 argv 元素、命令里没有
+        // sh -c；家目录探测 argv 为常量串；发现直接 exec find。任何路径都不会被拼进 shell 命令文本。
+        let p="/home/u/.claude/projects/D--proj/a.jsonl";
+        assert_eq!(wsl_read_argv(p),vec!["-e","cat","--",p]);
+        assert!(!wsl_read_argv(p).windows(2).any(|w|w[0]=="sh"&&w[1]=="-c"));
+        assert_eq!(wsl_home_argv(),vec!["-e","sh","-c","echo $HOME"]);
+        assert_eq!(wsl_find_argv("/home/u/.claude/projects")[1],"find","discovery execs find directly, not a shell");
+    }
+
+    #[test]
+    fn wsl_files_are_discovered_read_counted_and_rechecked_unchanged(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let home="/home/u";
+        let good="/home/u/.claude/projects/D--p/uuid1.jsonl";
+        let evil="/home/u/.claude/projects/evil;id.jsonl";// 发现结果中的恶意路径：必须被白名单拦下，绝不读取
+        let body=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"w1","model":"claude-sonnet","usage":{"input_tokens":100,"output_tokens":5}}}).to_string();
+        let mut routes:BTreeMap<String,Vec<u8>>=BTreeMap::new();
+        routes.insert(argv_key(&wsl_home_argv()),b"/home/u\n".to_vec());
+        routes.insert(argv_key(&wsl_find_argv(&format!("{home}/.claude/projects"))),format!("{good}\t{}\t{}\n{evil}\t9\t{}\n",body.len(),wsl_test_mtime(),wsl_test_mtime()).into_bytes());
+        routes.insert(argv_key(&wsl_read_argv(good)),body.into_bytes());
+        let cat_calls=std::rc::Rc::new(std::cell::RefCell::new(0usize));
+        let cc=cat_calls.clone();let routes=std::rc::Rc::new(routes);let r2=routes.clone();
+        let runner:WslRunner<'_>=&move|args:&[String],_:u64|{
+            if args[1]=="cat"{*cc.borrow_mut()+=1;}
+            r2.get(&argv_key(args)).cloned().ok_or_else(||"no route".to_string())
+        };
+        let s=scan_paths_with_wsl(7,&db,vec![],false,true,runner,&||false).unwrap();
+        assert_eq!(s.rows.len(),1);
+        assert_eq!(s.rows[0].source,"claude");assert_eq!(s.rows[0].input,100);assert_eq!(s.rows[0].output,5);
+        assert_eq!(*cat_calls.borrow(),1,"恶意发现路径不得进入读取；无路由的 qwen 根按空处理");
+        // 路径键 = sha256("wsl:"+POSIX 路径)；会话标题为文件名尾段。
+        let key=wsl_path_key(good);
+        let rows=sessions(&db,None,0,SESSION_PAGE_SIZE).unwrap();
+        assert_eq!(rows.len(),1);assert_eq!(rows[0].path,key);assert_eq!(rows[0].title,"uuid1.jsonl");
+        // files 表带 'wsl' 标记行（live 清理豁免的判定依据）。
+        let dbc=database(&db).unwrap();
+        let n:i64=dbc.query_row("SELECT COUNT(*) FROM files WHERE source='wsl' AND path=?",[&key],|r|r.get(0)).unwrap();
+        assert_eq!(n,1);
+        assert!(s.notes.iter().any(|n|n.contains("并入 1 个转录文件")),"{:?}",s.notes);
+        assert!(!s.partial);
+        // 重扫：size+mtime 未变 → 不再 cat；且 WSL 事件经历一轮 live 清理后仍存活（标记豁免）。
+        let s2=scan_paths_with_wsl(7,&db,vec![],false,true,runner,&||false).unwrap();
+        assert_eq!(*cat_calls.borrow(),1,"unchanged WSL files must not be re-read");
+        assert!(s2.notes.iter().any(|n|n.contains("未变 1")),"{:?}",s2.notes);
+        assert_eq!(s2.rows.len(),1,"WSL events must survive the Windows live cleanup");
+        assert_eq!(s2.rows[0].input,100);
+    }
+
+    #[test]
+    fn wsl_unavailable_degrades_silently_and_keeps_history(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        // 预置一次成功扫描留下的 WSL 条目（events + files 标记行）。
+        let key=wsl_path_key("/home/u/.claude/projects/p/old.jsonl");
+        let ts=chrono::Utc::now().timestamp();
+        {
+            let dbc=database(&db).unwrap();
+            dbc.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?)",params![key,"claude","m1",ts,"x",100,5,0,0,0]).unwrap();
+            dbc.execute("INSERT INTO files VALUES(?,?,?,?,?,?,?)",params![key,"wsl",10i64,1i64,"",0i64,"{}"]).unwrap();
+        }
+        let runner:WslRunner<'_>=&|_:&[String],_:u64|->Result<Vec<u8>,String>{Err("wsl.exe 缺失".into())};
+        let s=scan_paths_with_wsl(7,&db,vec![],false,true,runner,&||false).unwrap();
+        assert!(s.notes.iter().any(|n|n.contains("WSL：未检测到可用发行版")),"{:?}",s.notes);
+        assert!(s.partial);
+        assert_eq!(s.rows[0].input,100,"wsl.exe 不可用 ≠ 文件已删除：既有 WSL 记录必须保留");
+        // 开关关闭：既有 WSL 条目显式清除（关闭语义 = 不并入也不保留）。
+        let s2=scan_paths_with_wsl(7,&db,vec![],false,false,runner,&||false).unwrap();
+        assert!(s2.rows.is_empty());
+        let dbc=database(&db).unwrap();
+        let n:i64=dbc.query_row("SELECT COUNT(*) FROM files WHERE source='wsl'",[],|r|r.get(0)).unwrap();
+        assert_eq!(n,0,"关闭开关后 WSL 条目应被清除");
+    }
+
+    #[test]
+    fn wsl_invalid_home_degrades_with_note(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        for home in ["","relative/home","/home/u;id","/home/u x"]{
+            let mut routes:BTreeMap<String,Vec<u8>>=BTreeMap::new();
+            routes.insert(argv_key(&wsl_home_argv()),format!("{home}\n").into_bytes());
+            let routes=std::rc::Rc::new(routes);let r2=routes.clone();
+            let runner:WslRunner<'_>=&move|args:&[String],_:u64|r2.get(&argv_key(args)).cloned().ok_or_else(||"no route".to_string());
+            let s=scan_paths_with_wsl(7,&db,vec![],false,true,runner,&||false).unwrap();
+            assert!(s.notes.iter().any(|n|n.contains("WSL：未检测到可用发行版")),"home={home:?} notes={:?}",s.notes);
+            assert!(s.partial);
+            assert!(s.rows.is_empty());
+        }
+    }
+
+    #[test]
+    fn wsl_distro_without_transcripts_is_not_a_gap(){
+        // 发行版可达但两个根都不存在（find 退出非零）：按空处理，不算部分覆盖。
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let runner:WslRunner<'_>=&|args:&[String],_:u64|{
+            if args[1]=="sh"{return Ok(b"/home/u\n".to_vec())}
+            Err("find: No such file or directory".into())
+        };
+        let s=scan_paths_with_wsl(7,&db,vec![],false,true,runner,&||false).unwrap();
+        assert!(s.notes.iter().any(|n|n.contains("未发现 claude/qwen 转录文件")),"{:?}",s.notes);
+        assert!(!s.partial,"no data in a reachable distro is not a coverage gap");
+    }
+
+    #[test]
+    fn wsl_transient_find_failure_keeps_existing_entries_and_marks_partial(){
+        // 回归：wsl.exe 启动失败/超时 ≠ 该根为空——本轮发现集不可信时保留集清理必须整体跳过，
+        // 否则单根瞬时失败会把该根已入库条目当作「WSL 侧文件已删除」全部清除，且文件 mtime
+        // 滑出扫描窗口后永不重读（丢失永久）。标注 partial + notes，与家目录探测失败路径同语义。
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let key=wsl_path_key("/home/u/.claude/projects/p/old.jsonl");
+        let ts=chrono::Utc::now().timestamp();
+        {
+            let dbc=database(&db).unwrap();
+            dbc.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?)",params![key,"claude","m1",ts,"x",100,5,0,0,0]).unwrap();
+            dbc.execute("INSERT INTO files VALUES(?,?,?,?,?,?,?)",params![key,"wsl",10i64,1i64,"",0i64,"{}"]).unwrap();
+        }
+        let runner:WslRunner<'_>=&|args:&[String],_:u64|{
+            if args[1]=="sh"{return Ok(b"/home/u\n".to_vec())}
+            // claude 根：瞬时失败（超时）；qwen 根：良性失败（find 退出非零 = 该根为空）。
+            if args[1]=="find"&&args[2].starts_with("/home/u/.claude"){return Err(format!("{}（>15000ms）",WSL_ERR_TIMEOUT))}
+            Err(WSL_ERR_NONZERO.into())
+        };
+        let s=scan_paths_with_wsl(7,&db,vec![],false,true,runner,&||false).unwrap();
+        assert_eq!(s.rows.iter().find(|r|r.model=="x").map(|r|r.input),Some(100),"wsl.exe 暂时不可用 ≠ 文件已删除：既有条目不得被清理");
+        let dbc=database(&db).unwrap();
+        let n:i64=dbc.query_row("SELECT COUNT(*) FROM files WHERE source='wsl'",[],|r|r.get(0)).unwrap();
+        assert_eq!(n,1);
+        assert!(s.notes.iter().any(|note|note.contains("发现失败")&&note.contains("未做清理")),"{:?}",s.notes);
+        // 发现瞬时失败时不得输出「未发现转录文件」的误导性结论（根本没看到）。
+        assert!(!s.notes.iter().any(|note|note.contains("未发现 claude/qwen 转录文件")),"{:?}",s.notes);
+        assert!(s.partial);
+    }
+
+    #[test]
+    fn wsl_benign_find_failure_still_cleans_genuinely_deleted_roots(){
+        // 对照：find 退出非零（目录确实没了/发行版无数据）= 良性「该根为空」，既有条目照常按
+        // 「WSL 侧文件已删除」清理，空发行版不算降级缺口。
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let key=wsl_path_key("/home/u/.claude/projects/p/gone.jsonl");
+        let ts=chrono::Utc::now().timestamp();
+        {
+            let dbc=database(&db).unwrap();
+            dbc.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?)",params![key,"claude","m1",ts,"x",100,5,0,0,0]).unwrap();
+            dbc.execute("INSERT INTO files VALUES(?,?,?,?,?,?,?)",params![key,"wsl",10i64,1i64,"",0i64,"{}"]).unwrap();
+        }
+        let runner:WslRunner<'_>=&|args:&[String],_:u64|{
+            if args[1]=="sh"{return Ok(b"/home/u\n".to_vec())}
+            Err(WSL_ERR_NONZERO.into())
+        };
+        let s=scan_paths_with_wsl(7,&db,vec![],false,true,runner,&||false).unwrap();
+        assert!(s.rows.is_empty(),"a root that genuinely reports empty must have its stale entries cleaned");
+        let dbc=database(&db).unwrap();
+        let n:i64=dbc.query_row("SELECT COUNT(*) FROM files WHERE source='wsl'",[],|r|r.get(0)).unwrap();
+        assert_eq!(n,0);
+        assert!(!s.partial);
+    }
+
+    #[test]
+    fn wsl_files_older_than_the_window_are_skipped_lazily(){
+        // 与 Windows 侧同口径：新文件且 mtime 早于窗口 → 不读取（其事件必在窗口外）。
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let cat_calls=std::rc::Rc::new(std::cell::RefCell::new(0usize));
+        let cc=cat_calls.clone();
+        let runner:WslRunner<'_>=&move|args:&[String],_:u64|{
+            if args[1]=="sh"{return Ok(b"/home/u\n".to_vec())}
+            if args[1]=="find"{return Ok(b"/home/u/.claude/projects/p/ancient.jsonl\t10\t1000000.0\n".to_vec())}
+            *cc.borrow_mut()+=1;Ok(vec![])
+        };
+        let s=scan_paths_with_wsl(7,&db,vec![],false,true,runner,&||false).unwrap();
+        assert_eq!(*cat_calls.borrow(),0,"a file untouched since before the window must not be read");
+        assert!(s.rows.is_empty());
+        assert!(!s.partial);
+    }
+
+    #[test]
+    fn wsl_discovery_budget_caps_reads_at_2000(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let body=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"w1","model":"m","usage":{"input_tokens":100,"output_tokens":5}}}).to_string();
+        let mtime=wsl_test_mtime();
+        let cat_calls=std::rc::Rc::new(std::cell::RefCell::new(0usize));
+        let cc=cat_calls.clone();
+        let runner:WslRunner<'_>=&move|args:&[String],_:u64|{
+            if args[1]=="sh"{return Ok(b"/home/u\n".to_vec())}
+            if args[1]=="find"{
+                let mut s=String::new();
+                for i in 0..WSL_FILE_BUDGET+50{s.push_str(&format!("/home/u/.claude/projects/p/f{i:05}.jsonl\t{}\t{mtime}\n",body.len()));}
+                return Ok(s.into_bytes());
+            }
+            *cc.borrow_mut()+=1;
+            Ok(body.clone().into_bytes())
+        };
+        let s=scan_paths_with_wsl(7,&db,vec![],false,true,runner,&||false).unwrap();
+        assert_eq!(*cat_calls.borrow(),WSL_FILE_BUDGET,"reads stop at the independent WSL budget");
+        assert!(s.notes.iter().any(|n|n.contains("预算上限（2000）")),"{:?}",s.notes);
+        assert!(s.partial);
+    }
+
+    #[test]
+    fn wsl_budget_truncation_keeps_entries_squeezed_out_of_the_budget(){
+        // 回归：预算截断（entries.truncate）先于保留集维护时，字典序被挤出前 2000 的既有入库
+        // 条目会被当作「WSL 侧已删除」清掉——截断轮必须整体跳过清理（与 Windows 侧
+        // `!truncated` 守卫同口径），notes 披露「超出部分未读取 + 本轮未清理」。
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        // "zzz…" 字典序排在下方 find 输出的 f00000..f02049 之后：截断后不在本轮发现集内，但文件仍在 WSL 侧。
+        let key=wsl_path_key("/home/u/.claude/projects/p/zzz_preexisting.jsonl");
+        let ts=chrono::Utc::now().timestamp();
+        {
+            let dbc=database(&db).unwrap();
+            dbc.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?)",params![key,"claude","m1",ts,"x",77,5,0,0,0]).unwrap();
+            dbc.execute("INSERT INTO files VALUES(?,?,?,?,?,?,?)",params![key,"wsl",10i64,1i64,"",0i64,"{}"]).unwrap();
+        }
+        let body=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"b1","model":"m","usage":{"input_tokens":100,"output_tokens":5}}}).to_string();
+        let mtime=wsl_test_mtime();
+        let runner:WslRunner<'_>=&move|args:&[String],_:u64|{
+            if args[1]=="sh"{return Ok(b"/home/u\n".to_vec())}
+            if args[1]=="find"{
+                let mut s=String::new();
+                for i in 0..WSL_FILE_BUDGET+50{s.push_str(&format!("/home/u/.claude/projects/p/f{i:05}.jsonl\t{}\t{mtime}\n",body.len()));}
+                return Ok(s.into_bytes());
+            }
+            Ok(body.clone().into_bytes())
+        };
+        let s=scan_paths_with_wsl(7,&db,vec![],false,true,runner,&||false).unwrap();
+        assert!(s.notes.iter().any(|n|n.contains("预算上限（2000）")&&n.contains("未清理")),"{:?}",s.notes);
+        assert_eq!(s.rows.iter().find(|r|r.model=="x").map(|r|r.input),Some(77),"预算截断 ≠ 已删除：被挤出预算的既有条目必须保留");
+    }
+
+    #[test]
+    fn wsl_oversized_files_are_skipped_as_large(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let p="/home/u/.claude/projects/p/big.jsonl";
+        let mut routes:BTreeMap<String,Vec<u8>>=BTreeMap::new();
+        routes.insert(argv_key(&wsl_home_argv()),b"/home/u\n".to_vec());
+        routes.insert(argv_key(&wsl_find_argv("/home/u/.claude/projects")),format!("{p}\t999999\t{}\n",wsl_test_mtime()).into_bytes());
+        routes.insert(argv_key(&wsl_read_argv(p)),vec![b'x';WSL_FILE_MAX_BYTES as usize+1]);
+        let cat_calls=std::rc::Rc::new(std::cell::RefCell::new(0usize));
+        let cc=cat_calls.clone();let routes=std::rc::Rc::new(routes);let r2=routes.clone();
+        let runner:WslRunner<'_>=&move|args:&[String],_:u64|{
+            if args[1]=="cat"{*cc.borrow_mut()+=1;}
+            r2.get(&argv_key(args)).cloned().ok_or_else(||"no route".to_string())
+        };
+        let s=scan_paths_with_wsl(7,&db,vec![],false,true,runner,&||false).unwrap();
+        assert!(s.rows.is_empty(),"oversized files must not yield events");
+        // find 已回传大小：超限文件必须在读取前被跳过，不得经 wsl.exe 管道整体缓冲后才丢弃
+        //（也避免超大文件读满超时被误计为 failed 连锁中止本阶段）。
+        assert_eq!(*cat_calls.borrow(),0,"oversized files must be skipped before any wsl.exe read");
+        assert!(s.notes.iter().any(|n|n.contains("超过 256KB 上限未读取")),"{:?}",s.notes);
+        assert!(s.partial);
+    }
+
+    #[test]
+    fn wsl_consecutive_failures_abort_the_phase(){
+        // wsl.exe 半途不可用：连续失败达上限即中止，不得按超时串行拖完整预算。
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let cat_calls=std::rc::Rc::new(std::cell::RefCell::new(0usize));
+        let cc=cat_calls.clone();
+        let runner:WslRunner<'_>=&move|args:&[String],_:u64|{
+            if args[1]=="sh"{return Ok(b"/home/u\n".to_vec())}
+            if args[1]=="find"{
+                let mut s=String::new();
+                for i in 0..10{s.push_str(&format!("/home/u/.claude/projects/p/f{i}.jsonl\t10\t{}\n",wsl_test_mtime()));}
+                return Ok(s.into_bytes());
+            }
+            *cc.borrow_mut()+=1;
+            Err("读取失败".into())
+        };
+        let s=scan_paths_with_wsl(7,&db,vec![],false,true,runner,&||false).unwrap();
+        assert_eq!(*cat_calls.borrow(),WSL_MAX_CONSECUTIVE_FAILURES,"phase aborts after consecutive failures");
+        assert!(s.notes.iter().any(|n|n.contains("5 个文件读取失败")),"{:?}",s.notes);
+        assert!(s.notes.iter().any(|n|n.contains("连续失败")),"{:?}",s.notes);
+        assert!(s.partial);
+    }
+
+    #[test]
+    fn wsl_and_windows_copies_of_one_session_fold_by_event_id(){
+        // 同会话双计风险（计划注明）：同一目录被 Windows 与 WSL 各收集一次 → 稳定消息 id 在
+        // (source,event_id) 折叠，Summary 只计一次；会话视图按不同 path_key 各自成行。
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let line=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"same-1","model":"m","usage":{"input_tokens":100,"output_tokens":5}}}).to_string();
+        let win=d.path().join("same.jsonl");fs::write(&win,format!("{line}\n")).unwrap();
+        let wp="/home/u/.claude/projects/mounted/same.jsonl";
+        let mut routes:BTreeMap<String,Vec<u8>>=BTreeMap::new();
+        routes.insert(argv_key(&wsl_home_argv()),b"/home/u\n".to_vec());
+        routes.insert(argv_key(&wsl_find_argv("/home/u/.claude/projects")),format!("{wp}\t{}\t{}\n",line.len(),wsl_test_mtime()).into_bytes());
+        routes.insert(argv_key(&wsl_read_argv(wp)),line.into_bytes());
+        let runner:WslRunner<'_>=&move|args:&[String],_:u64|routes.get(&argv_key(args)).cloned().ok_or_else(||"no route".to_string());
+        let s=scan_paths_with_wsl(7,&db,vec![("claude".into(),win.clone())],false,true,runner,&||false).unwrap();
+        assert_eq!(s.rows.len(),1);
+        assert_eq!(s.rows[0].input,100,"a session collected from both sides must be counted once");
+        // 会话视图与 Summary 同口径：先按 (source,event_id) 去重再按 path 聚合——
+        // 双侧收集的同一会话折叠为一行（ Round5a 机制，计划注明）。
+        let rows=sessions(&db,None,0,SESSION_PAGE_SIZE).unwrap();
+        assert_eq!(rows.len(),1,"the doubly-collected session folds to one row by (source,event_id)");
+        assert_eq!(rows[0].input,100);
+        // 折叠后保留的 path 取组内任意行（SQLite 语义），两侧键之一均为合法结果。
+        let win_key=format!("{:x}",Sha256::digest(win.to_string_lossy().as_bytes()));
+        assert!(rows[0].path==wsl_path_key(wp)||rows[0].path==win_key,"{:?}",rows[0].path);
+    }
+
+    #[test]
+    fn wsl_process_runner_times_out_hung_commands(){
+        // 环境探测用 where 只查存在性不执行（wsl --status 在损坏安装上可能挂起）。
+        let installed=std::process::Command::new("cmd").args(["/C","where","wsl.exe"]).output().map(|o|o.status.success()).unwrap_or(false);
+        if !installed{
+            // 无 wsl.exe 环境：spawn 失败本身就是降级路径（必须 Err 而非 panic/卡死）。
+            assert!(wsl_process_runner(&wsl_home_argv(),1_000).is_err());
+            return;
+        }
+        let t0=std::time::Instant::now();
+        let r=wsl_process_runner(&["-e".into(),"sleep".into(),"30".into()],1_500);
+        assert!(r.is_err(),"a hung command must surface as an error");
+        assert!(t0.elapsed()<std::time::Duration::from_secs(10),"timeout must kill the command, not wait out its 30s");
+        // 有可用发行版时顺带做一次只读家目录探测：真实 $HOME 必须过白名单。
+        if let Ok(home)=wsl_process_runner(&wsl_home_argv(),WSL_CMD_TIMEOUT_MS){
+            let h=String::from_utf8_lossy(&home).trim().to_string();
+            if !h.is_empty(){assert!(valid_wsl_home(&h),"real HOME {h:?} must pass the whitelist")}
+        }
     }
 }
 
