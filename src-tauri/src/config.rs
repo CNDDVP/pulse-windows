@@ -566,6 +566,20 @@ fn import_config_transaction(
         assert!(save_to(&p,&s).is_err());assert_eq!(fs::read(&p).unwrap(),before);
     }
     #[test]
+    fn subscription_records_roundtrip_through_settings_file() {
+        // 项目三存储：订阅记录跟随 settings.json 持久化；损坏值在落盘前被 validate 拦截。
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("settings.json");
+        let mut s=AppSettings::default();
+        s.subscriptions.insert("claude".into(),crate::types::SubscriptionRecord{price:20.0,currency:"CNY".into(),cycle_days:30,start_date:"2026-09-01".into(),note:"Max 月付".into()});
+        s.subscriptions.insert("zcode".into(),crate::types::SubscriptionRecord{price:6.99,currency:"USD".into(),cycle_days:30,start_date:String::new(),note:String::new()});
+        save_to(&p,&s).unwrap();
+        let back=load_from(&p,&Memory::default()).unwrap();
+        assert_eq!(back.subscriptions,s.subscriptions);
+        let mut bad=s.clone();bad.subscriptions.get_mut("claude").unwrap().cycle_days=0;
+        let before=fs::read(&p).unwrap();
+        assert!(save_to(&p,&bad).is_err());assert_eq!(fs::read(&p).unwrap(),before);
+    }
+    #[test]
     fn import_uuid_accounts_and_legacy_secrets_without_touching_source() {
         let d = tempfile::tempdir().unwrap();
         let source = d.path().join("source.json"); let target = d.path().join("target.json");

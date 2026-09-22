@@ -7,7 +7,14 @@ use rusqlite::{Connection,params};
 #[derive(Default,Clone,Serialize,Deserialize)]#[serde(default)]struct State{model:String,totals:[u64;4],bad_lines:u64,anomalies:u64}
 #[derive(Debug,Clone,Serialize,Deserialize)]pub struct Row{pub source:String,pub model:String,pub day:String,pub hour:String,pub input:u64,pub output:u64,pub cache_read:u64,pub cache_write:u64,pub partial:bool}
 #[derive(Debug,Serialize)]pub struct ArchivedDay{pub day:String,pub source:String,pub model:String,pub input:u64,pub output:u64,pub cache_read:u64,pub cache_write:u64}
-#[derive(Debug,Serialize)]pub struct Summary{pub rows:Vec<Row>,pub scanned_files:usize,pub skipped_files:usize,pub changed_files:usize,pub days:u32,pub partial:bool,pub anomalies:u64,pub cost_estimate:Option<f64>,pub notes:Vec<String>,pub duration_ms:Option<u64>,pub coverage_gap:bool}
+#[derive(Debug,Serialize)]pub struct Summary{pub rows:Vec<Row>,pub scanned_files:usize,pub skipped_files:usize,pub changed_files:usize,pub days:u32,pub partial:bool,pub anomalies:u64,pub cost_estimate:Option<f64>,
+    /// 按来源的本月估算成本，USD 原值（Round4 项目三订阅倍数的数据源）。
+    /// 口径 = 本月 ∩ 扫描窗口：扫描窗口只有 7/30/90 天，窗口起点晚于本月 1 日时
+    /// （如月初刚过选 7 天）本月 1 日至窗口起点之间的成本不计入，订阅倍数随之系统性
+    /// 低报；该场景 Summary.notes 会追加提示。只含已计价模型；空 map=本窗口内没有任何
+    /// 可计价记录，前端一律显示「—」，不得当 0。
+    pub month_cost_by_source:BTreeMap<String,f64>,
+    pub notes:Vec<String>,pub duration_ms:Option<u64>,pub coverage_gap:bool}
 struct Event{id:String,ts:i64,model:String,counts:[u64;4],partial:bool}
 fn count(v:&Value)->u64{v.as_u64().unwrap_or(0)}
 fn negative(v:&Value)->bool{v.as_f64().is_some_and(|n|n<0.0)}
@@ -245,13 +252,21 @@ where F: Fn() -> bool + Send + Sync {
     let mut any_cost = false;
     // A14：计价覆盖率——有 token 但落在未知定价表的模型明确告知"未计入"。
     let mut priced=0usize;let mut unpriced=0usize;
+    // Round4 项目三：按来源累计本月成本，与 total_cost 同一处计价，口径一致。
+    // 实际口径是「本月 ∩ 扫描窗口」（rows 被限制在 [first,today]）；窗口起点晚于
+    // 本月 1 日时由 month_window_note 在 Summary.notes 披露截断，防订阅倍数被静默低报。
+    let month_prefix=chrono::Local::now().format("%Y-%m").to_string();
+    let mut month_cost:BTreeMap<String,f64>=BTreeMap::new();
+    let mut month_any=false;
     for row in &rows {
         if row.input+row.output+row.cache_read+row.cache_write==0{continue}
         if let Some(c) = estimate_model_cost(&row.model, &[row.input, row.output, row.cache_read, row.cache_write]) {
             total_cost += c; any_cost = true; priced += 1;
+            if row.day.starts_with(&month_prefix){*month_cost.entry(row.source.clone()).or_default()+=c;month_any=true;}
         } else { unpriced += 1; }
     }
     let cost_estimate = if any_cost { Some((total_cost * 100.0).round() / 100.0) } else { None };
+    let month_cost_by_source=if month_any{month_cost.into_iter().map(|(k,v)|(k,(v*100.0).round()/100.0)).collect()}else{BTreeMap::new()};
     let coverage_gap=truncated;
     // B08：坏行状态持久化在 files.state——后续扫描跳过未变化文件时标记不丢。
     // 分项矛盾计数 anomalies 同存于 state：跨扫描累计，随全量重解析（前缀变更）重置重算。
@@ -275,6 +290,9 @@ where F: Fn() -> bool + Send + Sync {
     if coverage_gap{
         notes.push("目录扫描达到上限或受限，已保留既有历史记录，统计可能存在缺口。".into());
     }
+    if let Some(note)=month_window_note(first,today){
+        notes.push(note);
+    }
     if persisted_bad>0{
         notes.push(format!("历史扫描中曾有 {persisted_bad} 行无法解析（已跳过，不影响已解析事件）。"));
     }
@@ -284,7 +302,16 @@ where F: Fn() -> bool + Send + Sync {
     if anomalies>0{
         notes.push(format!("发现 {anomalies} 条分项矛盾事件（分项为负或缓存增量大于输入增量等），已标记 partial，计数时请留意。"));
     }
-    Ok(Summary{rows,scanned_files:scanned,skipped_files:skipped,changed_files:changed,days,partial,anomalies,cost_estimate,notes,duration_ms,coverage_gap})
+    Ok(Summary{rows,scanned_files:scanned,skipped_files:skipped,changed_files:changed,days,partial,anomalies,cost_estimate,month_cost_by_source,notes,duration_ms,coverage_gap})
+}
+
+/// Round4 项目三口径披露：month_cost_by_source 实际覆盖「本月 ∩ 扫描窗口」。
+/// 扫描窗口起点（first）晚于本月 1 日时返回追加到 Summary.notes 的提示文案；
+/// 窗口已覆盖整月（90 天恒覆盖，30 天几乎总覆盖）返回 None，不添加噪音。
+fn month_window_note(first:chrono::NaiveDate,today:chrono::NaiveDate)->Option<String>{
+    use chrono::Datelike;
+    let month_first=chrono::NaiveDate::from_ymd_opt(today.year(),today.month(),1)?;
+    (first>month_first).then(||format!("本月成本仅统计扫描窗口（自 {first} 起）内的记录，未覆盖本月月初，订阅倍数可能偏低。"))
 }
 
 /// 事件按 (本地时区 day,source,model) 聚合后 upsert 进 daily_archive。
@@ -474,6 +501,32 @@ fn estimate_model_cost(model: &str, counts: &[u64; 4]) -> Option<f64> {
 }
 #[cfg(test)]mod tests{
     use super::*;use serde_json::json;
+    #[test]fn month_cost_by_source_uses_priced_models_only(){
+        // Round4 项目三：本月成本按来源拆分，与 total 同一处计价；未知定价模型不产生来源条目。
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let mk=|model:&str,input:u64|{let v=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"m1","model":model,"usage":{"input_tokens":input,"output_tokens":100}}});format!("{v}\n")};
+        let file=d.path().join("session.jsonl");
+        fs::write(&file,mk("claude-sonnet-4",1_000_000)).unwrap();
+        let s=scan_paths(7,&db,vec![("claude".into(),file.clone())],false).unwrap();
+        assert_eq!(s.month_cost_by_source.get("claude").copied(),Some(3.0));
+        assert_eq!(s.cost_estimate,Some(3.0),"本月口径与总窗口在本用例中重合");
+        // 未知定价模型：不计价 → 空 map（前端显示 —，不当作 0）。
+        fs::write(&file,mk("unknown-model-x",1_000_000)).unwrap();
+        let s2=scan_paths(7,&db,vec![("claude".into(),file)],false).unwrap();
+        assert!(s2.month_cost_by_source.is_empty());
+        assert_eq!(s2.cost_estimate,None);
+    }
+    #[test]fn month_window_note_discloses_truncated_month(){
+        // 窗口起点晚于本月 1 日（如 9/23 选 7 天=9/17 起）：本月成本=本月∩窗口，
+        // 必须在 Summary.notes 披露截断，不得自称完整本月。
+        let today=chrono::NaiveDate::from_ymd_opt(2026,9,23).unwrap();
+        let note=month_window_note(chrono::NaiveDate::from_ymd_opt(2026,9,17).unwrap(),today).unwrap();
+        assert!(note.contains("2026-09-17"),"{note}");
+        assert!(note.contains("未覆盖本月月初"),"{note}");
+        // 边界：窗口起点恰为本月 1 日（9/23 选 30 天）不提示；90 天恒覆盖整月不提示。
+        assert_eq!(month_window_note(chrono::NaiveDate::from_ymd_opt(2026,9,1).unwrap(),today),None);
+        assert_eq!(month_window_note(chrono::NaiveDate::from_ymd_opt(2026,6,26).unwrap(),today),None);
+    }
     #[test]fn codex_cumulative_counts_cache_once(){let mut s=State{model:"model".into(),..Default::default()};let v=json!({"type":"event_msg","timestamp":"2026-09-17T00:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20}}}});assert_eq!(parse("codex",&v,&mut s,0).unwrap().counts,[70,20,30,0]);assert!(parse("codex",&v,&mut s,1).is_none());}
     #[test]fn incremental_roundtrip_no_double_count(){let d=tempfile::tempdir().unwrap();let file=d.path().join("session.jsonl");let db=d.path().join("cache.db");let v=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"m1","model":"x","usage":{"input_tokens":10,"output_tokens":5}}});fs::write(&file,format!("{v}\n{v}\n")).unwrap();let paths=vec![("claude".into(),file)];let a=scan_paths(7,&db,paths.clone(),false).unwrap();let b=scan_paths(7,&db,paths,false).unwrap();assert_eq!(a.rows[0].input,10);assert_eq!(b.rows[0].input,10);assert_eq!(b.changed_files,0);}
     #[test]fn malformed_lines_are_partial(){let d=tempfile::tempdir().unwrap();let file=d.path().join("x.jsonl");fs::write(&file,"{bad}\n").unwrap();assert!(scan_paths(7,&d.path().join("db"),vec![("claude".into(),file)],false).unwrap().partial);}

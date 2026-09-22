@@ -208,6 +208,15 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
     persist(persisted, message, true).catch(() => setSettings(prev));
   };
   const saveHotkeys = (hk: HotkeySettings) => update({ hotkeys: hk }, "快捷键已生效");
+  // Token 消耗页的订阅记录走独立命令（save_subscriptions）落盘；这里同步本窗口的
+  // 设置快照，否则下一次普通设置保存会把旧 subscriptions 整表写回去（A03 同类竞态）。
+  const applySubscriptions = (subs: AppSettings["subscriptions"]) => {
+    if (!subs) return;
+    const merged = { ...appliedRef.current, subscriptions: subs };
+    appliedRef.current = merged;
+    setApplied(merged);
+    setSettings(cur => ({ ...cur, subscriptions: subs }));
+  };
   const patch = (id: string, value: Partial<ProviderConfig>) => setSettings(s => ({ ...s, providers: { ...s.providers, [id]: { ...s.providers[id], ...value } } }));
 
   // Account pages keep an explicit save because credentials and labels are typed, not toggled.
@@ -688,7 +697,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
 
         <div className="flex-1 overflow-y-auto p-6">
           {view.kind === "general" && <GeneralPage settings={settings} update={update} screens={screens} usages={usages} busy={busy} onRefreshAll={refreshAll} toast={showToast} />}
-          <div className={view.kind === "spend" ? "" : "hidden"}><TokenSpend active={view.kind === "spend"} /></div>
+          <div className={view.kind === "spend" ? "" : "hidden"}><TokenSpend active={view.kind === "spend"} settings={settings} onSubscriptionsSaved={applySubscriptions} /></div>
           {view.kind === "notifications" && <NotificationsPage settings={settings} update={update} toast={showToast} />}
           {view.kind === "hotkeys" && <HotkeysPage settings={settings} save={saveHotkeys} onError={m => m && showToast("error", m)} />}
           {view.kind === "diagnostics" && <DiagnosticsPage usages={usages} settings={settings} busy={busy} setBusy={setBusy} toast={showToast} open={id => setView({ kind: "account", id })} />}

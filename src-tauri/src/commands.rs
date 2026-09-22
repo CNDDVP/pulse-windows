@@ -1,5 +1,6 @@
 use std::sync::atomic::Ordering;
-use crate::{types::{AppSettings,ProviderUsage},secrets::{SecretStore,WindowsSecrets},AppState};
+use std::collections::BTreeMap;
+use crate::{types::{AppSettings,ProviderUsage,SubscriptionRecord},secrets::{SecretStore,WindowsSecrets},AppState};
 use tauri::{AppHandle,Emitter,State,Manager};
 #[tauri::command]
 pub fn publish_rail_warning(window:tauri::Window,app:AppHandle,snapshot:serde_json::Value)->Result<(),String>{
@@ -36,8 +37,11 @@ pub fn cancel_token_spend(state:State<'_,AppState>){
 fn csv_field(value:&str)->String{
     if value.contains([',','"','\n','\r']){format!("\"{}\"",value.replace('"',"\"\""))}else{value.to_string()}
 }
-fn build_ledger_csv(rows:&[crate::ledger::Row])->String{
-    let mut out=String::from("source,model,day,hour,input,output,cache_read,cache_write,partial\r\n");
+fn build_ledger_csv(rows:&[crate::ledger::Row],display_currency:&str)->String{
+    // Round4 项目二口径注明（与 JSON 封套同义）：CSV 仅含 token 原始计数，无任何货币
+    // 数值；以 # 注释行前置注明界面显示币种，说明数值未按该币种换算、估算保持 USD 口径。
+    let mut out=format!("# display_currency: {display_currency}（界面显示币种；本文件仅含 token 原始计数，未按该币种换算，成本估算保持 USD 口径）\r\n");
+    out.push_str("source,model,day,hour,input,output,cache_read,cache_write,partial\r\n");
     for r in rows{
         let counts=[r.input.to_string(),r.output.to_string(),r.cache_read.to_string(),r.cache_write.to_string()];
         let fields=[r.source.as_str(),r.model.as_str(),r.day.as_str(),r.hour.as_str(),counts[0].as_str(),counts[1].as_str(),counts[2].as_str(),counts[3].as_str(),if r.partial{"true"}else{"false"}];
@@ -49,10 +53,18 @@ fn build_ledger_csv(rows:&[crate::ledger::Row])->String{
     }
     out
 }
-fn build_ledger_json(rows:&[crate::ledger::Row])->Result<String,String>{
+/// JSON 导出封套（Round4 项目二/三）：注明界面显示币种与订阅记录。
+/// 诚实口径：display_currency 仅为界面设置；文件内数值保持 USD 原值与原始 token 计数，不做换算。
+fn build_ledger_json(rows:&[crate::ledger::Row],display_currency:&str,subscriptions:&BTreeMap<String,crate::types::SubscriptionRecord>)->Result<String,String>{
     serde_json::to_string(&serde_json::json!({
         "exported_at":chrono::Local::now().to_rfc3339(),
         "app_version":env!("CARGO_PKG_VERSION"),
+        "display_currency":display_currency,
+        "display_currency_note":"导出数值保持 USD 原值（token 计数为原始值），未按 display_currency 换算。",
+        "subscriptions":subscriptions.iter().map(|(source,rec)|serde_json::json!({
+            "source":source,"price":rec.price,"currency":rec.currency,
+            "cycle_days":rec.cycle_days,"start_date":rec.start_date,"note":rec.note
+        })).collect::<Vec<_>>(),
         "rows":rows
     })).map_err(|_|"导出数据序列化失败".into())
 }
@@ -67,13 +79,16 @@ fn unique_export_path(dir:&std::path::Path,base:&str,ext:&str)->std::path::PathB
     path
 }
 #[tauri::command]
-pub fn export_ledger(rows:Vec<crate::ledger::Row>,format:String)->Result<String,String>{
+pub fn export_ledger(rows:Vec<crate::ledger::Row>,format:String,display_currency:Option<String>,subscriptions:Option<BTreeMap<String,crate::types::SubscriptionRecord>>)->Result<String,String>{
     let ext=match format.as_str(){"csv"=>"csv","json"=>"json",_=>return Err("导出格式无效；仅支持 csv 或 json".into())};
+    let dc=display_currency.as_deref().unwrap_or("USD");
+    if !["USD","CNY"].contains(&dc){return Err("display_currency 无效；仅支持 USD 或 CNY".into())}
+    let subs=subscriptions.unwrap_or_default();
     let stamp=chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let dir=crate::config::get_config_dir().join("exports");
     let content=match ext{
-        "csv"=>Ok(build_ledger_csv(&rows)),
-        _=>build_ledger_json(&rows),
+        "csv"=>Ok(build_ledger_csv(&rows,dc)),
+        _=>build_ledger_json(&rows,dc,&subs),
     }?;
     std::fs::create_dir_all(&dir).map_err(|_|"无法创建导出目录")?;
     let path=unique_export_path(&dir,&format!("token-spend-{stamp}"),ext);
@@ -109,9 +124,37 @@ pub fn export_trend(metrics:crate::ledger::TrendMetrics)->Result<String,String>{
     std::fs::write(&path,content).map_err(|e|format!("导出文件写入失败：{e}"))?;
     Ok(path.to_string_lossy().to_string())
 }
-#[derive(serde::Serialize)]
-pub struct MonitorOption{pub name:String,pub label:String}
+/// 订阅记录读取（Round4 项目三）：随设置持久化，读为纯查询。
 #[tauri::command]
+pub async fn get_subscriptions(state:State<'_,AppState>)->Result<BTreeMap<String,SubscriptionRecord>,String>{
+    Ok(state.settings.lock().await.subscriptions.clone())
+}
+/// 订阅记录整表保存（Round4 项目三）：走既有设置持久化通道（settings_io 串行，
+/// 失败不落盘不动内存），成功后广播 settings-updated。仅替换 subscriptions 字段，
+/// 不 bump generation——订阅价不影响在途额度读数的有效性。
+#[tauri::command]
+pub async fn save_subscriptions(subscriptions:BTreeMap<String,SubscriptionRecord>,state:State<'_,AppState>,app:AppHandle)->Result<BTreeMap<String,SubscriptionRecord>,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
+    if subscriptions.len()>64{return Err("订阅记录过多".into())}
+    for (src,sub) in &subscriptions{
+        if !crate::types::valid_id(src){return Err(format!("订阅来源标识无效: {src}"))}
+        sub.validate().map_err(|e|format!("订阅记录 {src} 无效：{e}"))?;
+    }
+    let _io=state.settings_io.lock().await;
+    let mut settings=state.settings.lock().await.clone();
+    settings.subscriptions=subscriptions;
+    let had_error=state.config_error().is_some();
+    let saved=tauri::async_runtime::spawn_blocking(move||{
+        if had_error{crate::config::backup_settings()?;}
+        crate::config::save_settings(&settings)?;Ok::<_,String>(settings)
+    }).await.map_err(|_|"订阅保存任务失败")??;
+    *state.settings.lock().await=saved.clone();
+    state.clear_config_error();
+    app.emit("settings-updated",&saved).map_err(|_|"订阅已保存，但窗口通知失败".to_string())?;
+    Ok(saved.subscriptions)
+}
+#[derive(serde::Serialize)]
+pub struct MonitorOption{pub name:String,pub label:String}#[tauri::command]
 pub fn monitors(app:AppHandle)->Result<Vec<MonitorOption>,String>{
     let window=app.get_webview_window("main").ok_or("窗口不存在")?;
     let friendly=crate::window::friendly_monitor_names();
@@ -1097,20 +1140,31 @@ mod tests {
             source:"claude, \"mix\"\nline\r\nx".into(),model:"m\"q".into(),
             day:"2026-09-23".into(),hour:"08:00".into(),
             input:1,output:2,cache_read:3,cache_write:4,partial:true}];
-        let csv=build_ledger_csv(&rows);
+        let csv=build_ledger_csv(&rows,"CNY");
+        // 首行为 # 注释口径注明（Round4 项目二）：注明界面币种且声明数值未换算；其后才是表头。
+        assert!(csv.starts_with("# display_currency: CNY（界面显示币种；本文件仅含 token 原始计数，未按该币种换算，成本估算保持 USD 口径）\r\n"));
         // 整串比较：字段内的 \r\n 必须原样保留在引号内，不得当作记录分隔符。
-        assert_eq!(csv,"source,model,day,hour,input,output,cache_read,cache_write,partial\r\n\"claude, \"\"mix\"\"\nline\r\nx\",\"m\"\"q\",2026-09-23,08:00,1,2,3,4,true\r\n");
+        assert_eq!(csv,"# display_currency: CNY（界面显示币种；本文件仅含 token 原始计数，未按该币种换算，成本估算保持 USD 口径）\r\nsource,model,day,hour,input,output,cache_read,cache_write,partial\r\n\"claude, \"\"mix\"\"\nline\r\nx\",\"m\"\"q\",2026-09-23,08:00,1,2,3,4,true\r\n");
         // 普通字段不加引号；bool 以 true/false 输出。
         let plain=vec![crate::ledger::Row{source:"zcode".into(),model:"glm-5".into(),day:"2026-09-23".into(),hour:"08:00".into(),input:0,output:0,cache_read:0,cache_write:0,partial:false}];
-        assert_eq!(build_ledger_csv(&plain),"source,model,day,hour,input,output,cache_read,cache_write,partial\r\nzcode,glm-5,2026-09-23,08:00,0,0,0,0,false\r\n");
+        assert_eq!(build_ledger_csv(&plain,"USD"),"# display_currency: USD（界面显示币种；本文件仅含 token 原始计数，未按该币种换算，成本估算保持 USD 口径）\r\nsource,model,day,hour,input,output,cache_read,cache_write,partial\r\nzcode,glm-5,2026-09-23,08:00,0,0,0,0,false\r\n");
     }
 
     #[test]
     fn json_export_has_envelope_and_rows() {
         let rows=vec![crate::ledger::Row{source:"zcode".into(),model:"glm-5".into(),day:"2026-09-23".into(),hour:"08:00".into(),input:11,output:4,cache_read:6,cache_write:2,partial:false}];
-        let v:serde_json::Value=serde_json::from_str(&build_ledger_json(&rows).unwrap()).unwrap();
+        let mut subs=BTreeMap::new();
+        subs.insert("claude".into(),crate::types::SubscriptionRecord{price:20.0,currency:"USD".into(),cycle_days:30,start_date:"2026-09-01".into(),note:"Max".into()});
+        let v:serde_json::Value=serde_json::from_str(&build_ledger_json(&rows,"CNY",&subs).unwrap()).unwrap();
         assert!(v["exported_at"].is_string());
         assert_eq!(v["app_version"],env!("CARGO_PKG_VERSION"));
+        // Round4 项目二/三：display_currency 注明界面币种；数值不换算；订阅记录随导出输出。
+        assert_eq!(v["display_currency"],"CNY");
+        assert!(v["display_currency_note"].as_str().is_some_and(|s|s.contains("USD 原值")));
+        assert_eq!(v["subscriptions"].as_array().map(Vec::len),Some(1));
+        assert_eq!(v["subscriptions"][0]["source"],"claude");
+        assert_eq!(v["subscriptions"][0]["price"],20.0);
+        assert_eq!(v["subscriptions"][0]["currency"],"USD");
         assert_eq!(v["rows"].as_array().map(Vec::len),Some(1));
         assert_eq!(v["rows"][0]["source"],"zcode");
         assert_eq!(v["rows"][0]["input"],11);
@@ -1120,11 +1174,20 @@ mod tests {
         assert_eq!(back.source,"zcode");
         assert_eq!((back.input,back.output,back.cache_read,back.cache_write),(11,4,6,2));
         assert!(!back.partial);
+        // 无订阅记录时输出空数组，而不是缺字段。
+        let none:serde_json::Value=serde_json::from_str(&build_ledger_json(&rows,"USD",&BTreeMap::new()).unwrap()).unwrap();
+        assert_eq!(none["subscriptions"].as_array().map(Vec::len),Some(0));
+        assert_eq!(none["display_currency"],"USD");
     }
 
     #[test]
     fn export_ledger_rejects_unknown_format() {
-        assert!(export_ledger(vec![],"yaml".into()).is_err());
+        assert!(export_ledger(vec![],"yaml".into(),None,None).is_err());
+    }
+
+    #[test]
+    fn export_ledger_rejects_unknown_display_currency() {
+        assert!(export_ledger(vec![],"json".into(),Some("JPY".into()),None).is_err(),"仅支持 USD/CNY，拒绝静默落盘");
     }
 
     #[test]

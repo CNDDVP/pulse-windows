@@ -121,6 +121,35 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
         </div>
       </Section>
 
+      <Section title="成本显示" icon="💱" subtitle="Token 消耗页与详情卡的费用按此币种显示；换算只发生在界面显示层，估算与导出始终保留 USD 原值。">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Field label="成本显示币种">
+            <select className={selectCls} value={settings.display_currency ?? "USD"} onChange={e => update({ display_currency: e.target.value === "CNY" ? "CNY" : "USD" })}>
+              <option value="USD">USD（美元，估算原值）</option>
+              <option value="CNY">CNY（人民币，固定汇率折算）</option>
+            </select>
+          </Field>
+          <Field
+            label="USD → CNY 汇率"
+            hint={(settings.display_currency ?? "USD") === "CNY" ? "默认 7.2，可手改；仅用于界面折算，不联网取汇。" : "币种为 USD 时直接显示估算原值，汇率不生效。"}
+          >
+            <input
+              type="number" min={0.01} max={10000} step={0.01}
+              className={selectCls}
+              disabled={(settings.display_currency ?? "USD") !== "CNY"}
+              aria-label="USD 转 CNY 固定汇率"
+              value={settings.usd_cny_rate ?? 7.2}
+              onChange={e => {
+                // 钳制在后端校验界（0.01~10000）内，避免保存被整表拒绝。
+                const v = Number(e.target.value);
+                if (Number.isFinite(v) && v > 0) update({ usd_cny_rate: Math.min(10000, Math.max(0.01, v)) });
+              }}
+            />
+          </Field>
+        </div>
+        <p className="text-[11px] text-zinc-500">固定汇率只存在本机设置中；凡经折算显示的数字都会就近标注「按固定汇率 X.XX 估算」。</p>
+      </Section>
+
       <Section title="刷新" icon="⚡" aside={<button className={btnGhost} disabled={busy} onClick={() => void onRefreshAll().catch(e => toast("error", `刷新失败: ${String(e)}`))}>立即刷新全部</button>}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Field label="自动刷新间隔" hint="读取失败时按退避自动拉长；服务商返回 Retry-After 时以其为准。">

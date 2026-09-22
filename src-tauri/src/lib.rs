@@ -414,10 +414,15 @@ pub async fn refresh_usages_and_emit(app:&AppHandle,manual:bool)->Result<Refresh
     };
     for n in &notices{let _=notify(app,&n.title,&n.body);}
 
-    let final_cached=state.cached_usages.lock().await.clone();
+    let cached_snapshot=state.cached_usages.lock().await.clone();
     // This cache is sanitized and only used for --json, never for credentials or fallback across launches.
-    if let Ok(bytes)=serde_json::to_vec(&final_cached){let path=config::get_config_dir().join("usage-cache.json");let _=tauri::async_runtime::spawn_blocking(move||config::atomic_write(&path,&bytes)).await;}
-    Ok(RefreshSummary{readings:final_cached,initiated:to_fetch.len(),skipped:enabled_total.saturating_sub(to_fetch.len())})
+    // tok/min 是 60 秒活值，落盘会被下次启动/CLI --json 当作现状展示——只清持久化副本；
+    // RefreshSummary.readings 与 usages-updated 事件同口径（保留内存中的速率活值），
+    // 与上方门锁争用早退路径（返回未清除快照）字段语义保持一致。
+    let mut persist=cached_snapshot.clone();
+    for u in persist.iter_mut(){u.tok_per_min=None;}
+    if let Ok(bytes)=serde_json::to_vec(&persist){let path=config::get_config_dir().join("usage-cache.json");let _=tauri::async_runtime::spawn_blocking(move||config::atomic_write(&path,&bytes)).await;}
+    Ok(RefreshSummary{readings:cached_snapshot,initiated:to_fetch.len(),skipped:enabled_total.saturating_sub(to_fetch.len())})
 }
 
 /// Apply one freshly fetched reading with the same reconcile/schedule/emit semantics as
@@ -474,8 +479,10 @@ pub async fn apply_single_reading(app:&AppHandle,account_id:&str,fresh:ProviderU
     };
     for n in &notices{let _=notify(app,&n.title,&n.body);}
     // B18：持久缓存写盘串行——手动/定时并发时保证新快照后写，--json 回退不拿旧文件。
+    // tok/min 是 60 秒活值不落盘（同 refresh_usages_and_emit 口径）。
     let _io=state.settings_io.lock().await;
-    if let Ok(bytes)=serde_json::to_vec(&snapshot){let path=config::get_config_dir().join("usage-cache.json");let _=tauri::async_runtime::spawn_blocking(move||config::atomic_write(&path,&bytes)).await;}
+    let mut persist=snapshot;for u in persist.iter_mut(){u.tok_per_min=None;}
+    if let Ok(bytes)=serde_json::to_vec(&persist){let path=config::get_config_dir().join("usage-cache.json");let _=tauri::async_runtime::spawn_blocking(move||config::atomic_write(&path,&bytes)).await;}
     Ok(())
 }
 
@@ -485,6 +492,10 @@ fn poll_activity(app:&AppHandle){
     let state=app.state::<AppState>();
     let (Ok(mut watcher),Ok(settings))=(state.activity_watcher.lock(),state.settings.try_lock())else{return};
     let sources=watcher.poll(cache::now());
+    // Round4 项目一：旁路速率快照。None 有两种成因——渠道日志无 usage 字段，或 60 秒
+    // 窗口内无增量（速率衰减）；下方再把 <1 tok/min 归一为 None。前端对 None 一律显示「—」。
+    let rates=watcher.rates();
+    drop(watcher);
     drop(settings);
     let mut changed=false;
     let Ok(mut map)=state.activity.lock()else{return};
@@ -511,8 +522,30 @@ fn poll_activity(app:&AppHandle){
             }
         }
     }
-    if !changed{return}
     drop(map);
+    // 旁路速率归属（Round4 项目一）：口径与活动灯一致——同一来源仅一个启用账号才写入
+    // 该账号；多账号同源无法从 CLI 日志归属，一律 None 不编造。值为四舍五入整值 tok/min，
+    // <1 归 None（与前端「≥1 才显示」口径在后端先行收敛，同时抑制 5s 轮询的浮点抖动）。
+    let mut rate_changed=false;
+    if let Ok(settings)=state.settings.try_lock(){
+        let mut count:HashMap<&str,u32>=HashMap::new();
+        let mut only:HashMap<&str,&String>=HashMap::new();
+        for (id,c) in &settings.providers{
+            if !(c.enabled&&(!settings.monitoring_setup_completed||settings.authorized_providers.contains(&c.provider_id))){continue}
+            *count.entry(c.provider_id.as_str()).or_insert(0)+=1;
+            only.insert(c.provider_id.as_str(),id);
+        }
+        only.retain(|s,_|count.get(s).copied()==Some(1));
+        if let Ok(mut cached)=state.cached_usages.try_lock(){
+            for u in cached.iter_mut(){
+                let want=if only.get(u.provider_id.as_str()).is_some_and(|aid|**aid==u.account_id){
+                    rates.get(u.provider_id.as_str()).copied().flatten().map(|r|r.round()).filter(|r|*r>=1.0)
+                }else{None};
+                if u.tok_per_min!=want{u.tok_per_min=want;rate_changed=true;}
+            }
+        }
+    }
+    if !changed&&!rate_changed{return}
     let mut updated:Vec<ProviderUsage>=vec![];
     if let Ok(mut cached)=state.cached_usages.try_lock(){
         for u in cached.iter_mut(){u.is_active=state.activity_flag(&u.account_id);}
@@ -808,6 +841,6 @@ pub fn run(){
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![updater::update_status,updater::update_ui_ready,updater::update_check,updater::update_download,updater::update_cancel,updater::update_discard,updater::update_preferences,updater::update_apply,commands::publish_rail_warning,commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::refresh_account,commands::drag_begin,commands::drag_move,commands::drag_end,commands::drag_cancel,commands::rail_menu_cmd,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::settings_window_ready,commands::request_close_settings,commands::acknowledge_close,commands::pending_settings_close,commands::confirm_close_settings,commands::set_credential,commands::delete_credential,commands::delete_account,commands::diagnostics,commands::test_account,commands::token_spend,commands::cancel_token_spend,commands::export_ledger,commands::trend_metrics,commands::export_trend,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::get_notification_status,commands::register_notification_identity,commands::unregister_notification_identity,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::get_detail_layout,commands::detail_layout_ready,commands::resize_detail,commands::hide_detail,commands::detail_account,commands::set_detail_hover,commands::is_portable,commands::get_profile_info,commands::check_profile_status,commands::clear_profile_credentials,commands::create_isolated_profile,commands::get_runtime_info,commands::check_importable_config,commands::import_installed_config,commands::detect_network_proxy,commands::test_network_connection,commands::check_local_antigravity,commands::quick_add_antigravity_account,commands::open_external_url,commands::open_stepfun_login])
+        .invoke_handler(tauri::generate_handler![updater::update_status,updater::update_ui_ready,updater::update_check,updater::update_download,updater::update_cancel,updater::update_discard,updater::update_preferences,updater::update_apply,commands::publish_rail_warning,commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::refresh_account,commands::drag_begin,commands::drag_move,commands::drag_end,commands::drag_cancel,commands::rail_menu_cmd,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::settings_window_ready,commands::request_close_settings,commands::acknowledge_close,commands::pending_settings_close,commands::confirm_close_settings,commands::set_credential,commands::delete_credential,commands::delete_account,commands::diagnostics,commands::test_account,commands::token_spend,commands::cancel_token_spend,commands::export_ledger,commands::trend_metrics,commands::export_trend,commands::get_subscriptions,commands::save_subscriptions,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::get_notification_status,commands::register_notification_identity,commands::unregister_notification_identity,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::get_detail_layout,commands::detail_layout_ready,commands::resize_detail,commands::hide_detail,commands::detail_account,commands::set_detail_hover,commands::is_portable,commands::get_profile_info,commands::check_profile_status,commands::clear_profile_credentials,commands::create_isolated_profile,commands::get_runtime_info,commands::check_importable_config,commands::import_installed_config,commands::detect_network_proxy,commands::test_network_connection,commands::check_local_antigravity,commands::quick_add_antigravity_account,commands::open_external_url,commands::open_stepfun_login])
         .run(tauri::generate_context!()).expect("Pulse runtime failed");
 }

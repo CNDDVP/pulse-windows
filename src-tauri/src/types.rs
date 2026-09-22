@@ -49,6 +49,12 @@ pub struct ProviderUsage {
     pub duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hourly_usages: Option<Vec<HourlyUsage>>,
+    /// Sideband live output rate from local CLI transcript tails (Claude message.usage /
+    /// Codex token_count), tok/min rounded to an integer; None = 渠道日志无 usage 字段或
+    /// 速率不足 1（前端显示「—」）。与活动灯无关的旁路值：不参与点灯，也不落盘
+    /// （usage-cache 写出时清除，避免跨启动展示早已失效的速率）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tok_per_min: Option<f64>,
     #[serde(default)] pub web_auth_required: bool,
 }
 impl ProviderUsage {
@@ -93,6 +99,33 @@ pub struct NotificationSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct HotkeySettings { pub open_settings: Option<String>, pub toggle_rail: Option<String> }
+
+/// 订阅记录（Round4 项目三）：按来源手动登记订阅价，用于「本月用量成本 ≈ 订阅价几倍」。
+/// 跟随 AppSettings 走既有设置持久化通道；价格为本地估算口径（公开定价），仅供参考。
+/// 来源键为本地审计的来源标识（如 claude/codex/zcode），API 额度类供应商不出现在前端入口。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SubscriptionRecord {
+    pub price: f64,
+    pub currency: String,
+    pub cycle_days: u32,
+    /// YYYY-MM-DD 或留空（未设置）。
+    pub start_date: String,
+    pub note: String,
+}
+impl Default for SubscriptionRecord {
+    fn default()->Self { Self { price:0.0, currency:"USD".into(), cycle_days:30, start_date:String::new(), note:String::new() } }
+}
+impl SubscriptionRecord {
+    pub fn validate(&self)->Result<(),String> {
+        if !self.price.is_finite() || !(0.0..=1_000_000.0).contains(&self.price) { return Err("订阅价需为 0~100 万的有限数值".into()); }
+        if self.currency.len()!=3 || !self.currency.bytes().all(|b|b.is_ascii_uppercase()) { return Err("订阅币种需为三位大写代码（如 USD/CNY）".into()); }
+        if !(1..=366).contains(&self.cycle_days) { return Err("订阅周期需为 1~366 天".into()); }
+        if !self.start_date.is_empty() && chrono::NaiveDate::parse_from_str(&self.start_date,"%Y-%m-%d").is_err() { return Err("订阅开始日期需为 YYYY-MM-DD 或留空".into()); }
+        if self.note.chars().count()>500 { return Err("订阅备注过长（≤500 字）".into()); }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -179,6 +212,14 @@ pub struct AppSettings {
     pub rail_warnings: RailWarnings,
     pub notifications: NotificationSettings,
     pub hotkeys: HotkeySettings,
+    /// 订阅记录（Round4 项目三）：来源标识 → 订阅价/币种/周期/开始日/备注。
+    pub subscriptions: BTreeMap<String, SubscriptionRecord>,
+    /// 成本显示币种（Round4 项目二）：仅 "USD" | "CNY"；换算只发生在前端展示层，
+    /// 成本估算入库与导出始终保持 USD 原值。
+    pub display_currency: String,
+    /// USD→CNY 固定汇率（Round4 项目二）：纯本地设置，默认 7.2，可手改，不联网取汇；
+    /// 前端所有经此折算的数字必须就近标注「按固定汇率 X.XX 估算」。
+    pub usd_cny_rate: f64,
     pub providers: BTreeMap<String, ProviderConfig>,
 }
 impl Default for AppSettings {
@@ -194,7 +235,10 @@ impl Default for AppSettings {
             network_proxy:NetworkProxySettings::default(),
             collapsed_bar_color_mode:"auto".into(), collapsed_bar_color:None,
             rail_warnings:RailWarnings::default(),
-            notifications:NotificationSettings::default(), hotkeys:HotkeySettings::default(), providers }
+            notifications:NotificationSettings::default(), hotkeys:HotkeySettings::default(),
+            subscriptions:BTreeMap::new(),
+            display_currency:"USD".into(), usd_cny_rate:7.2,
+            providers }
     }
 }
 impl AppSettings {
@@ -209,7 +253,13 @@ impl AppSettings {
             || self.notifications.threshold.is_some_and(|t|![75,80,90,95].contains(&t))
             || [&self.hotkeys.open_settings,&self.hotkeys.toggle_rail].iter().any(|h|h.as_deref().is_some_and(|s|s.is_empty()||s.len()>64))
             || !self.free_x.is_finite() || !self.free_y.is_finite() || !(0.0..=1.0).contains(&self.free_x) || !(0.0..=1.0).contains(&self.free_y)
-            || self.providers.len()>64 { return Err("设置版本或参数无效".into()); }
+            || !["USD","CNY"].contains(&self.display_currency.as_str())
+            || !self.usd_cny_rate.is_finite() || !(0.01..=10000.0).contains(&self.usd_cny_rate)
+            || self.subscriptions.len()>64 || self.providers.len()>64 { return Err("设置版本或参数无效".into()); }
+        for (src,sub) in &self.subscriptions {
+            if !valid_id(src) { return Err(format!("订阅来源标识无效: {src}")); }
+            sub.validate().map_err(|e|format!("订阅记录 {src} 无效：{e}"))?;
+        }
         for p in &self.authorized_providers {
             if !PROVIDERS.iter().any(|(id, _)| id == p) {
                 return Err(format!("未知的已授权服务商: {p}"));
@@ -247,3 +297,83 @@ impl AppSettings {
     }
 }
 pub fn valid_id(id:&str)->bool { !id.is_empty() && id.len()<=100 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b==b'-' || b==b'_') }
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test]fn subscription_record_validation(){
+        let ok=SubscriptionRecord{price:20.0,currency:"CNY".into(),cycle_days:30,start_date:"2026-09-01".into(),note:"月付".into()};
+        assert!(ok.validate().is_ok());
+        let mut s=ok.clone();s.price=-0.01;assert!(s.validate().is_err());
+        s.price=f64::NAN;assert!(s.validate().is_err(),"非有限数值拒绝");
+        s.price=1_000_001.0;assert!(s.validate().is_err());
+        let mut s=ok.clone();s.currency="usd".into();assert!(s.validate().is_err(),"币种需三位大写");
+        let mut s=ok.clone();s.cycle_days=0;assert!(s.validate().is_err());
+        s.cycle_days=367;assert!(s.validate().is_err());
+        let mut s=ok.clone();s.start_date="2026/09/01".into();assert!(s.validate().is_err());
+        let mut s=ok.clone();s.start_date=String::new();assert!(s.validate().is_ok(),"开始日期可留空");
+        let mut s=ok.clone();s.note="x".repeat(501);assert!(s.validate().is_err());
+    }
+    #[test]fn app_settings_validate_guards_subscriptions(){
+        let mut s=AppSettings::default();
+        s.subscriptions.insert("claude".into(),SubscriptionRecord{price:20.0,currency:"USD".into(),cycle_days:30,start_date:String::new(),note:String::new()});
+        s.subscriptions.insert("zcode".into(),SubscriptionRecord::default());
+        assert!(s.validate().is_ok());
+        s.subscriptions.insert("bad source!".into(),SubscriptionRecord::default());
+        assert!(s.validate().is_err(),"来源键走 valid_id 白名单字符");
+        s.subscriptions.remove("bad source!");
+        s.subscriptions.insert("codex".into(),SubscriptionRecord{cycle_days:0,..SubscriptionRecord::default()});
+        assert!(s.validate().is_err());
+    }
+    #[test]fn settings_without_subscriptions_field_loads_with_defaults(){
+        // 旧 settings.json 没有 subscriptions 字段：serde default 兜底，加载不失败。
+        let mut root=serde_json::to_value(AppSettings::default()).unwrap();
+        root.as_object_mut().unwrap().remove("subscriptions");
+        let s:AppSettings=serde_json::from_value(root).unwrap();
+        assert!(s.subscriptions.is_empty());
+    }
+    #[test]fn display_currency_and_rate_validate(){
+        let mut s=AppSettings::default();
+        assert!(s.validate().is_ok());
+        assert_eq!(s.display_currency,"USD");
+        assert!((s.usd_cny_rate-7.2).abs()<1e-9);
+        s.display_currency="CNY".into();assert!(s.validate().is_ok());
+        s.display_currency="JPY".into();assert!(s.validate().is_err(),"仅支持 USD/CNY");
+        s.display_currency="cny".into();assert!(s.validate().is_err(),"币种代码区分大小写");
+        s.display_currency="CNY".into();s.usd_cny_rate=0.0;assert!(s.validate().is_err());
+        s.usd_cny_rate=-7.2;assert!(s.validate().is_err());
+        s.usd_cny_rate=f64::NAN;assert!(s.validate().is_err(),"非有限汇率拒绝");
+        s.usd_cny_rate=10001.0;assert!(s.validate().is_err());
+        s.usd_cny_rate=0.01;assert!(s.validate().is_ok());
+        s.usd_cny_rate=10000.0;assert!(s.validate().is_ok());
+    }
+    #[test]fn settings_without_currency_fields_load_with_defaults(){
+        // 旧 settings.json 没有 display_currency/usd_cny_rate：serde default 兜底，加载不失败。
+        let mut root=serde_json::to_value(AppSettings::default()).unwrap();
+        let obj=root.as_object_mut().unwrap();
+        obj.remove("display_currency");obj.remove("usd_cny_rate");
+        let s:AppSettings=serde_json::from_value(root).unwrap();
+        assert_eq!(s.display_currency,"USD");
+        assert!((s.usd_cny_rate-7.2).abs()<1e-9);
+    }
+    #[test]fn settings_reject_unknown_top_level_field(){
+        // deny_unknown_fields：前端不得私自上发未登记字段。
+        let mut root=serde_json::to_value(AppSettings::default()).unwrap();
+        root.as_object_mut().unwrap().insert("display_rate".into(),serde_json::json!(7.2));
+        assert!(serde_json::from_value::<AppSettings>(root).is_err());
+    }
+    #[test]fn provider_usage_rate_field_is_optional_on_wire(){
+        // tok_per_min 缺省/None 不上链路（skip_serializing_if），老缓存文件可正常反序列化。
+        let u=ProviderUsage::default();
+        assert!(u.tok_per_min.is_none());
+        assert!(!serde_json::to_string(&u).unwrap().contains("tok_per_min"));
+        let mut u2=u.clone();u2.tok_per_min=Some(42.0);
+        let back:ProviderUsage=serde_json::from_str(&serde_json::to_string(&u2).unwrap()).unwrap();
+        assert_eq!(back.tok_per_min,Some(42.0));
+        // 老 usage-cache.json 没有该字段 → 反序列化为 None（显示 —），不报错。
+        let mut v=serde_json::to_value(&u2).unwrap();
+        v.as_object_mut().unwrap().remove("tok_per_min");
+        let back2:ProviderUsage=serde_json::from_value(v).unwrap();
+        assert_eq!(back2.tok_per_min,None);
+    }
+}

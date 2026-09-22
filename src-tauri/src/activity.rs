@@ -65,6 +65,51 @@ pub fn classify_line(source:&str,v:&Value)->Option<Event>{
     }
 }
 
+/// 旁路 usage 提取（Round4 项目一）：从单行日志取输出 token 计数，与活动灯判定完全解耦
+/// （classify_line 不受影响，token 永不作为工作信号）。返回 (message id, 输出 token 数)：
+/// - Claude：message.usage.output_tokens，按 message.id 键控（流式块同 id 累计）；
+/// - Codex：token_count 的 info.total_token_usage.output_tokens（会话内累计；info 可为 null）；
+/// - 其余渠道返回 None —— 日志无 usage 字段就不产速率数据，上游显示「—」，绝不编造。
+pub fn usage_out(source:&str,v:&Value)->Option<(Option<String>,u64)>{
+    match source{
+        "claude"=>Some((Some(v.pointer("/message/id").and_then(|x|x.as_str())?.to_string()),
+            v.pointer("/message/usage/output_tokens").and_then(|x|x.as_u64())?)),
+        "codex"=>if v.pointer("/payload/type").and_then(|x|x.as_str())==Some("token_count"){
+            Some((None,v.pointer("/payload/info/total_token_usage/output_tokens").and_then(|x|x.as_u64())?))
+        }else{None},
+        _=>None,
+    }
+}
+
+/// 活动灯不消费 token；这里是纯旁路簿记：每会话文件一个 60 秒滑动窗口的输出 token 增量。
+/// - 增量：同 message id 的后续块按累计差计；新 message id 的首块计数即增量（流式已写出部分）；
+///   无键累计序列（Codex token_count）首个观测是基线、产 0，其后按累计差计。
+/// - 回退：累计值变小（会话重开/重试）按 0 计并重置基线，绝不产生负增量或虚增尖峰。
+/// - 滑出：窗口外样本丢弃，速率随之衰减为 None（上游显示「—」）。
+pub const RATE_WINDOW_SECS:i64=60;
+#[derive(Default)]
+pub struct RateWindow{samples:Vec<(i64,u64)>,last_key:Option<String>,last_total:Option<u64>}
+impl RateWindow{
+    /// 记录一次 usage 观测，返回计入窗口的增量（tok，>=0）。
+    pub fn observe(&mut self,now:i64,key:Option<&str>,value:u64)->u64{
+        let delta=match (key,self.last_key.as_deref()){
+            (Some(k),Some(prev)) if k==prev=>value.saturating_sub(self.last_total.unwrap_or(0)),
+            (Some(_),_)=>value,
+            (None,_)=>match self.last_total{Some(prev)=>value.saturating_sub(prev),None=>0},
+        };
+        self.last_key=key.map(str::to_string);
+        self.last_total=Some(value);
+        if delta>0{self.samples.push((now,delta));}
+        self.samples.retain(|(ts,_)|now-*ts<RATE_WINDOW_SECS);
+        delta
+    }
+    /// 窗口速率 tok/min：窗口增量 / 窗口秒数 × 60；窗口内无增量返回 None。
+    pub fn rate(&self,now:i64)->Option<f64>{
+        let total:u64=self.samples.iter().filter(|(ts,_)|now-*ts<RATE_WINDOW_SECS).map(|(_,d)|*d).sum();
+        if total==0{None}else{Some(total as f64*60.0/RATE_WINDOW_SECS as f64)}
+    }
+}
+
 fn roots()->Vec<(&'static str,PathBuf)>{
     let mut out=vec![];
     if let Some(p)=crate::providers::credentials::home_path("CLAUDE_CONFIG_DIR",".claude"){out.push(("claude",p.join("projects")))}
@@ -99,8 +144,10 @@ fn discover(root:&PathBuf,out:&mut Vec<PathBuf>,depth:usize){
 }
 
 /// Last classified event from the bytes appended after `offset`; returns the offset of the
-/// last complete line so a torn tail is retried after the next append.
-fn scan_appended(path:&PathBuf,offset:u64,budget:u64,source:&str)->Option<(Option<Event>,u64)>{
+/// last complete line so a torn tail is retried after the next append. Usage lines are fed
+/// to `rw` sideband-only; both paths parse exactly the lines the offset advance covers, so
+/// a retried torn tail never double-counts tokens.
+fn scan_appended(path:&PathBuf,offset:u64,budget:u64,source:&str,now:i64,rw:&mut RateWindow)->Option<(Option<Event>,u64)>{
     let mut f=fs::File::open(path).ok()?;
     let len=f.metadata().ok()?.len();
     if len<=offset{return None}
@@ -124,6 +171,7 @@ fn scan_appended(path:&PathBuf,offset:u64,budget:u64,source:&str)->Option<(Optio
         if line.is_empty(){continue}
         if let Ok(v)=serde_json::from_slice::<Value>(line){
             if let Some(ev)=classify_line(source,&v){last=Some(ev)}
+            if let Some((key,out))=usage_out(source,&v){rw.observe(now,key.as_deref(),out);}
         }
     }
     Some((last,offset+complete_end as u64))
@@ -141,6 +189,12 @@ pub struct Watcher{
     roots:Vec<(&'static str,PathBuf)>,
     files:HashMap<PathBuf,u64>,
     sessions:HashMap<PathBuf,(bool,i64)>,
+    /// 每会话文件的旁路速率窗口（Round4 项目一；与活动灯状态互不影响）。
+    rates:HashMap<PathBuf,RateWindow>,
+    /// 最近一次 poll 的按源速率快照：Some=f64 tok/min；None=该渠道日志无 usage 字段，
+    /// 或 60 秒窗口内无增量（速率衰减为 None）；<1 tok/min 另由 poll_activity 归一为
+    /// None（语义同 types.rs ProviderUsage::tok_per_min，前端显示「—」）。
+    rate_snapshot:HashMap<&'static str,Option<f64>>,
 }
 impl Watcher{
     fn source_of(&self,path:&PathBuf)->Option<&'static str>{
@@ -161,7 +215,7 @@ impl Watcher{
                 seen.insert(path.clone());
                 let len=fs::metadata(&path).map(|m|m.len()).unwrap_or(0);
                 let offset=match self.files.get(&path){
-                    Some(&o)=>if o<=len{o}else{self.files.insert(path.clone(),0);0},
+                    Some(&o)=>if o<=len{o}else{self.files.insert(path.clone(),0);self.rates.remove(&path);0},
                     None=>{self.files.insert(path.clone(),len);continue}
                 };
                 if len==offset{continue}
@@ -181,7 +235,10 @@ impl Watcher{
                         }else{false};
                         (if is_working{Some(Event::Working)}else{None},offset+take)
                     },
-                    _=>match scan_appended(&path,offset,take,source){Some((e,o))=>(e,o),None=>continue},
+                    _=>{
+                        let rw=self.rates.entry(path.clone()).or_default();
+                        match scan_appended(&path,offset,take,source,now,rw){Some((e,o))=>(e,o),None=>continue}
+                    },
                 };
                 self.files.insert(path.clone(),new_off);
                 match ev{
@@ -194,6 +251,16 @@ impl Watcher{
         // 回收已消失/轮转走的文件（日志清理、重命名），防长期运行内存缓涨。
         self.files.retain(|k,_|seen.contains(k));
         self.sessions.retain(|k,_|seen.contains(k));
+        self.rates.retain(|k,_|seen.contains(k));
+        // 按源聚合各会话窗口速率；无 usage 字段的渠道、或窗口内无增量的时刻，保持 None
+        // （诚实降级，前端显示 —；<1 由 lib.rs 归一为 None）。
+        let mut agg:HashMap<&'static str,f64>=HashMap::new();
+        for (path,rw) in &self.rates{
+            if let Some(src)=self.source_of(path){
+                if let Some(r)=rw.rate(now){*agg.entry(src).or_default()+=r;}
+            }
+        }
+        self.rate_snapshot=self.roots.iter().map(|(s,_)|(*s,agg.get(s).copied())).collect();
         // 会话级衰减：antigravity 无明确结束事件，20s 无请求即转空闲；其余 3 分钟衰减。
         let roots=&self.roots;
         self.sessions.retain(|p,(_,last)|{
@@ -213,6 +280,9 @@ impl Watcher{
         }
         states
     }
+    /// 最近一次 poll 的按源 tok/min 快照（配合 `poll` 使用）；None=渠道日志无 usage
+    /// 字段或 60 秒窗口内无增量（速率不足 1 由 lib.rs 归一为 None，前端显示「—」）。
+    pub fn rates(&self)->HashMap<&'static str,Option<f64>>{self.rate_snapshot.clone()}
 }
 
 #[cfg(test)]
@@ -367,5 +437,124 @@ mod tests{
         assert_eq!(w.poll(3_000).get("antigravity"),Some(&true),"streamGenerateContent = 工作中");
         // 20 秒无请求 → 衰减熄灭。
         assert_eq!(w.poll(3_000+21).get("antigravity"),Some(&false),"20s 无请求自动熄灯");
+    }
+    #[test]fn rate_window_increment(){
+        // 增量：基线不计数；无键累计序列按差计；同 message id 流式块按累计差计；
+        // 新 message id 的首块计数即增量。速率 = 窗口增量/窗口秒数×60。
+        let mut w=RateWindow::default();
+        assert_eq!(w.observe(1_000,None,1_000),0,"首个累计观测是基线，不产增量");
+        assert_eq!(w.observe(1_005,None,1_400),400);
+        assert_eq!(w.observe(1_010,None,1_900),500);
+        assert_eq!(w.rate(1_010),Some(900.0));
+        assert_eq!(w.observe(1_012,Some("m1"),30),30,"新 message id 首块即增量");
+        assert_eq!(w.observe(1_015,Some("m1"),80),50,"同 id 累计差");
+        assert_eq!(w.rate(1_015),Some(980.0));
+    }
+    #[test]fn rate_window_rollback(){
+        // 回退：累计值变小（会话重开/重试）按 0 计并重置基线；同 id 计数倒退钳为 0。
+        let mut w=RateWindow::default();
+        w.observe(1_000,None,5_000);
+        assert_eq!(w.observe(1_005,None,4_900),0,"累计回退不产增量");
+        assert_eq!(w.observe(1_010,None,5_050),150,"回退后按新基线继续");
+        assert_eq!(w.observe(1_020,Some("m1"),120),120);
+        assert_eq!(w.observe(1_030,Some("m1"),40),0,"同 id 计数倒退钳为 0");
+        assert_eq!(w.observe(1_040,Some("m2"),60),60);
+        assert_eq!(w.rate(1_040),Some(330.0),"窗口内只有真实增量 150+120+60");
+    }
+    #[test]fn rate_window_slide_out(){
+        // 滑出：60 秒窗口外的样本丢弃；窗口清空后速率归 None（上游显示 —）。
+        let mut w=RateWindow::default();
+        w.observe(1_000,None,100);w.observe(1_005,None,700);
+        assert_eq!(w.rate(1_010),Some(600.0));
+        assert_eq!(w.rate(1_005+59),Some(600.0),"窗口边缘内保持");
+        assert_eq!(w.rate(1_005+60),None,"60 秒滑出后无数据");
+        // 滑出后基线仍在，后续增量继续按差计。
+        assert_eq!(w.observe(1_070,None,900),200);
+        assert_eq!(w.rate(1_070),Some(200.0));
+    }
+    #[test]fn usage_extraction_claude_and_codex(){
+        let claude=json!({"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":4,"output_tokens":42}}});
+        assert_eq!(usage_out("claude",&claude),Some((Some("msg_1".into()),42)));
+        assert_eq!(usage_out("claude",&json!({"type":"user","message":{}})),None,"无 usage 字段不产速率");
+        assert_eq!(usage_out("claude",&json!({"type":"summary","summary":"x"})),None);
+        let codex=json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":1234},"last_token_usage":{"output_tokens":12}}}});
+        assert_eq!(usage_out("codex",&codex),Some((None,1234)));
+        assert_eq!(usage_out("codex",&json!({"type":"event_msg","payload":{"type":"token_count","info":null}})),None,"info 为 null 不产速率");
+        assert_eq!(usage_out("codex",&json!({"type":"event_msg","payload":{"type":"agent_reasoning"}})),None);
+        // 无 usage 概念的渠道一律 None（前端显示 —）。
+        assert_eq!(usage_out("zhipu",&json!({"event":"turn.started"})),None);
+        assert_eq!(usage_out("kimi",&json!({"envelope":{"type":"turn.started"}})),None);
+        assert_eq!(usage_out("antigravity",&json!({})),None);
+    }
+    #[test]fn usage_sideband_feeds_rate_without_changing_light(){
+        // 旁路语义：usage 行同时携带 end_turn（熄灯事件）——灯必须熄，速率照常采集。
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("s.jsonl");
+        fs::write(&p,format!("{}\n",json!({"type":"user"}))).unwrap();
+        let mut w=Watcher::new(vec![("claude",d.path().to_path_buf())]);
+        w.poll(9_000); // 首见跳历史
+        use std::io::Write;
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(format!("{}\n",json!({"type":"assistant","message":{"id":"msg_a","stop_reason":"end_turn","usage":{"output_tokens":42}}})).as_bytes()).unwrap();drop(f);
+        assert_eq!(w.poll(9_005).get("claude"),Some(&false),"end_turn 照常熄灯：token 不作为工作信号");
+        assert_eq!(w.rates().get("claude"),Some(&Some(42.0)),"usage 仍被旁路采集");
+        w.poll(9_005+60);
+        assert_eq!(w.rates().get("claude"),Some(&None),"60 秒滑出后速率归 None");
+    }
+    #[test]fn codex_token_count_feeds_rate_not_light(){
+        // token_count 是用量遥测：不点亮（沿用既有分类），但总量差进入速率窗口。
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("rollout.jsonl");
+        let line=|v:serde_json::Value|format!("{}\n",v);
+        let mut f=std::fs::OpenOptions::new().create(true).append(true).open(&p).unwrap();
+        f.write_all(line(json!({"type":"event_msg","payload":{"type":"task_started"}})).as_bytes()).unwrap();drop(f);
+        let mut w=Watcher::new(vec![("codex",d.path().to_path_buf())]);
+        w.poll(1_000); // 首见跳历史
+        use std::io::Write;
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(line(json!({"type":"event_msg","payload":{"type":"agent_reasoning"}})).as_bytes()).unwrap();drop(f);
+        assert_eq!(w.poll(2_000).get("codex"),Some(&true));
+        assert_eq!(w.rates().get("codex"),Some(&None),"基线观测不产速率");
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(line(json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":2_000}}}})).as_bytes()).unwrap();drop(f);
+        assert_eq!(w.poll(3_000).get("codex"),Some(&true),"token_count 不改变活动灯");
+        assert_eq!(w.rates().get("codex"),Some(&None),"首个 token_count 是基线（起步前的不计）");
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(line(json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":2_600}}}})).as_bytes()).unwrap();drop(f);
+        w.poll(4_000);
+        assert_eq!(w.rates().get("codex"),Some(&Some(600.0)),"总量差 600 进入窗口");
+    }
+    #[test]fn truncated_file_resets_rate_baseline(){
+        // 文件被截断重写（日志清理/会话重建）：旧累计基线必须丢弃，
+        // 否则新会话总量一旦超过旧基线会编造出一次虚假增量尖峰。
+        let d=tempfile::tempdir().unwrap();let p=d.path().join("rollout.jsonl");
+        let line=|v:serde_json::Value|format!("{}\n",v);
+        fs::write(&p,line(json!({"type":"event_msg","payload":{"type":"task_started"}}))).unwrap();
+        let mut w=Watcher::new(vec![("codex",d.path().to_path_buf())]);
+        w.poll(1_000); // 首见跳历史
+        use std::io::Write;
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(line(json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":1_600}}}})).as_bytes()).unwrap();drop(f);
+        let mut f=std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(line(json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":2_200}}}})).as_bytes()).unwrap();drop(f);
+        w.poll(2_000);
+        assert_eq!(w.rates().get("codex"),Some(&Some(600.0)));
+        fs::write(&p,line(json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":2_000}}}}))).unwrap();
+        w.poll(3_000);
+        assert_eq!(w.rates().get("codex"),Some(&None),"截断后基线重置，不把新总量差当增量");
+    }
+    #[test]fn multi_session_rates_sum_per_source(){
+        // 同源多会话并发：速率按源聚合（机器级吞吐），与活动灯"任一会话工作即亮"同源口径。
+        let d=tempfile::tempdir().unwrap();
+        let a=d.path().join("a.jsonl");let b=d.path().join("b.jsonl");
+        fs::write(&a,format!("{}\n",json!({"type":"user"}))).unwrap();
+        fs::write(&b,format!("{}\n",json!({"type":"user"}))).unwrap();
+        let mut w=Watcher::new(vec![("claude",d.path().to_path_buf())]);
+        w.poll(1_000); // 首见跳历史
+        use std::io::Write;
+        let mut f=std::fs::OpenOptions::new().append(true).open(&a).unwrap();
+        f.write_all(format!("{}\n",json!({"type":"assistant","message":{"id":"m1","usage":{"output_tokens":100}}})).as_bytes()).unwrap();drop(f);
+        let mut f=std::fs::OpenOptions::new().append(true).open(&b).unwrap();
+        f.write_all(format!("{}\n",json!({"type":"assistant","message":{"id":"m2","usage":{"output_tokens":250}}})).as_bytes()).unwrap();drop(f);
+        w.poll(2_000);
+        assert_eq!(w.rates().get("claude"),Some(&Some(350.0)));
     }
 }

@@ -1,6 +1,7 @@
 import {useEffect,useState} from "react";
 import type {AppSettings,ProviderUsage} from "../types";
 import {resetText,forecast,forecastKind,timingWindows,balanceText,balanceLabel} from "../presentation";
+import {convertBalance,formatMoney,normalizeDisplayCurrency,normalizeRate,rateEstimateNote} from "../lib/currency";
 import {HourlyUsageChart} from "./HourlyUsageChart";
 export function UsageDetailCard({usage,settings,placement,cardRef}:{usage:ProviderUsage;settings:AppSettings;placement?: "left" | "right" | "top" | "bottom";cardRef?:React.Ref<HTMLElement>}){
   const [now,setNow]=useState(()=>Date.now());useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),10000);return()=>clearInterval(t)},[]);
@@ -25,6 +26,11 @@ export function UsageDetailCard({usage,settings,placement,cardRef}:{usage:Provid
       />
     )}
     <strong className="text-sm">{usage.display_name}</strong><p className="text-zinc-500">{usage.plan_name}</p>
+    {/* Round4 项目一：实时速率行仅在账号处于工作状态时显示；None/缺省 = 渠道日志无
+        usage 字段或速率不足 1，显示「—」，不编造。值为后端取整后的 tok/min。 */}
+    {usage.is_active&&(
+      <p className="text-zinc-500 mt-0.5">速率：{typeof usage.tok_per_min==="number"&&usage.tok_per_min>=1?`${Math.round(usage.tok_per_min)} tok/min`:"—"}</p>
+    )}
     {usage.error_message && (
       <p className="text-amber-500 my-2">
         {usage.state === "stale"
@@ -60,16 +66,24 @@ export function UsageDetailCard({usage,settings,placement,cardRef}:{usage:Provid
         </div>
       );
     })}
-    {usage.balances.map((b,i)=>(
+    {usage.balances.map((b,i)=>{
+      // Round4 项目二：显示币种为 CNY 时，仅对 USD 余额按固定汇率给出折算参考行，
+      // 且必须就近标注口径；其余币种（原生 CNY、Credit 积分等）无换算口径，原样显示。
+      const displayCurrency=normalizeDisplayCurrency(settings.display_currency);
+      const fxRate=normalizeRate(settings.usd_cny_rate);
+      const converted=convertBalance(b.amount,b.currency,displayCurrency,fxRate);
+      const note=rateEstimateNote(displayCurrency,fxRate);
+      return (
       <div key={i} className="mt-3">
         <p className="text-base font-medium">{balanceLabel(usage.provider_id,b.currency)}：{balanceText(b.currency,b.amount)}</p>
+        {converted!=null&&note&&<p className="text-[11px] text-zinc-400 mt-0.5">≈ {formatMoney(converted,displayCurrency)}（{note}）</p>}
         {b.expires_at && (
           <p className="text-[11px] text-zinc-400 mt-0.5">
             到期时间：{new Date(b.expires_at).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
           </p>
         )}
       </div>
-    ))}
+    );})}
     {usage.hourly_usages && usage.hourly_usages.length > 0 && (
       <HourlyUsageChart usages={usage.hourly_usages} compact={true} />
     )}
