@@ -98,14 +98,13 @@ fn merge(
     if let Some(Ok(u)) = usages {
         let list = u.get("usages").or_else(|| u.get("items")).or_else(|| u.get("records")).unwrap_or(&u);
         if let Some(arr) = list.as_array() {
-            // S7：status 成功但 records 非法（字段缺失/类型变化）时显式警告，不再静默丢图。
-            let truncated = u.get("truncated").and_then(Value::as_bool).unwrap_or(false);
+            // 问题 7 & 8：判断 total 与分页上限，正常空记录不报错
+            let total = u.get("total").and_then(Value::as_u64).unwrap_or(arr.len() as u64);
+            let truncated = u.get("truncated").and_then(Value::as_bool).unwrap_or(false) || total > arr.len() as u64;
             if arr.len() >= 200 || truncated {
-                warnings.push("用量明细超过单页上限，图表仅统计已返回记录，可能不完整".into());
+                warnings.push(format!("用量明细达到上限（已获取 {} / 共 {} 条），图表仅统计已返回记录", arr.len(), total));
             }
-            if arr.is_empty() {
-                warnings.push("用量明细返回空记录（可能确实无消耗）".into());
-            }
+            // 合法空记录正常挂载，不产生任何不必要的警告
             merged.insert("hourly_usages".into(), list.clone());
         } else {
             warnings.push("用量明细响应结构异常（记录字段缺失或类型变化），24h 图表暂不可用".into());
@@ -202,8 +201,16 @@ pub fn source_label(secret: &str) -> &'static str {
     #[test] fn usage_truncated_flag_warns() {
         let records: Vec<_> = (0..50).map(|i| json!({"usage_time": i, "credit": 1.0})).collect();
         let v = merge(Some(Ok(plan())), None,
-            Some(Ok(json!({"status":1,"usages":records,"truncated":true})))).unwrap();
-        assert!(v["token_warning"].as_str().unwrap().contains("可能不完整"));
+            Some(Ok(json!({"status":1,"usages":records,"total":100})))).unwrap();
+        assert!(v["token_warning"].as_str().unwrap().contains("用量明细达到上限"));
+    }
+    #[test] fn empty_records_does_not_warn() {
+        // 问题 8：合法空记录不产生 warning
+        let v = merge(Some(Ok(plan())), Some(Ok(json!({"balance":15.0}))),
+            Some(Ok(json!({"status":1,"usages":[]}))));
+        assert!(v.is_ok());
+        let res = v.unwrap();
+        assert!(res.get("token_warning").is_none());
     }
     #[test] fn rpc_success_is_one_not_zero() {
         for status in [json!(1),json!("1")] {

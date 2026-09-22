@@ -11,7 +11,9 @@ pub struct WindowMemory{ pub step:Option<u8>, pub spent:bool, pub resets_at:Opti
 pub struct AccountMemory{
     pub windows:BTreeMap<String,WindowMemory>,
     pub failures:u32, pub outage_reported:bool,
-    pub low_balance_line:Option<f64>, pub low_balance_reported:bool,
+    pub low_balance_line:Option<f64>,
+    pub low_balance_currency:Option<String>,
+    pub low_balance_reported:bool,
 }
 #[derive(Default,Clone,Debug,PartialEq,Serialize,Deserialize)]
 pub struct Memory{ pub accounts:BTreeMap<String,AccountMemory> }
@@ -67,11 +69,18 @@ pub fn evaluate(fresh:&[ProviderUsage],settings:&AppSettings,mut memory:Memory,n
                 if let (Some(line),Some(cur))=(cfg.low_balance,cfg.low_balance_currency.as_deref()){
                     if let Some(b)=r.balances.iter().find(|b|b.currency.eq_ignore_ascii_case(cur)){
                         if b.amount<line{
-                            if !(mem.low_balance_reported&&mem.low_balance_line==Some(line)){
+                            let cur_matched = mem.low_balance_currency.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(cur));
+                            if !(mem.low_balance_reported && mem.low_balance_line == Some(line) && cur_matched){
                                 notices.push(Notice{account_id:r.account_id.clone(),kind:"low_balance",title:format!("{name} 余额不足"),body:format!("剩余 {:.2} {cur}，低于 {line:.2}",b.amount)});
-                                mem.low_balance_reported=true;mem.low_balance_line=Some(line);
+                                mem.low_balance_reported=true;
+                                mem.low_balance_line=Some(line);
+                                mem.low_balance_currency=Some(cur.to_string());
                             }
-                        }else{mem.low_balance_reported=false;}
+                        }else{
+                            mem.low_balance_reported=false;
+                            mem.low_balance_line=None;
+                            mem.low_balance_currency=None;
+                        }
                     }
                 }
             }
@@ -121,6 +130,9 @@ pub fn save(path:&std::path::Path,memory:&Memory)->Result<(),String>{crate::conf
         let mut r=ProviderUsage::reading("deepseek",vec![]);r.state="live".into();r.account_id="a".into();r.checked_at=Some(chrono::DateTime::from_timestamp(NOW,0).unwrap().to_rfc3339());r.balances=vec![Balance::new("CNY",3.0),Balance::new("USD",1.0)];
         let (n,m)=evaluate(&[r.clone()],&s,Memory::default(),NOW);assert_eq!(n.len(),1,"only the configured currency is compared");assert_eq!(n[0].kind,"low_balance");
         let (n2,m)=evaluate(&[r.clone()],&s,m,NOW);assert!(n2.is_empty());
-        r.balances[0].amount=20.0;let (_,m)=evaluate(&[r.clone()],&s,m,NOW);r.balances[0].amount=2.0;let (n3,_)=evaluate(&[r],&s,m,NOW);assert_eq!(n3.len(),1,"climbing back over the line re-arms");
+        r.balances[0].amount=20.0;let (_,m)=evaluate(&[r.clone()],&s,m,NOW);r.balances[0].amount=2.0;let (n3,m)=evaluate(&[r.clone()],&s,m,NOW);assert_eq!(n3.len(),1,"climbing back over the line re-arms");
+        // 切换币种即使阈值相同也必须重新提醒 (问题 10)
+        let mut s2 = s.clone(); s2.providers.get_mut("a").unwrap().low_balance_currency = Some("USD".into());
+        let (n4,_)=evaluate(&[r],&s2,m,NOW);assert_eq!(n4.len(),1,"switching currency re-alerts even if line matches");
     }
 }

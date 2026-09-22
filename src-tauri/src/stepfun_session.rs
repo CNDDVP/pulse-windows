@@ -29,15 +29,31 @@ fn record_renew_failure(account_id: &str, reason: String) {
     }
 }
 fn renew_cooldown_msg(account_id: &str) -> Option<String> {
-    let attempts = STEPFUN_RENEW_ATTEMPTS.lock().ok()?;
-    let map = attempts.as_ref()?;
+    let mut attempts = STEPFUN_RENEW_ATTEMPTS.lock().ok()?;
+    let map = attempts.as_mut()?;
     let key = format!("{}:{account_id}", crate::config::get_profile_id());
-    let st = map.get(&key)?;
-    Some(format!(
-        "自动续期冷却中（约 {} 秒后重试）；上次失败：{}",
-        st.cooldown_left().as_secs().max(1),
-        st.reason
-    ))
+    if let Some(st) = map.get(&key) {
+        let left = st.cooldown_left().as_secs();
+        if left > 0 {
+            return Some(format!(
+                "自动续期冷却中（约 {} 秒后重试）；上次失败：{}",
+                left,
+                st.reason
+            ));
+        } else {
+            map.remove(&key);
+        }
+    }
+    None
+}
+
+pub fn clear_renew_cooldown(account_id: &str) {
+    if let Ok(mut attempts) = STEPFUN_RENEW_ATTEMPTS.lock() {
+        if let Some(map) = attempts.as_mut() {
+            let key = format!("{}:{account_id}", crate::config::get_profile_id());
+            map.remove(&key);
+        }
+    }
 }
 
 async fn stepfun_cookies(
@@ -207,9 +223,12 @@ pub async fn renew_stepfun_token(
     let old = WindowsSecrets
         .get(account_id)?
         .ok_or("未保存网页登录凭据")?;
-    let token = crate::providers::credentials::parse_stepfun_credentials(&old)
-        .oasis_token
-        .ok_or("未保存网页 Token")?;
+    let creds = crate::providers::credentials::parse_stepfun_credentials(&old);
+    let token = creds.oasis_token.ok_or("未保存网页 Token")?;
+    // 问题 3: 严格区分"手填 Token"与"可续期网页登录会话"；无活跃 Session Cookie 时明确提示不支持自动续期，要求重新登录
+    if creds.cookie.as_deref().is_none_or(|c| c.trim().is_empty()) {
+        return Err("当前凭据仅包含手动填写的 Token，未保存网页登录会话，不支持自动续期；请点击「网页登录」完成会话绑定".into());
+    }
     let profile = crate::config::get_profile_id();
     let window = tauri::WebviewWindowBuilder::new(
         app,
@@ -228,25 +247,27 @@ pub async fn renew_stepfun_token(
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
         let mut checked = String::new();
         let mut network_failures = 0u32;
+        let mut retry_allowed = false;
         let mut last_stage = "等待会话 Cookie".to_string();
+        let mut last_failed_reason: Option<String> = None;
         while std::time::Instant::now() < deadline {
             let budget = deadline.saturating_duration_since(std::time::Instant::now());
             tokio::time::sleep(std::time::Duration::from_millis(600).min(budget)).await;
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(2).min(budget),
-                stepfun_cookies(&window),
-            )
-            .await
-            {
+            let cookie_timeout = std::time::Duration::from_secs(2).min(budget);
+            match tokio::time::timeout(cookie_timeout, stepfun_cookies(&window)).await {
                 Ok(Ok((candidate, cookie))) => {
                     if let Some(candidate) = candidate {
                         if !crate::providers::credentials::stepfun_renew_candidate(
                             &token,
                             &candidate,
                             chrono::Utc::now().timestamp(),
-                        ) || checked == candidate
-                        {
-                            last_stage = "会话未产生新 Token（可能需重新网页登录）".into();
+                        ) {
+                            if last_failed_reason.is_none() {
+                                last_stage = "会话未产生新 Token（可能需重新网页登录）".into();
+                            }
+                            continue;
+                        }
+                        if checked == candidate && !retry_allowed {
                             continue;
                         }
                         checked = candidate.clone();
@@ -255,8 +276,12 @@ pub async fn renew_stepfun_token(
                         let secret = serde_json::json!({"oasis_token":candidate,"cookie":cookie})
                             .to_string();
                         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                        if remaining.as_millis() == 0 {
+                            last_failed_reason = Some("续期总流程超时".into());
+                            break;
+                        }
                         match tokio::time::timeout(
-                            remaining,
+                            remaining.min(std::time::Duration::from_secs(6)),
                             crate::providers::stepfun::fetch(&secret, &http),
                         )
                         .await
@@ -275,45 +300,48 @@ pub async fn renew_stepfun_token(
                                         true,
                                     )
                                     .await?;
-                                    if let Ok(mut attempts) = STEPFUN_RENEW_ATTEMPTS.lock() {
-                                        if let Some(map) = attempts.as_mut() {
-                                            map.remove(&format!(
-                                                "{}:{account_id}",
-                                                crate::config::get_profile_id()
-                                            ));
-                                        }
-                                    }
+                                    clear_renew_cooldown(account_id);
                                     return Ok(candidate);
                                 }
-                                last_stage = "候选 Token 验证未通过（套餐接口拒绝）".into();
+                                retry_allowed = false;
+                                let err_detail = if v["web_auth_required"].as_bool().unwrap_or(false) {
+                                    "凭据已被注销或会话失效"
+                                } else {
+                                    "套餐接口返回空数据"
+                                };
+                                last_failed_reason = Some(format!("候选 Token 验证拒绝: {err_detail}"));
                             }
                             Ok(Err(e)) => {
-                                last_stage = format!("验证请求失败（网络超时）");
-                                let _ = e;
+                                retry_allowed = true;
+                                network_failures += 1;
+                                let err_msg = e.error_message.unwrap_or_else(|| "网络请求异常".into());
+                                last_failed_reason = Some(format!("验证请求失败: {err_msg}"));
+                                if network_failures > 2 {
+                                    break;
+                                }
                             }
                             Err(_) => {
-                                last_stage = "验证请求超时".into();
+                                retry_allowed = true;
+                                network_failures += 1;
+                                last_failed_reason = Some("验证请求超时".into());
+                                if network_failures > 2 {
+                                    break;
+                                }
                             }
                         }
                     }
                 }
                 Ok(Err(e)) => {
-                    last_stage = format!("读取 Cookie 失败：{e}");
+                    last_failed_reason = Some(format!("读取 Cookie 失败: {e}"));
                 }
                 Err(_) => {
-                    last_stage = "读取 Cookie 超时".into();
-                }
-            }
-            // S3：临时网络类失败有限重试（≤2 次）；身份/验证类错误不放宽。
-            if last_stage.contains("超时") || last_stage.contains("网络") {
-                network_failures += 1;
-                if network_failures > 2 {
-                    break;
+                    last_failed_reason = Some("读取 Cookie 耗时超出预算".into());
                 }
             }
         }
+        let final_reason = last_failed_reason.unwrap_or(last_stage);
         Err(format!(
-            "网页会话续期未成功（{last_stage}）；请在账号设置中重新网页登录。API 余额仍独立查询"
+            "网页会话续期未成功（{final_reason}）；请在账号设置中重新网页登录。API 余额仍独立查询"
         ))
     }
     .await;
@@ -359,12 +387,17 @@ pub async fn open_stepfun_login(
     if let Ok(Some(existing)) = WindowsSecrets.get(&account_id) {
         let _ = existing; // 本账号已有凭据不阻断（覆盖式重登）
     }
+    // S2: 为每个 Profile/账号建立独立的隔离会话标识与窗口，防止多账号登录相互覆盖或复用已有非目标会话
+    let win_label = format!("stepfun_login_{}", &account_id[..account_id.len().min(8)]);
+    if app.get_webview_window(&win_label).is_some() {
+        return Err("当前账号已有登录窗口正在进行中".into());
+    }
     let win = tauri::WebviewWindowBuilder::new(
         &app,
-        "stepfun_login",
+        &win_label,
         tauri::WebviewUrl::External("https://platform.stepfun.com/".parse().unwrap()),
     )
-    .title("阶跃星辰 StepFun - 网页登录（登录前请确认已退出其他账号）")
+    .title(format!("阶跃星辰 StepFun - 网页登录（绑定账号：{}）", account_id))
     .inner_size(860.0, 720.0)
     .center()
     .resizable(true)
@@ -380,7 +413,7 @@ pub async fn open_stepfun_login(
                 break;
             }
             let Ok((Some(token), cookie)) = stepfun_cookies(&win).await else {
-                if app.get_webview_window("stepfun_login").is_none() {
+                if app.get_webview_window(&win_label).is_none() {
                     break;
                 }
                 continue;

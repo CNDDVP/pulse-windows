@@ -34,10 +34,17 @@ pub struct ProxyDetection {
 /// 展示用代理地址脱敏：移除 userinfo 与敏感查询参数；实际连接配置不受影响。
 fn redact_proxy_url(url: &str) -> String {
     let mut out = url.to_string();
+    // 1. 移除 query (?...) 和 hash (#...)，防止泄露敏感 token 参数
+    if let Some(q) = out.find('?') {
+        out.truncate(q);
+    }
+    if let Some(h) = out.find('#') {
+        out.truncate(h);
+    }
+    // 2. 移除 userinfo 中的密码
     if let Some(scheme_end) = out.find("://") {
         let after = &out[scheme_end + 3..];
         if let Some(at) = after.find('@') {
-            // scheme://user:pass@host -> scheme://[user]@host（保留用户名占位，隐藏密码）
             let host_part = &after[at..];
             let user = after[..at].split(':').next().unwrap_or("");
             out = format!("{}{}{}", &out[..scheme_end + 3], user, host_part);
@@ -51,7 +58,8 @@ mod redact_tests {
     #[test] fn proxy_userinfo_password_hidden() {
         assert_eq!(super::redact_proxy_url("http://user:secret@127.0.0.1:7890"), "http://user@127.0.0.1:7890");
         assert_eq!(super::redact_proxy_url("http://127.0.0.1:7890"), "http://127.0.0.1:7890");
-        assert_eq!(super::redact_proxy_url("socks5://bob:p%40ss@proxy.local:1080"), "socks5://bob@proxy.local:1080");
+        assert_eq!(super::redact_proxy_url("socks5://bob:p%40ss@proxy.local:1080?token=secret123#anchor"), "socks5://bob@proxy.local:1080");
+        assert_eq!(super::redact_proxy_url("http://127.0.0.1:7890?key=abcdef"), "http://127.0.0.1:7890");
     }
 }
 

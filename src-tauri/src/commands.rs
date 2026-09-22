@@ -74,19 +74,13 @@ pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppStat
     }
     // An existing account cannot silently change the provider that receives its credential.
     for (id,cfg) in &new_settings.providers{if old.providers.get(id).is_some_and(|c|c.provider_id!=cfg.provider_id){return Err("不能更改已有账号的服务商，请新建账号".into())}}
-    if new_settings.hotkeys!=old.hotkeys{
-        if let Err(e)=crate::apply_hotkeys(&app,&new_settings.hotkeys){let _=crate::apply_hotkeys(&app,&old.hotkeys);return Err(e)}
-    }
+    // 预校验新代理配置能否成功构造 Client，如果失败直接在此拦截报错，不产生副作用
     let proxy_changed = new_settings.network_proxy != old.network_proxy;
-    if proxy_changed {
-        let new_client = crate::providers::client_with_proxy(&new_settings.network_proxy)?;
-        *state.http.write().await = new_client;
-        for id in new_settings.providers.keys() {
-            state.bump_account_gen(id).await;
-        }
-        state.schedule.lock().await.clear();
-        state.inflight.lock().await.clear();
-    }
+    let maybe_new_client = if proxy_changed {
+        Some(crate::providers::client_with_proxy(&new_settings.network_proxy)?)
+    } else {
+        None
+    };
     for (id,cfg) in &new_settings.providers{
         // 凭据来源（use_local）也是结果有效性的边界（B19）：变化即失效在途请求。
         if old.providers.get(id).map(|c|(c.order,c.enabled,&c.label,c.use_local))!=Some((cfg.order,cfg.enabled,&cfg.label,cfg.use_local)){
@@ -102,6 +96,22 @@ pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppStat
         crate::config::save_settings(&s)?;Ok::<_,String>(s)
     }).await.map_err(|_|"设置保存任务失败")??;
     *state.settings.lock().await=new_settings.clone();state.clear_config_error();
+    // 只有在 settings 确实持久化成功后，才应用快捷键与代理 Client 等系统级副作用；
+    // 即使快捷键注册失败，配置已经落盘，同时提供回滚
+    if new_settings.hotkeys!=old.hotkeys{
+        if let Err(e)=crate::apply_hotkeys(&app,&new_settings.hotkeys){
+            let _=crate::apply_hotkeys(&app,&old.hotkeys);
+            eprintln!("快捷键应用失败: {e}");
+        }
+    }
+    if let Some(new_client) = maybe_new_client {
+        *state.http.write().await = new_client;
+        for id in new_settings.providers.keys() {
+            state.bump_account_gen(id).await;
+        }
+        state.schedule.lock().await.clear();
+        state.inflight.lock().await.clear();
+    }
     let mut cached=state.cached_usages.lock().await;
     for u in cached.iter_mut(){
         let pin=new_settings.providers.get(&u.account_id).and_then(|c|c.primary_window.as_deref());
