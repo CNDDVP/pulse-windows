@@ -101,7 +101,11 @@ pub fn parse_stepfun_credentials(secret: &str) -> StepFunCredentials {
                 .map(str::trim)
                 .filter(|k| !k.is_empty())
                 .map(str::to_string);
-            let web_bound = v.get("web_bound").and_then(Value::as_bool).unwrap_or(false);
+            // web_bound 迁移：JSON 里 token+cookie 并存的格式只有应用的网页登录
+            // 保存流程会产生（手动粘贴走下方裸串分支，恒为 false）——旧凭据缺该
+            // 字段时按 true 迁移，避免升级后现有可续期会话被误判为手填而拒绝续期
+            let web_bound = v.get("web_bound").and_then(Value::as_bool)
+                .unwrap_or(oasis_token.is_some() && cookie.is_some());
             if api_key.is_some() || oasis_token.is_some() || cookie.is_some() {
                 return StepFunCredentials { api_key, oasis_token, cookie, web_bound };
             }
@@ -143,6 +147,20 @@ pub fn merge_stepfun_credentials(old: &str, update: &str) -> String {
     #[test]fn nested_claude(){assert_eq!(from_json("claude",&serde_json::json!({"claudeAiOauth":{"accessToken":"synthetic"}})).unwrap().token,"synthetic");}
     #[test]fn sqlite_utf16(){let b:Vec<u8>="synthetic".encode_utf16().flat_map(u16::to_le_bytes).collect();assert_eq!(decode_blob(&b).as_deref(),Some("synthetic"));}
     #[test]fn no_api_key_as_codex_oauth(){assert!(from_json("codex",&serde_json::json!({"OPENAI_API_KEY":"synthetic"})).is_none());}
+    #[test]fn web_bound_migration_legacy_json(){
+        // 旧版网页登录保存的凭据（无 web_bound 字段，token+cookie 并存）→ 迁移为 true
+        let legacy = parse_stepfun_credentials(r#"{"api_key":"k","oasis_token":"eyJt.jw.t","cookie":"Oasis-Token=eyJt.jw.t; INGRESSCOOKIE=x"}"#);
+        assert!(legacy.web_bound, "旧 JSON 格式（应用网页登录产物）应迁移为 web_bound=true");
+        // 显式 false 尊重存储值
+        let explicit = parse_stepfun_credentials(r#"{"oasis_token":"t","web_bound":false}"#);
+        assert!(!explicit.web_bound);
+    }
+    #[test]fn web_bound_manual_paste_stays_false(){
+        // 手动粘贴裸 Token / 整串 Cookie → 恒为 false，不误判为可续期会话
+        assert!(!parse_stepfun_credentials("eyJhbGciOiJ9.sig.sig").web_bound);
+        assert!(!parse_stepfun_credentials("Oasis-Token=eyJx.y.z; other=1").web_bound);
+        assert!(!parse_stepfun_credentials(r#"{"api_key":"sk-only"}"#).web_bound);
+    }
     #[test]fn test_stepfun_credentials_parsing(){
         let c1 = parse_stepfun_credentials("Jbz085Nk3L7Yk294...");
         assert_eq!(c1.api_key.as_deref(), Some("Jbz085Nk3L7Yk294..."));

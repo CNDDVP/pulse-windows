@@ -141,6 +141,7 @@ async fn fetch_usages_paginated(
     let mut all_records: Vec<Value> = Vec::new();
     let mut first_response: Option<Result<Value, ProviderUsage>> = None;
     let mut truncated = false;
+    let mut pages_fetched = 0u32;
 
     for page in 1..=3u32 {
         let mut req = http.post("https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanUsages")
@@ -159,6 +160,7 @@ async fn fetch_usages_paginated(
                 let list = v.get("usages").or_else(|| v.get("items")).or_else(|| v.get("records"));
                 if let Some(arr) = list.and_then(Value::as_array) {
                     all_records.extend(arr.iter().cloned());
+                    pages_fetched = page;
                     let total = v.get("total").and_then(Value::as_u64).unwrap_or(0);
                     if (all_records.len() as u64) >= total || page >= 3 {
                         truncated = (all_records.len() as u64) < total;
@@ -177,10 +179,11 @@ async fn fetch_usages_paginated(
         }
     }
 
-    // 多页合并：把合并后的 records 和 truncated 标记写回第一个响应
+    // 多页合并：按实际拉取页数判断（服务端可能缩小页大小，不能用固定 200 条阈值），
+    // 把合并后的 records 和 truncated 标记写回第一个响应
     if let Some(Ok(v)) = &mut first_response {
         if let Some(obj) = v.as_object_mut() {
-            if all_records.len() > 200 {
+            if pages_fetched > 1 {
                 obj.insert("usages".to_string(), Value::Array(all_records));
             }
             if truncated {

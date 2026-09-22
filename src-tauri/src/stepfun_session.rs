@@ -333,6 +333,15 @@ pub async fn renew_stepfun_token(
                                 if v.get("plan_credit_rate_limit").is_some()
                                     && !v["web_auth_required"].as_bool().unwrap_or(false)
                                 {
+                                    // P2 #7：保存前检查剩余预算——保存涉及凭据管理器与磁盘写入，
+                                    // 虽为原子操作仍需有界；预算不足时不强行保存，留待下轮刷新
+                                    if deadline.saturating_duration_since(std::time::Instant::now())
+                                        < std::time::Duration::from_secs(2)
+                                    {
+                                        last_failed_reason =
+                                            Some("候选有效但续期预算不足，保存延后至下轮".into());
+                                        break;
+                                    }
                                     save_stepfun_login_token(
                                         app,
                                         account_id,
@@ -376,14 +385,6 @@ pub async fn renew_stepfun_token(
                                 }
                             }
                         }
-                    }
-                    // P2 #7：保存前检查剩余预算——保存涉及凭据管理器与磁盘写入，
-                    // 虽为原子操作仍需有界；预算不足时留待下轮刷新处理
-                    if deadline.saturating_duration_since(std::time::Instant::now())
-                        < std::time::Duration::from_secs(2)
-                    {
-                        last_failed_reason = Some("续期预算不足，保存延后".into());
-                        break;
                     }
                 }
                 Ok(Err(e)) => {
@@ -482,6 +483,11 @@ pub async fn open_stepfun_login(
             if checked == token && !login_retry_allowed {
                 continue;
             }
+            if checked != token {
+                // 新 Token 出现（用户重新登录）：重置该 Token 的重试预算
+                login_network_failures = 0;
+                login_retry_allowed = false;
+            }
             checked = token.clone();
             if crate::providers::credentials::stepfun_expires_at(&token)
                 .is_some_and(|t| t <= chrono::Utc::now().timestamp() + 60)
@@ -494,13 +500,15 @@ pub async fn open_stepfun_login(
                 Ok(v) if v.get("plan_credit_rate_limit").is_some()&&!v["web_auth_required"].as_bool().unwrap_or(false) => {
                     login_retry_allowed = false;
                 }
-                // P2 #4：临时网络故障对同一 Token 有限重试；认证拒绝不重试
+                // P2 #4：临时网络故障对同一 Token 有限重试（≤2 次）；认证拒绝不重试
                 Err(e) => {
                     let code = e.error_code.as_deref().unwrap_or("");
                     login_retry_allowed = matches!(code, "timeout" | "network" | "rate_limited");
                     login_network_failures += 1;
                     if !login_retry_allowed || login_network_failures > 2 {
-                        continue;
+                        // 达到上限或不可重试：清除标志，同一 Token 不再重复验证，
+                        // 循环继续等待浏览器产生新 Token（用户可能重新登录）
+                        login_retry_allowed = false;
                     }
                     continue;
                 }
