@@ -3,7 +3,8 @@ use std::{collections::BTreeMap,fs::{self,File},io::{BufRead,BufReader,Read,Seek
 use serde::{Serialize,Deserialize};use serde_json::Value;use sha2::{Digest,Sha256};
 use rusqlite::{Connection,params};
 #[derive(Default,Clone,Serialize,Deserialize)]struct State{model:String,totals:[u64;4],bad_lines:u64}
-#[derive(Debug,Clone,Serialize)]pub struct Row{pub source:String,pub model:String,pub day:String,pub hour:String,pub input:u64,pub output:u64,pub cache_read:u64,pub cache_write:u64,pub partial:bool}
+#[derive(Debug,Clone,Serialize,Deserialize)]pub struct Row{pub source:String,pub model:String,pub day:String,pub hour:String,pub input:u64,pub output:u64,pub cache_read:u64,pub cache_write:u64,pub partial:bool}
+#[derive(Debug,Serialize)]pub struct ArchivedDay{pub day:String,pub source:String,pub model:String,pub input:u64,pub output:u64,pub cache_read:u64,pub cache_write:u64}
 #[derive(Debug,Serialize)]pub struct Summary{pub rows:Vec<Row>,pub scanned_files:usize,pub skipped_files:usize,pub changed_files:usize,pub days:u32,pub partial:bool,pub cost_estimate:Option<f64>,pub notes:Vec<String>,pub duration_ms:Option<u64>,pub coverage_gap:bool}
 struct Event{id:String,ts:i64,model:String,counts:[u64;4],partial:bool}
 fn count(v:&Value)->u64{v.as_u64().unwrap_or(0)}
@@ -31,7 +32,8 @@ fn parse(source:&str,v:&Value,state:&mut State,offset:u64)->Option<Event>{
         if counts.iter().sum::<u64>()==0{return None}
         return Some(Event{id:format!("{ts}-{:x}",Sha256::digest(serde_json::to_vec(&totals).ok()?)),ts,model:if state.model.is_empty(){"unknown".into()}else{state.model.clone()},counts,partial:reset||delta[2]>delta[0]||state.model.is_empty()});
     }
-    if source=="claude"{
+    // ZCode CLI 的会话转录与 Claude Code 同构（assistant 消息带 message.usage），复用同一解析分支。
+    if source=="claude"||source=="zcode"{
         if v["type"]!="assistant"{return None}let m=&v["message"];let u=m.get("usage")?;
         let ts=timestamp(&v["timestamp"])?;
         let counts=[count(&u["input_tokens"]),count(&u["output_tokens"]),count(&u["cache_read_input_tokens"]),count(&u["cache_creation_input_tokens"])];
@@ -76,7 +78,7 @@ where F: Fn() -> bool {
             let name=path.file_name().and_then(|s|s.to_str()).unwrap_or("");
             if ["cline","roocode","kilocode"].contains(&source) && name!="ui_messages.json"{continue}
             if source=="gemini" && !name.starts_with("session-"){continue}
-            if ["claude","codex","openclaw"].contains(&source)&&path.extension().is_none_or(|e|e!="jsonl"){continue}
+            if ["claude","codex","openclaw","zcode"].contains(&source)&&path.extension().is_none_or(|e|e!="jsonl"){continue}
             out.push((source.into(),path));
         }
     }
@@ -95,6 +97,9 @@ where F: Fn() -> bool {
     let mut out=vec![];
     let mut truncated=false;
     if let Some(root)=crate::providers::credentials::home_path("CLAUDE_CONFIG_DIR",".claude"){collect(&root.join("projects"),"claude",&mut out,&mut truncated,is_cancelled)?;}
+    // ZCode：标准布局 ~/.zcode/projects；部分安装（实测）把 Claude 同构转录放在
+    // ~/.zcode/v2/agent-config/claude/<hash>/projects/ 下。两个根都收，目录缺失时 discover 静默跳过。
+    if let Some(root)=crate::providers::credentials::home_path("ZCODE_HOME",".zcode"){collect(&root.join("projects"),"zcode",&mut out,&mut truncated,is_cancelled)?;collect(&root.join("v2").join("agent-config").join("claude"),"zcode",&mut out,&mut truncated,is_cancelled)?;}
     if let Some(root)=crate::providers::credentials::home_path("CODEX_HOME",".codex"){collect(&root.join("sessions"),"codex",&mut out,&mut truncated,is_cancelled)?;collect(&root.join("archived_sessions"),"codex",&mut out,&mut truncated,is_cancelled)?;}
     if let Some(root)=crate::providers::credentials::home_path("GEMINI_CLI_HOME",".gemini"){collect(&root.join("tmp"),"gemini",&mut out,&mut truncated,is_cancelled)?;}
     if let Some(home)=dirs::home_dir(){collect(&home.join(".openclaw/agents"),"openclaw",&mut out,&mut truncated,is_cancelled)?;}
@@ -104,7 +109,7 @@ where F: Fn() -> bool {
 fn database(path:&Path)->Result<Connection,String>{
     let db=Connection::open(path).map_err(|_|"无法打开统计缓存")?;
     db.busy_timeout(std::time::Duration::from_secs(2)).map_err(|_|"统计缓存锁定")?;
-    db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,source TEXT,size INTEGER,mtime INTEGER,prefix TEXT,offset INTEGER,state TEXT); CREATE TABLE IF NOT EXISTS events(path TEXT,source TEXT,event_id TEXT,ts INTEGER,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,partial INTEGER,PRIMARY KEY(path,event_id)); CREATE INDEX IF NOT EXISTS idx_events_source_ts ON events(source, ts);").map_err(|_|"无法初始化统计缓存")?;Ok(db)
+    db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,source TEXT,size INTEGER,mtime INTEGER,prefix TEXT,offset INTEGER,state TEXT); CREATE TABLE IF NOT EXISTS events(path TEXT,source TEXT,event_id TEXT,ts INTEGER,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,partial INTEGER,PRIMARY KEY(path,event_id)); CREATE INDEX IF NOT EXISTS idx_events_source_ts ON events(source, ts); CREATE TABLE IF NOT EXISTS daily_archive(day TEXT,source TEXT,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,PRIMARY KEY(day,source,model)); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER);").map_err(|_|"无法初始化统计缓存")?;Ok(db)
 }
 pub fn scan(days:u32)->Result<Summary,String>{
     scan_with_cancel(days,&||false)
@@ -203,6 +208,14 @@ where F: Fn() -> bool + Send + Sync {
         tx.execute("DELETE FROM files WHERE path NOT IN (SELECT path FROM live)",[]).map_err(|_|"db")?;
         tx.commit().map_err(|_|"commit")?;
     }
+    // 已删除会话用量保留：events 随源日志清理而消失（Claude Code 默认 30 天）。
+    // 按 day/source/model 归档"观测到的最大日聚合"——重算值变小不降低归档，
+    // 既在源文件被清理后保留历史，也防止重扫双计。
+    {
+        let tx=db.transaction().map_err(|_|"lock")?;
+        archive_daily(&tx)?;
+        tx.commit().map_err(|_|"commit")?;
+    }
     let mut stmt=db.prepare("SELECT source,model,ts,MAX(input),MAX(output),MAX(cache_read),MAX(cache_write),MAX(partial) FROM events WHERE ts>=? GROUP BY source,event_id").map_err(|_|"统计查询失败")?;
     let result=stmt.query_map([window_start_sec],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,[r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?],r.get::<_,bool>(7)?))).map_err(|_|"统计读取失败")?;
     let mut buckets:BTreeMap<(String,String,String,String),Row>=BTreeMap::new();
@@ -253,6 +266,33 @@ where F: Fn() -> bool + Send + Sync {
         notes.push(format!("有 {unpriced} 组记录来自未知定价的模型，未计入费用估算（已计价 {priced} 组）。"));
     }
     Ok(Summary{rows,scanned_files:scanned,skipped_files:skipped,changed_files:changed,days,partial,cost_estimate,notes,duration_ms,coverage_gap})
+}
+
+/// 事件按 (本地时区 day,source,model) 聚合后 upsert 进 daily_archive。
+/// 先按 (source,event_id) 取 MAX 去重（与 Summary 口径一致，跨文件移动的事件不双计），
+/// day 与 Row.day 同为本地时区；upsert 用 max(旧,新) 保留历史峰值。
+/// day 键的时区偏移在首次归档时冻结进 meta 表：归档只有 max-upsert、没有删除/回退路径，
+/// 若每次扫描都按当前系统时区切天，时区变更会把同一批事件重切到新 day 键而旧行永不修正
+/// （趋势按 day 求和即永久双计）；冻结偏移保证 day 键稳定，Summary 每次全量重算不受影响。
+fn archive_daily(db:&Connection)->Result<(),String>{
+    let now_off=chrono::Local::now().offset().local_minus_utc();
+    db.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('archive_tz_offset_secs',?)",[now_off]).map_err(|_|"归档写入失败")?;
+    let secs:Option<i64>=db.query_row("SELECT value FROM meta WHERE key='archive_tz_offset_secs'",[],|r|r.get(0)).ok();
+    let tz=secs.and_then(|s|i32::try_from(s).ok()).and_then(chrono::FixedOffset::east_opt).unwrap_or_else(||*chrono::Local::now().offset());
+    let mut stmt=db.prepare("SELECT source,model,ts,MAX(input),MAX(output),MAX(cache_read),MAX(cache_write) FROM events GROUP BY source,event_id").map_err(|_|"归档查询失败")?;
+    let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,[r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?]))).map_err(|_|"归档读取失败")?;
+    let mut buckets:BTreeMap<(String,String,String),[u64;4]>=BTreeMap::new();
+    for (source,model,ts,c) in rows.flatten(){let Some(day)=chrono::DateTime::from_timestamp(ts,0).map(|d|d.with_timezone(&tz).format("%Y-%m-%d").to_string())else{continue};let e=buckets.entry((day,source,model)).or_insert([0;4]);for i in 0..4{e[i]+=c[i];}}
+    let mut up=db.prepare("INSERT INTO daily_archive(day,source,model,input,output,cache_read,cache_write) VALUES(?,?,?,?,?,?,?) ON CONFLICT(day,source,model) DO UPDATE SET input=MAX(input,excluded.input),output=MAX(output,excluded.output),cache_read=MAX(cache_read,excluded.cache_read),cache_write=MAX(cache_write,excluded.cache_write)").map_err(|_|"归档写入失败")?;
+    for ((day,source,model),c) in &buckets{up.execute(params![day,source,model,c[0],c[1],c[2],c[3]]).map_err(|_|"归档写入失败")?;}
+    Ok(())
+}
+/// 读取按天归档的历史用量（day 升序），供趋势与导出使用。
+pub fn archived_daily(db_path:&Path)->Result<Vec<ArchivedDay>,String>{
+    let db=database(db_path)?;
+    let mut stmt=db.prepare("SELECT day,source,model,input,output,cache_read,cache_write FROM daily_archive ORDER BY day ASC,source ASC,model ASC").map_err(|_|"归档读取失败")?;
+    let rows=stmt.query_map([],|r|Ok(ArchivedDay{day:r.get(0)?,source:r.get(1)?,model:r.get(2)?,input:r.get(3)?,output:r.get(4)?,cache_read:r.get(5)?,cache_write:r.get(6)?})).map_err(|_|"归档读取失败")?;
+    Ok(rows.flatten().collect())
 }
 
 fn estimate_model_cost(model: &str, counts: &[u64; 4]) -> Option<f64> {
@@ -382,6 +422,100 @@ fn estimate_model_cost(model: &str, counts: &[u64; 4]) -> Option<f64> {
         let res=scan_paths_with_cancel(7,&db,vec![("claude".into(),file1),("claude".into(),file2)],false,&cancel_fn);
         assert!(res.is_err());
         assert_eq!(res.unwrap_err(),"已取消");
+    }
+    #[test]fn daily_archive_keeps_max_observed_day_totals(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");let file=d.path().join("a.jsonl");
+        let ts="2020-01-15T12:00:00Z";let day=chrono::DateTime::from_timestamp(chrono::DateTime::parse_from_rfc3339(ts).unwrap().timestamp(),0).unwrap().with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
+        let v=json!({"type":"assistant","timestamp":ts,"message":{"id":"m1","model":"x","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":7,"cache_creation_input_tokens":3}}});
+        fs::write(&file,format!("{v}\n")).unwrap();
+        scan_paths(7,&db,vec![("claude".into(),file.clone())],false).unwrap();
+        let rows=archived_daily(&db).unwrap();
+        assert_eq!(rows.len(),1);assert_eq!(rows[0].day,day);assert_eq!(rows[0].source,"claude");assert_eq!(rows[0].model,"x");
+        assert_eq!((rows[0].input,rows[0].output,rows[0].cache_read,rows[0].cache_write),(100,20,7,3));
+        // 源文件被重写为更小用量：重算变小不得降低归档。
+        let small=json!({"type":"assistant","timestamp":ts,"message":{"id":"m1","model":"x","usage":{"input_tokens":30,"output_tokens":5}}});
+        fs::write(&file,format!("{small}\n")).unwrap();
+        scan_paths(7,&db,vec![("claude".into(),file)],false).unwrap();
+        let kept=archived_daily(&db).unwrap();
+        assert_eq!((kept[0].input,kept[0].output,kept[0].cache_read,kept[0].cache_write),(100,20,7,3),"a smaller recomputed day total must not lower the archive");
+        // 源文件被清理（events 随 live 清理消失）：归档保留历史峰值。
+        let gone=scan_paths(7,&db,vec![],false).unwrap();
+        assert!(gone.rows.is_empty());
+        assert_eq!(archived_daily(&db).unwrap()[0].input,100,"archived totals must survive source-side log cleanup");
+    }
+    #[test]fn daily_archive_keys_span_day_source_model(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let day_of=|ts:&str|chrono::DateTime::from_timestamp(chrono::DateTime::parse_from_rfc3339(ts).unwrap().timestamp(),0).unwrap().with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
+        let (t1,t2)=("2020-01-15T12:00:00Z","2020-02-15T12:00:00Z");let (day1,day2)=(day_of(t1),day_of(t2));
+        let ev=|ts:&str,id:&str,model:&str|json!({"type":"assistant","timestamp":ts,"message":{"id":id,"model":model,"usage":{"input_tokens":10,"output_tokens":2}}});
+        let mut paths:Vec<(String,PathBuf)>=vec![];
+        for (name,body) in [("d1",format!("{}\n",ev(t1,"a","x"))),("d2",format!("{}\n",ev(t2,"b","x"))),("d3",format!("{}\n{}\n",ev(t1,"c","y"),ev(t1,"d","y")))]{let f=d.path().join(format!("{name}.jsonl"));fs::write(&f,body).unwrap();paths.push(("claude".into(),f));}
+        let ctx=json!({"type":"turn_context","payload":{"model":"gpt"}});
+        let cev=json!({"type":"event_msg","timestamp":t1,"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":8}}}});
+        let f4=d.path().join("rollout.jsonl");fs::write(&f4,format!("{ctx}\n{cev}\n")).unwrap();paths.push(("codex".into(),f4));
+        scan_paths(90,&db,paths,false).unwrap();
+        let rows=archived_daily(&db).unwrap();
+        assert_eq!(rows.len(),4,"one archive row per (day,source,model)");
+        let mut got:Vec<_>=rows.iter().map(|r|(r.day.clone(),r.source.clone(),r.model.clone(),r.input,r.output)).collect();got.sort();
+        assert_eq!(got,vec![(day1.clone(),"claude".into(),"x".into(),10,2),(day1.clone(),"claude".into(),"y".into(),20,4),(day1,"codex".into(),"gpt".into(),40,8),(day2,"claude".into(),"x".into(),10,2)]);
+        assert!(rows.windows(2).all(|w|w[0].day<=w[1].day),"archived days must come back in ascending order");
+    }
+    #[test]fn daily_archive_day_keys_are_frozen_against_timezone_changes(){
+        let d=tempfile::tempdir().unwrap();let db_path=d.path().join("cache.db");
+        // 模拟“建库后的系统时区变更”：预置冻结偏移 = 当前本地偏移 ∓7h（任一真实偏移下都合法）。
+        let local_off=chrono::Local::now().offset().local_minus_utc();
+        let shift=if local_off>=0{-25_200}else{25_200};
+        let frozen=chrono::FixedOffset::east_opt(local_off+shift).unwrap();
+        let db=database(&db_path).unwrap();
+        db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('archive_tz_offset_secs',?)",[frozen.local_minus_utc()]).unwrap();
+        drop(db);
+        // 事件选在冻结偏移与本地偏移落入不同日的时刻（本地午夜附近）。
+        let base=chrono::Local::now().date_naive();
+        let local_dt=if shift<0{base.and_hms_opt(0,1,0).unwrap()}else{(base-chrono::Duration::days(1)).and_hms_opt(23,59,0).unwrap()};
+        let ts=local_dt.and_local_timezone(chrono::Local).earliest().unwrap().timestamp();
+        let day_of=|tz:chrono::FixedOffset|chrono::DateTime::from_timestamp(ts,0).unwrap().with_timezone(&tz).format("%Y-%m-%d").to_string();
+        let (frozen_day,local_day)=(day_of(frozen),day_of(*chrono::Local::now().offset()));
+        assert_ne!(frozen_day,local_day,"test setup must place the event on different days under the two offsets");
+        let v=json!({"type":"assistant","timestamp":chrono::DateTime::from_timestamp(ts,0).unwrap().to_rfc3339(),"message":{"id":"m1","model":"x","usage":{"input_tokens":10,"output_tokens":2}}});
+        let file=d.path().join("tz.jsonl");fs::write(&file,format!("{v}\n")).unwrap();
+        scan_paths(90,&db_path,vec![("claude".into(),file)],false).unwrap();
+        let rows=archived_daily(&db_path).unwrap();
+        assert_eq!(rows.len(),1);
+        assert_eq!(rows[0].day,frozen_day,"archive day keys must follow the offset frozen at first archive, not the current system timezone");
+    }
+    #[test]fn zcode_transcripts_reuse_claude_parsing(){
+        let mut s=State::default();
+        let v=json!({"type":"assistant","timestamp":"2026-09-20T08:00:00Z","message":{"id":"z1","model":"glm-5","usage":{"input_tokens":11,"output_tokens":4,"cache_read_input_tokens":6,"cache_creation_input_tokens":2}}});
+        let e=parse("zcode",&v,&mut s,0).unwrap();
+        assert_eq!(e.counts,[11,4,6,2]);assert_eq!(e.model,"glm-5");assert_eq!(e.id,"z1");assert!(!e.partial);
+        // 与 claude 相同：全零 usage 的 synthetic 占位记录不算事件；缺 id 降级为 partial+offset id。
+        let zero=json!({"type":"assistant","timestamp":"2026-09-20T08:00:01Z","message":{"id":"z2","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}});
+        assert!(parse("zcode",&zero,&mut s,1).is_none());
+        let noid=json!({"type":"assistant","timestamp":"2026-09-20T08:00:02Z","message":{"model":"glm-5","usage":{"input_tokens":3,"output_tokens":1}}});
+        let e2=parse("zcode",&noid,&mut s,2).unwrap();
+        assert_eq!(e2.id,"offset-2");assert!(e2.partial);
+    }
+    #[test]fn zcode_discovery_only_takes_jsonl(){
+        let d=tempfile::tempdir().unwrap();
+        let proj=d.path().join("v2").join("agent-config").join("claude").join("h1").join("projects").join("D--proj");
+        fs::create_dir_all(&proj).unwrap();
+        let v=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"m1","model":"x","usage":{"input_tokens":10,"output_tokens":5}}});
+        fs::write(proj.join("session-a.jsonl"),format!("{v}\n")).unwrap();
+        fs::write(proj.join("notes.json"),"{\"x\":1}").unwrap();
+        let root=d.path().join("v2").join("agent-config").join("claude");
+        let mut truncated=false;let mut out=vec![];
+        collect(&root,"zcode",&mut out,&mut truncated,&||false).unwrap();
+        assert_eq!(out.len(),1,"only .jsonl transcripts are collected for zcode");
+        assert_eq!(out[0].0,"zcode");assert!(out[0].1.ends_with("session-a.jsonl"));
+    }
+    #[test]fn zcode_sessions_are_counted_in_scan(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");let file=d.path().join("transcript.jsonl");
+        let v=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"z1","model":"glm-5","usage":{"input_tokens":11,"output_tokens":4,"cache_read_input_tokens":6,"cache_creation_input_tokens":2}}});
+        fs::write(&file,format!("{v}\n")).unwrap();
+        let s=scan_paths(7,&db,vec![("zcode".into(),file)],false).unwrap();
+        assert_eq!(s.changed_files,1);assert_eq!(s.rows.len(),1);
+        assert_eq!(s.rows[0].source,"zcode");assert_eq!(s.rows[0].model,"glm-5");
+        assert_eq!((s.rows[0].input,s.rows[0].output,s.rows[0].cache_read,s.rows[0].cache_write),(11,4,6,2));
     }
 }
 

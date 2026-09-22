@@ -32,6 +32,55 @@ pub async fn token_spend(days:u32,state:State<'_,AppState>)->Result<crate::ledge
 pub fn cancel_token_spend(state:State<'_,AppState>){
     state.cancel_ledger_scan();
 }
+/// RFC4180：含逗号、双引号或换行的字段加引号，字段内双引号翻倍。
+fn csv_field(value:&str)->String{
+    if value.contains([',','"','\n','\r']){format!("\"{}\"",value.replace('"',"\"\""))}else{value.to_string()}
+}
+fn build_ledger_csv(rows:&[crate::ledger::Row])->String{
+    let mut out=String::from("source,model,day,hour,input,output,cache_read,cache_write,partial\r\n");
+    for r in rows{
+        let counts=[r.input.to_string(),r.output.to_string(),r.cache_read.to_string(),r.cache_write.to_string()];
+        let fields=[r.source.as_str(),r.model.as_str(),r.day.as_str(),r.hour.as_str(),counts[0].as_str(),counts[1].as_str(),counts[2].as_str(),counts[3].as_str(),if r.partial{"true"}else{"false"}];
+        for (i,f) in fields.iter().enumerate(){
+            if i>0{out.push(',')}
+            out.push_str(&csv_field(f));
+        }
+        out.push_str("\r\n");
+    }
+    out
+}
+fn build_ledger_json(rows:&[crate::ledger::Row])->Result<String,String>{
+    serde_json::to_string(&serde_json::json!({
+        "exported_at":chrono::Local::now().to_rfc3339(),
+        "app_version":env!("CARGO_PKG_VERSION"),
+        "rows":rows
+    })).map_err(|_|"导出数据序列化失败".into())
+}
+/// 同名文件已存在时追加 -2、-3 序号，绝不覆盖已有导出。
+fn unique_export_path(dir:&std::path::Path,stamp:&str,ext:&str)->std::path::PathBuf{
+    let base=format!("token-spend-{stamp}");
+    let mut path=dir.join(format!("{base}.{ext}"));
+    let mut n=2;
+    while path.exists(){
+        path=dir.join(format!("{base}-{n}.{ext}"));
+        n+=1;
+    }
+    path
+}
+#[tauri::command]
+pub fn export_ledger(rows:Vec<crate::ledger::Row>,format:String)->Result<String,String>{
+    let ext=match format.as_str(){"csv"=>"csv","json"=>"json",_=>return Err("导出格式无效；仅支持 csv 或 json".into())};
+    let stamp=chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let dir=crate::config::get_config_dir().join("exports");
+    let content=match ext{
+        "csv"=>Ok(build_ledger_csv(&rows)),
+        _=>build_ledger_json(&rows),
+    }?;
+    std::fs::create_dir_all(&dir).map_err(|_|"无法创建导出目录")?;
+    let path=unique_export_path(&dir,&stamp,ext);
+    std::fs::write(&path,content).map_err(|e|format!("导出文件写入失败：{e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
 #[derive(serde::Serialize)]
 pub struct MonitorOption{pub name:String,pub label:String}
 #[tauri::command]
@@ -1012,6 +1061,55 @@ mod tests {
 
         let clean = "network timeout on https://api.openai.com";
         assert_eq!(sanitize_diagnostics_string(clean), clean);
+    }
+
+    #[test]
+    fn csv_export_escapes_commas_quotes_and_newlines() {
+        let rows = vec![crate::ledger::Row{
+            source:"claude, \"mix\"\nline\r\nx".into(),model:"m\"q".into(),
+            day:"2026-09-23".into(),hour:"08:00".into(),
+            input:1,output:2,cache_read:3,cache_write:4,partial:true}];
+        let csv=build_ledger_csv(&rows);
+        // 整串比较：字段内的 \r\n 必须原样保留在引号内，不得当作记录分隔符。
+        assert_eq!(csv,"source,model,day,hour,input,output,cache_read,cache_write,partial\r\n\"claude, \"\"mix\"\"\nline\r\nx\",\"m\"\"q\",2026-09-23,08:00,1,2,3,4,true\r\n");
+        // 普通字段不加引号；bool 以 true/false 输出。
+        let plain=vec![crate::ledger::Row{source:"zcode".into(),model:"glm-5".into(),day:"2026-09-23".into(),hour:"08:00".into(),input:0,output:0,cache_read:0,cache_write:0,partial:false}];
+        assert_eq!(build_ledger_csv(&plain),"source,model,day,hour,input,output,cache_read,cache_write,partial\r\nzcode,glm-5,2026-09-23,08:00,0,0,0,0,false\r\n");
+    }
+
+    #[test]
+    fn json_export_has_envelope_and_rows() {
+        let rows=vec![crate::ledger::Row{source:"zcode".into(),model:"glm-5".into(),day:"2026-09-23".into(),hour:"08:00".into(),input:11,output:4,cache_read:6,cache_write:2,partial:false}];
+        let v:serde_json::Value=serde_json::from_str(&build_ledger_json(&rows).unwrap()).unwrap();
+        assert!(v["exported_at"].is_string());
+        assert_eq!(v["app_version"],env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["rows"].as_array().map(Vec::len),Some(1));
+        assert_eq!(v["rows"][0]["source"],"zcode");
+        assert_eq!(v["rows"][0]["input"],11);
+        assert_eq!(v["rows"][0]["partial"],false);
+        // ledger::Row 的 Deserialize（本次补充的 derive）能还原字段。
+        let back:crate::ledger::Row=serde_json::from_value(v["rows"][0].clone()).unwrap();
+        assert_eq!(back.source,"zcode");
+        assert_eq!((back.input,back.output,back.cache_read,back.cache_write),(11,4,6,2));
+        assert!(!back.partial);
+    }
+
+    #[test]
+    fn export_ledger_rejects_unknown_format() {
+        assert!(export_ledger(vec![],"yaml".into()).is_err());
+    }
+
+    #[test]
+    fn export_filename_avoids_overwrite_with_sequence() {
+        let d=tempfile::tempdir().unwrap();
+        let stamp="20260923-120000";
+        assert_eq!(unique_export_path(d.path(),stamp,"csv"),d.path().join("token-spend-20260923-120000.csv"));
+        std::fs::write(d.path().join("token-spend-20260923-120000.csv"),b"old").unwrap();
+        assert_eq!(unique_export_path(d.path(),stamp,"csv"),d.path().join("token-spend-20260923-120000-2.csv"));
+        std::fs::write(d.path().join("token-spend-20260923-120000-2.csv"),b"old").unwrap();
+        assert_eq!(unique_export_path(d.path(),stamp,"csv"),d.path().join("token-spend-20260923-120000-3.csv"));
+        // 扩展名互不影响：csv 重名不影响 json 基础名。
+        assert_eq!(unique_export_path(d.path(),stamp,"json"),d.path().join("token-spend-20260923-120000.json"));
     }
 }
 

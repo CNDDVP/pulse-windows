@@ -6,7 +6,7 @@
 
 - HEAD：`8ba64ab2383afee53968ff2c7588c299f172a2be`；检查前工作区干净。
 - package.json 与正在运行路径的 EXE 文件版本均为 0.4.7。
-- 运行进程 PID 50992，路径 `D:\ai-programs\pulse-windows\src-tauri\target\release\pulse-windows.exe`；本轮没有重启它。
+- 运行进程 PID 50992，路径为本仓库 `src-tauri/target/release/pulse-windows.exe`；本轮没有重启它。
 - 该磁盘 EXE SHA256：`25D9EDEABD1DC9919DF1AB1FDDA9190C4A784277F370F223E4FA6563619877D0`。版本资源与路径不能单独证明二进制精确对应 HEAD。
 - `npm test`：4 个文件、13 项通过。
 - `npm run typecheck`：通过。
@@ -138,7 +138,7 @@
 
 ### Release 与隔离 Windows 实例验证
 
-- `cargo rustc --release --locked --bin pulse-windows -- -o D:/ai-programs/pulse-windows/release-artifacts/pulse-v047-audit-fixes.exe` 成功。另设输出路径，未替换运行中的目标 EXE。
+- `cargo rustc --release --locked --bin pulse-windows -- -o release-artifacts/pulse-v047-audit-fixes.exe`（仓库内相对路径）成功。另设输出路径，未替换运行中的目标 EXE。
 - Release EXE 在临时 PULSE_DATA_DIR 下执行 `--json` 返回 `[]`、退出码 0，目录无新增文件。
 - 使用独立临时配置、未授权任何 Provider、关闭 Token 扫描的原生 WebView2 实例测试；只检查本次创建的 PID，测试后终止该实例及其子进程。
 - 150% DPI：冷启动第一次打开详情卡，实际 CSS 340×360、DPR 1.5，与请求物理 510×540 一致，原生窗口已可见。

@@ -34,7 +34,7 @@
 
 ## 本地候选 EXE
 
-- 路径：D:\ai-programs\pulse-windows\src-tauri\target\release\pulse-v060-reviewed.exe
+- 路径：本地工作区内 `src-tauri/target/release/pulse-v060-reviewed.exe`
 - 产品版本：0.6.0
 - SHA256：A94147653FE3EC61AC0E3083F81BA09FECE6299782517492A5BD18DC86A8E4D5
 - Release 编译通过；尚未启动此候选进行真实账号验证。启动前正常退出旧实例。

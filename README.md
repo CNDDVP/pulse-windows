@@ -65,12 +65,12 @@
 - **Cursor**：自动探测并读取本地会话 Token，直连官方 API。
 - **Codex / ChatGPT**：自动探测 `~/.codex/auth.json` 获取 OAuth Token。
 - **Claude Code**：自动检测 `~/.claude` 本地会话或支持自定义 Token。
-- **StepFun / 阶跃星辰**：API Key 或 **网页扫码登录**（Windows 原生 CookieManager 穿透 HttpOnly 捕获 Oasis-Token），**Token 30 分钟无感续期**，24h 积分消耗图表与加油包独立识别。
+- **StepFun / 阶跃星辰**：API Key 或 **网页扫码登录**（Windows 原生 CookieManager 穿透 HttpOnly 捕获 Oasis-Token），**Token 到期前自动无感续期**，24h 积分消耗图表与加油包独立识别。
 - **Kimi Code** / **OpenCode Go** / **DeepSeek** / **GitHub Copilot** / **MiniMax** / **Grok** / **火山引擎** / **Command Code** / **Devin (Windsurf)** / **Ollama** / **智谱清言** 等全线支持。
 
 ### 🧮 本地 Token 消耗审计引擎（Token Spend）与费用估算
 
-- 内置高性能 SQLite 缓存与流式日志解析器，支持对 **Claude Code**、**Codex**、**Gemini**、**Cline**、**Roo Code**、**Kilo Code** 进行多维本地使用量聚合与审计。
+- 内置高性能 SQLite 缓存与流式日志解析器，支持对 **Claude Code**、**Codex**、**Gemini**、**Cline**、**Roo Code**、**Kilo Code**、**OpenClaw**、**ZCode CLI** 进行多维本地使用量聚合与审计。
 - 内置主流公有云模型单价库，自动估算历史 Token 的云端美金费用。
 
 ### 🔔 通知、快捷键与应用内更新
@@ -84,16 +84,48 @@
 
 ## 📊 支持的供应商与数据路线
 
-Pulse 展示的每个百分比都来自服务商自身的应答——使用各产品自己的客户端路由（文档化接口、编辑器登录、本地语言服务器），不存在"Pulse 服务器"中转，也不要求统一的官方配额 API。
+Pulse 展示的每个百分比都来自服务商自身的应答——使用各产品自己的客户端路由（文档化接口、编辑器登录、本地语言服务器），不存在"Pulse 服务器"中转，也不要求统一的官方配额 API。在这条原则之上，能力分为两类数据路线：**实时额度引擎**（`src-tauri/src/providers/`，凭你的凭据向服务商接口查询）与**本地日志审计**（`src-tauri/src/ledger.rs`，只读解析本机会话日志，不发起任何网络请求）。Claude Code 与 Codex 两条路线兼备。下表中 ✅ 表示该能力在当前代码已实现，"—" 表示该路线不提供或尚未实现此能力。
 
-| 供应商 | 数据路线与认证方式 | 备注 |
-|---|---|---|
-| **Claude Code** | 自动检测 `~/.claude` 本地会话，或自定义 Token | OAuth 会话优先，Token 手填兜底 |
-| **Codex / ChatGPT** | 自动探测 `~/.codex/auth.json` OAuth Token | 读取本地已登录凭据直连官方 API |
-| **Cursor** | 本地会话 Token 自动探测 | 直连官方用量 API |
-| **Google Antigravity** | 本地 Language Server RPC | 编辑器运行期间有效，动态解析进程参数 |
-| **StepFun / 阶跃星辰** | API Key 或网页扫码登录（Oasis-Token + Cookie） | **30 分钟无感续期**、24h 积分图表、加油包识别、CNY 余额 |
-| **Kimi Code / OpenCode Go / DeepSeek / GitHub Copilot / MiniMax / Grok / 火山引擎 / Command Code / Devin / Ollama / 智谱清言 等** | API Key 或本地已有登录凭据 | 配置即用，详见应用内添加账号向导 |
+| 供应商 | 数据路线与认证 | 实时额度限制 | Token 用量审计 | 会话明细 |
+|---|---|---|---|---|
+| **Claude Code** | `~/.claude` 本地 OAuth 会话自动探测（`CLAUDE_CONFIG_DIR` 可覆盖），或手动填 Token → 官方 OAuth 用量接口 | ✅ 5 小时会话 + 每周限额窗口（兼容新旧两代应答格式） | ✅ `~/.claude/projects` 会话日志流式解析 | 活动灯：按本地会话日志判定工作/空闲 |
+| **Codex / ChatGPT** | `~/.codex/auth.json` OAuth 自动探测（`CODEX_HOME` 可覆盖），或手动填 Token → ChatGPT 后端用量接口 | ✅ 账户主/次限额窗口 + 附加限额分组 | ✅ `~/.codex/sessions`（含归档目录），累计值差分防重复计数 | 活动灯：按本地会话日志判定工作/空闲 |
+| **Cursor** | 本地编辑器 `state.vscdb` 自动提取登录态，Cookie 直连官方用量接口 | ✅ 专属模型 / 其他模型 / 额外消费三个窗口 | — | — |
+| **Google Antigravity** | 自动探测本地 `language_server` 进程，动态解析 `--csrf_token` 调本地 RPC，无需凭据 | ✅ 按模型组的 5 小时 / 每周剩余桶 | — | 活动灯：监测语言服务器请求流 |
+| **StepFun / 阶跃星辰** | API Key 或网页扫码登录（Windows 原生 CookieManager 捕获 Oasis-Token），Token 到期前自动无感续期 | ✅ 5 小时 / 每周限额 + Credit 套餐窗口 + 加油包按过期时间独立识别 + CNY 余额 | — | ✅ 24 小时按模型积分明细图表 |
+| **Kimi Code** | API Key（凭据管理器）→ Kimi Coding 官方用量接口 | ✅ 按模型 5 小时/每日/每周限额窗口 + 请求级 5h/7d 窗口 | — | 活动灯：监测 Kimi Code IDE 事件流 |
+| **GitHub Copilot** | 本地 `github-copilot` 登录缓存自动探测，或手动填 Token → Copilot 配额快照接口 | ✅ 高级交互 / 聊天 / 代码补全三快照（区分 unlimited 与真正额度） | — | — |
+| **Grok** | `~/.grok/auth.json` 本地探测 → 官方账单接口 | ✅ 账单周期内账户共享 Credit 额度池 | — | — |
+| **Grok Bot** | Cursor 登录态（Cookie）→ Sand 用量接口 | ✅ 每周个人额度（严格剔除企业共享配额） | — | — |
+| **OpenCode Go** | 本地 `opencode/auth.json` 自动探测 → 官方用量接口 | ✅ 5 小时滚动 / 每周 / 每月三窗口 | — | — |
+| **z.ai** | API Key → 限额监控接口 | ✅ Token / 积分 / 请求频次多级窗口（5 小时 / 每周 / 每日 / MCP 每月） | — | — |
+| **智谱清言** | API Key → bigmodel 限额监控接口 | ✅ 与 z.ai 同族解析路线 | — | 活动灯：监测 ZCode CLI 事件流 |
+| **MiniMax（国际版）** | API Key → 国际版接口，双接口自动回退 | ✅ 按模型区间窗口 + 每周窗口 | — | — |
+| **MiniMax（国内版）** | API Key → 国内版接口，双接口自动回退 | ✅ 同国际版解析路线 | — | — |
+| **DeepSeek** | API Key → 官方余额接口 | 仅余额（多币种），无额度窗口 | — | — |
+| **火山引擎** | API Key（AWS SigV4 请求签名）或本地 `arkcli` 命令行读取 | ✅ Coding 5 小时额度 + AFP 周额度 | — | — |
+| **Command Code** | `~/.commandcode/auth.json` 本地探测 → 聚合接口 | ✅ 5 小时 / 每周限额窗口 + Credit 余额 | — | — |
+| **Devin (Windsurf)** | 官方接口凭据，或 Windsurf 本地 `state.vscdb` 零凭据读取 | ✅ 每日 / 每周窗口；本地库时间戳缺失或过期时标记 `unverified`，不充当实时读数 | — | — |
+| **Ollama Cloud** | ollama.com 会话 Cookie | ✅ 5 小时会话 + 每周双窗口 | — | — |
+| **小米 Coding Plan** | 会话 Cookie → 控制台接口 | ✅ 套餐桶用量百分比 + CNY 余额（接口未上报周期长度，故无时间环） | — | — |
+| **Gemini CLI** | 本地日志解析：`~/.gemini/tmp`（`GEMINI_CLI_HOME` 可覆盖），无网络请求 | — | ✅ `session-*` 会话文件流式解析 | —（审计按天 / 小时 / 来源×模型聚合） |
+| **Cline** | 本地日志解析：VS Code / Insiders / VSCodium 插件全局存储，无网络请求 | — | ✅ 各任务 `ui_messages.json` | —（同上） |
+| **Roo Code** | 同 Cline 路线（`rooveterinaryinc.roo-cline`），无网络请求 | — | ✅ 各任务 `ui_messages.json` | —（同上） |
+| **Kilo Code** | 同 Cline 路线（`kilocode.kilo-code`），无网络请求 | — | ✅ 各任务 `ui_messages.json` | —（同上） |
+| **OpenClaw** | 本地日志解析：`~/.openclaw/agents`，无网络请求 | — | ✅ 会话 JSONL 流式解析 | —（同上） |
+| **ZCode CLI** | 本地日志解析：`~/.zcode/projects` 与 `~/.zcode/v2/agent-config/claude`（`ZCODE_HOME` 可覆盖），无网络请求 | — | ✅ 会话 JSONL 流式解析（Claude Code 同构转录格式） | —（审计按天 / 小时 / 来源×模型聚合；活动灯另监测 `cli/log` 事件流） |
+
+<details>
+<summary><strong>诚实说明：能力边界与已知误差</strong></summary>
+
+- **缺失不造假**：解析器遵守"数字缺失不是零"——服务商应答缺少数据时，账号显示具体错误或降级读数，不会伪装成 0% 或 100%。DeepSeek 只返回余额、没有任何额度窗口，应用如实只显示余额，不虚构百分比（均有单元测试断言兜底）。
+- **周期长度可能是推断值**：部分接口只给窗口名称、不给周期长度，此时按标准命名推断（每周 = 7 天、每月 = 30 天等），存在约 ±1/30 的周期误差；推断不出名称的窗口（如 Antigravity 部分桶、小米套餐、Cursor 未命名窗口）不显示时间环与预测，而不是编造周期。
+- **本地日志审计的天然缺口**：审计完全依赖各源工具自行写入的日志，源工具会按自身保留策略清理、轮转或归档会话日志，早于保留期的消耗无法统计。扫描设有目录深度（18 层）与文件数（10,000）预算，超限即标记截断；检测到统计缺口时界面显示"统计不完整 / 覆盖缺口"提示，而不是假装完整。Cline / Roo Code / Kilo Code、Gemini、OpenClaw 的解析事件一律带"部分统计"标记，Claude（ZCode CLI 同）在日志行缺少 id 或用量字段时同样降级；Codex 事件本无逐行 id（按累计值合成），在累计值回退、缓存增量异常或模型未知时降级，缺用量字段的行直接跳过、不计入。
+- **费用是估算值**：Token Spend 的金额按已知模型公开定价折算，仅供参考，不构成账单。
+- **实测覆盖有限**：实时路线中 Kimi Code、OpenCode Go、Antigravity 做过真实凭据实测（见 `docs/provider-matrix.json`），其余路线以单元测试验证解析逻辑为主；服务商接口改版可能导致个别路线临时失效，失效时显示具体错误而非静默清零。
+- **活动灯只是信号**：Claude Code / Codex / Kimi / 智谱 / Antigravity 五渠道的活动灯由本地日志事件流推断"工作 / 空闲"，不读取、不展示任何会话内容。
+
+</details>
 
 ---
 

@@ -32,7 +32,7 @@
 
 ## 候选构建
 
-Release 构建通过。路径：D:\ai-programs\pulse-windows\src-tauri\target\release\pulse-v060-stepfun-statusfix.exe
+Release 构建通过。路径：本地工作区内 `src-tauri/target/release/pulse-v060-stepfun-statusfix.exe`
 
 SHA256：D14AB9F41A8B75532342C83EE6BF70A383A5FD110D942D9AD8A49FEF5092B04A
 

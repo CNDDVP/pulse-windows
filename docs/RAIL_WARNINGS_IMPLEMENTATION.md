@@ -47,7 +47,7 @@
 - `cargo test --locked --lib`：90项通过。
 - `npm run lint`：无错误；仍有React effect/ref等警告，不宣称零警告。
 - `git diff --check`：通过。
-- Release构建成功：`cargo rustc --release --locked --bin pulse-windows -- -o D:/ai-programs/pulse-windows/release-artifacts/pulse-v048-rail-warnings.exe`。
+- Release构建成功：`cargo rustc --release --locked --bin pulse-windows -- -o release-artifacts/pulse-v048-rail-warnings.exe`（仓库内相对路径）。
 
 新增覆盖：百分比边界、超过100%、指定周期失效、选择范围、删除/停用、不同币种、零/负余额、不同计量风险比较、未配置余额排除、缓存过期、升降级时间边界、设置/重置/数据失效绕过降级等待、数值空输入、模式切换、局部恢复、不自动刷新、旧配置迁移、非法配置拒绝写盘。
 

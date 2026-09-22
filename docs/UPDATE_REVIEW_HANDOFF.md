@@ -1,6 +1,6 @@
 # 交给其他 AI 的审查任务
 
-你接手的是 D:\ai-programs\pulse-windows 的更新器本地施工结果。请审查代码与设计，用户尚未要求发布。保留所有设置、账号和凭据；不要停止或覆盖用户正在运行的 release EXE。
+你接手的是本仓库本地工作区的更新器本地施工结果。请审查代码与设计，用户尚未要求发布。保留所有设置、账号和凭据；不要停止或覆盖用户正在运行的 release EXE。
 
 ## 当前状态
 
@@ -62,4 +62,4 @@
 
 ### 可直接复制给审查 AI
 
-请审查 D:\ai-programs\pulse-windows 当前未提交的自动更新功能实现。先读取 docs/UPDATE_REVIEW_HANDOFF.md、docs/UPDATE_SYSTEM_DESIGN.md、docs/UPDATE_REGRESSION_PLAN.md 和 docs/V063_UPDATE_AUDIT.md，再检查全部变更及未跟踪新增源码。重点验证文件替换/回滚、启动确认、进程与锁、数据保留、NSIS 原目录升级、下载校验和草稿保护。不要相信施工文档等同测试通过；请独立复查并区分已复现 Bug、静态风险和未验收项。用户正式 release EXE 正在运行，不要关闭或覆盖它，不要更改真实账号或凭据，也不要 bump、commit、push、tag 或发布。先输出审查问题清单与发布门禁结论。
+请审查本仓库本地工作区当前未提交的自动更新功能实现。先读取 docs/UPDATE_REVIEW_HANDOFF.md、docs/UPDATE_SYSTEM_DESIGN.md、docs/UPDATE_REGRESSION_PLAN.md 和 docs/V063_UPDATE_AUDIT.md，再检查全部变更及未跟踪新增源码。重点验证文件替换/回滚、启动确认、进程与锁、数据保留、NSIS 原目录升级、下载校验和草稿保护。不要相信施工文档等同测试通过；请独立复查并区分已复现 Bug、静态风险和未验收项。用户正式 release EXE 正在运行，不要关闭或覆盖它，不要更改真实账号或凭据，也不要 bump、commit、push、tag 或发布。先输出审查问题清单与发布门禁结论。
