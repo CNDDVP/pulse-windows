@@ -134,6 +134,43 @@ async fn stepfun_cookies(
         .map_err(|_| "读取登录会话失败".into())
 }
 
+/// P1 #1：清除 WebView2 中 platform.stepfun.com 的旧 Oasis-Token 会话，
+/// 防止多账号登录时自动绑定到浏览器里已有的其他账号身份。
+async fn clear_stepfun_session(window: &tauri::WebviewWindow) {
+    let win_clone = window.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let res = win_clone.with_webview(move |webview| {
+        #[cfg(windows)]
+        unsafe {
+            use webview2_com::Microsoft::Web::WebView2::Win32::*;
+            use windows_core::Interface;
+            let c = webview.controller();
+            if let Ok(w2) = c.CoreWebView2() {
+                if let Ok(w2_2) = w2.cast::<ICoreWebView2_2>() {
+                    if let Ok(cm) = w2_2.CookieManager() {
+                        let cookie = cm.CreateCookie(
+                            windows_core::w!("Oasis-Token"),
+                            windows_core::w!(""),
+                            windows_core::w!("platform.stepfun.com"),
+                            windows_core::w!("/"),
+                        );
+                        if let Ok(cookie) = cookie {
+                            let _ = cm.DeleteCookie(&cookie);
+                        }
+                    }
+                }
+            }
+            let _ = tx.send(());
+        }
+        #[cfg(not(windows))]
+        let _ = tx.send(());
+    });
+    let _ = res;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
+    // 刷新页面使清除生效，展示登录表单
+    let _ = window.reload();
+}
+
 async fn save_stepfun_login_token(
     app: &tauri::AppHandle,
     account_id: &str,
@@ -163,7 +200,7 @@ async fn save_stepfun_login_token(
     }
     let secret = crate::providers::credentials::merge_stepfun_credentials(
         had.as_deref().unwrap_or(""),
-        &serde_json::json!({"oasis_token":token,"cookie":cookie}).to_string(),
+        &serde_json::json!({"oasis_token":token,"cookie":cookie,"web_bound":true}).to_string(),
     );
     cfg.credential_configured = true;
     if !automatic {
@@ -216,18 +253,24 @@ pub async fn renew_stepfun_token(
     if app.get_webview_window("stepfun_login").is_some() {
         return Err("请先完成网页登录".into());
     }
+    let old = match WindowsSecrets.get(account_id) {
+        Ok(Some(v)) => v,
+        Ok(None) => return Err("未保存网页登录凭据".into()),
+        Err(e) => return Err(format!("读取系统凭据失败: {e}")),
+    };
+    let creds = crate::providers::credentials::parse_stepfun_credentials(&old);
+    let token = match creds.oasis_token {
+        Some(t) => t,
+        None => return Err("未保存网页 Token".into()),
+    };
+    // 问题 3 + P2 #6：严格区分"手填 Token"与"可续期网页登录会话"——
+    // 只有通过网页登录保存的凭据（web_bound=true）才允许自动续期；
+    // 手动粘贴的 Token/Cookie 即使非空也不标记 web_bound，直接提示不支持
+    if !creds.web_bound {
+        return Err("当前凭据为手动填写（或非网页登录来源），不支持自动续期；请点击「网页登录」完成会话绑定".into());
+    }
     if let Some(msg) = renew_cooldown_msg(account_id) {
         return Err(msg);
-    }
-    record_renew_failure(account_id, "尝试已开始".into());
-    let old = WindowsSecrets
-        .get(account_id)?
-        .ok_or("未保存网页登录凭据")?;
-    let creds = crate::providers::credentials::parse_stepfun_credentials(&old);
-    let token = creds.oasis_token.ok_or("未保存网页 Token")?;
-    // 问题 3: 严格区分"手填 Token"与"可续期网页登录会话"；无活跃 Session Cookie 时明确提示不支持自动续期，要求重新登录
-    if creds.cookie.as_deref().is_none_or(|c| c.trim().is_empty()) {
-        return Err("当前凭据仅包含手动填写的 Token，未保存网页登录会话，不支持自动续期；请点击「网页登录」完成会话绑定".into());
     }
     let profile = crate::config::get_profile_id();
     let window = tauri::WebviewWindowBuilder::new(
@@ -312,13 +355,17 @@ pub async fn renew_stepfun_token(
                                 last_failed_reason = Some(format!("候选 Token 验证拒绝: {err_detail}"));
                             }
                             Ok(Err(e)) => {
-                                retry_allowed = true;
-                                network_failures += 1;
+                                // P2 #5：按错误类别决定是否重试——认证/结构错误停止当前候选验证，
+                                // 仅网络临时故障（timeout/network/rate_limited）允许有限重试
+                                let code = e.error_code.as_deref().unwrap_or("");
+                                let retryable = matches!(code, "timeout" | "network" | "rate_limited");
+                                retry_allowed = retryable;
                                 let err_msg = e.error_message.unwrap_or_else(|| "网络请求异常".into());
                                 last_failed_reason = Some(format!("验证请求失败: {err_msg}"));
-                                if network_failures > 2 {
+                                if !retryable || network_failures > 2 {
                                     break;
                                 }
+                                network_failures += 1;
                             }
                             Err(_) => {
                                 retry_allowed = true;
@@ -329,6 +376,14 @@ pub async fn renew_stepfun_token(
                                 }
                             }
                         }
+                    }
+                    // P2 #7：保存前检查剩余预算——保存涉及凭据管理器与磁盘写入，
+                    // 虽为原子操作仍需有界；预算不足时留待下轮刷新处理
+                    if deadline.saturating_duration_since(std::time::Instant::now())
+                        < std::time::Duration::from_secs(2)
+                    {
+                        last_failed_reason = Some("续期预算不足，保存延后".into());
+                        break;
                     }
                 }
                 Ok(Err(e)) => {
@@ -403,10 +458,16 @@ pub async fn open_stepfun_login(
     .resizable(true)
     .build()
     .map_err(|_| "无法创建登录窗口")?;
+    // P1 #1：登录窗口就绪后先清除浏览器中可能存在的其他账号旧会话，
+    // 强制走全新登录流程，避免第二账号静默绑定到第一账号的登录态
+    clear_stepfun_session(&win).await;
     tauri::async_runtime::spawn(async move {
         let _gate = gate;
         let mut checked = String::new();
         let mut success = false;
+        // P2 #4：手动登录同一 Token 的临时网络失败允许有限重试
+        let mut login_retry_allowed = false;
+        let mut login_network_failures = 0u32;
         for _ in 0..600 {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if crate::updater::applying() {
@@ -418,7 +479,7 @@ pub async fn open_stepfun_login(
                 }
                 continue;
             };
-            if checked == token {
+            if checked == token && !login_retry_allowed {
                 continue;
             }
             checked = token.clone();
@@ -428,10 +489,25 @@ pub async fn open_stepfun_login(
                 continue;
             }
             let http = app.state::<AppState>().http.read().await.clone();
-            let candidate = serde_json::json!({"oasis_token":token,"cookie":cookie}).to_string();
-            if !matches!(crate::providers::stepfun::fetch(&candidate,&http).await,Ok(v) if v.get("plan_credit_rate_limit").is_some()&&!v["web_auth_required"].as_bool().unwrap_or(false))
-            {
-                continue;
+            let candidate = serde_json::json!({"oasis_token":token,"cookie":cookie,"web_bound":true}).to_string();
+            match crate::providers::stepfun::fetch(&candidate,&http).await {
+                Ok(v) if v.get("plan_credit_rate_limit").is_some()&&!v["web_auth_required"].as_bool().unwrap_or(false) => {
+                    login_retry_allowed = false;
+                }
+                // P2 #4：临时网络故障对同一 Token 有限重试；认证拒绝不重试
+                Err(e) => {
+                    let code = e.error_code.as_deref().unwrap_or("");
+                    login_retry_allowed = matches!(code, "timeout" | "network" | "rate_limited");
+                    login_network_failures += 1;
+                    if !login_retry_allowed || login_network_failures > 2 {
+                        continue;
+                    }
+                    continue;
+                }
+                Ok(_) => {
+                    login_retry_allowed = false;
+                    continue;
+                }
             }
             match save_stepfun_login_token(
                 &app,
@@ -446,6 +522,7 @@ pub async fn open_stepfun_login(
             {
                 Ok(()) => {
                     success = true;
+                    clear_renew_cooldown(&account_id);
                     let _ = app.emit(
                         "stepfun-login-success",
                         serde_json::json!({"account_id":account_id}),

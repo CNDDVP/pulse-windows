@@ -81,6 +81,13 @@ pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppStat
     } else {
         None
     };
+    // 预应用快捷键（在落盘前验证注册是否成功）：如果热键冲突或系统注册失败，直接拦截并报错，不修改磁盘与内存设置
+    if new_settings.hotkeys != old.hotkeys {
+        if let Err(e) = crate::apply_hotkeys(&app, &new_settings.hotkeys) {
+            let _ = crate::apply_hotkeys(&app, &old.hotkeys);
+            return Err(format!("快捷键注册失败: {e}"));
+        }
+    }
     for (id,cfg) in &new_settings.providers{
         // 凭据来源（use_local）也是结果有效性的边界（B19）：变化即失效在途请求。
         if old.providers.get(id).map(|c|(c.order,c.enabled,&c.label,c.use_local))!=Some((cfg.order,cfg.enabled,&cfg.label,cfg.use_local)){
@@ -90,20 +97,25 @@ pub async fn update_settings(mut new_settings:AppSettings,state:State<'_,AppStat
     for id in old.providers.keys(){if !new_settings.providers.contains_key(id){state.bump_account_gen(id).await;}}
     new_settings.generation=old.generation.wrapping_add(1);
     let had_error=state.config_error().is_some();
-    let new_settings=tauri::async_runtime::spawn_blocking(move||{
+    let old_hotkeys_backup = old.hotkeys.clone();
+    let app_backup = app.clone();
+    let new_settings=match tauri::async_runtime::spawn_blocking(move||{
         let mut s=new_settings;crate::config::refresh_credential_flags(&mut s)?;
         if had_error{crate::config::backup_settings()?;}
         crate::config::save_settings(&s)?;Ok::<_,String>(s)
-    }).await.map_err(|_|"设置保存任务失败")??;
-    *state.settings.lock().await=new_settings.clone();state.clear_config_error();
-    // 只有在 settings 确实持久化成功后，才应用快捷键与代理 Client 等系统级副作用；
-    // 即使快捷键注册失败，配置已经落盘，同时提供回滚
-    if new_settings.hotkeys!=old.hotkeys{
-        if let Err(e)=crate::apply_hotkeys(&app,&new_settings.hotkeys){
-            let _=crate::apply_hotkeys(&app,&old.hotkeys);
-            eprintln!("快捷键应用失败: {e}");
+    }).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(save_err)) => {
+            // 写盘失败：将预注册的新快捷键回滚回旧快捷键
+            let _ = crate::apply_hotkeys(&app_backup, &old_hotkeys_backup);
+            return Err(format!("设置保存失败: {save_err}"));
         }
-    }
+        Err(_) => {
+            let _ = crate::apply_hotkeys(&app_backup, &old_hotkeys_backup);
+            return Err("设置保存任务失败".into());
+        }
+    };
+    *state.settings.lock().await=new_settings.clone();state.clear_config_error();
     if let Some(new_client) = maybe_new_client {
         *state.http.write().await = new_client;
         for id in new_settings.providers.keys() {
@@ -267,6 +279,7 @@ pub async fn set_credential(account_id:String,secret:String,state:State<'_,AppSt
     *state.settings.lock().await=saved.clone();state.clear_config_error();
     state.bump_account_gen(&account_id).await;
     state.schedule.lock().await.remove(&account_id);
+    crate::stepfun_session::clear_renew_cooldown(&account_id);
     // 清读数并广播（B05/B06 同语义）：悬浮栏立即摆脱旧凭据下的旧额度。
     let snapshot={let mut cached=state.cached_usages.lock().await;cached.retain(|r|r.account_id!=account_id);cached.clone()};
     let _=app.emit("usages-updated",&snapshot);

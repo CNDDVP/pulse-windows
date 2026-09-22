@@ -118,14 +118,78 @@ fn merge(
 
 // QueryStepPlanUsagesRequest uses start_time/to_time; from_time belongs to
 // StepPlanUsageRecord (the response). Encode protobuf int64 values as strings.
-fn usage_request_body(now: i64) -> Value {
+// P2 #9: page 为可变参数，支持按 total 分页拉取
+fn usage_request_body(now: i64, page: u32) -> Value {
     serde_json::json!({
         "startTime": now.saturating_sub(86400).to_string(),
         "toTime": now.to_string(),
         "granularHour": 1,
         "pageSize": 200,
-        "page": 1
+        "page": page
     })
+}
+
+/// P2 #9：按 total 分页拉取用量明细，最多 3 页（600 条）。
+/// 返回合并后的响应（usages 数组合并，truncated 标记是否还有未拉取页）。
+async fn fetch_usages_paginated(
+    http: &reqwest::Client,
+    token: &str,
+    device: &Option<String>,
+    cookie: &str,
+) -> Option<Result<Value, ProviderUsage>> {
+    let now = chrono::Utc::now().timestamp();
+    let mut all_records: Vec<Value> = Vec::new();
+    let mut first_response: Option<Result<Value, ProviderUsage>> = None;
+    let mut truncated = false;
+
+    for page in 1..=3u32 {
+        let mut req = http.post("https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanUsages")
+            .header("Connect-Protocol-Version","1").header("Oasis-Appid","10300")
+            .header("Oasis-Platform","web").header("Oasis-Token",token)
+            .header("Origin","https://platform.stepfun.com").header("Referer","https://platform.stepfun.com/");
+        if let Some(device)=device{req=req.header("Oasis-Webid",device);}
+        let body = usage_request_body(now, page);
+        let result = request(req.header("Cookie", cookie).json(&body), "用量明细", true).await;
+
+        match result {
+            Ok(v) => {
+                if first_response.is_none() {
+                    first_response = Some(Ok(v.clone()));
+                }
+                let list = v.get("usages").or_else(|| v.get("items")).or_else(|| v.get("records"));
+                if let Some(arr) = list.and_then(Value::as_array) {
+                    all_records.extend(arr.iter().cloned());
+                    let total = v.get("total").and_then(Value::as_u64).unwrap_or(0);
+                    if (all_records.len() as u64) >= total || page >= 3 {
+                        truncated = (all_records.len() as u64) < total;
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            Err(e) => {
+                if first_response.is_none() {
+                    first_response = Some(Err(e));
+                }
+                break;
+            }
+        }
+    }
+
+    // 多页合并：把合并后的 records 和 truncated 标记写回第一个响应
+    if let Some(Ok(v)) = &mut first_response {
+        if let Some(obj) = v.as_object_mut() {
+            if all_records.len() > 200 {
+                obj.insert("usages".to_string(), Value::Array(all_records));
+            }
+            if truncated {
+                obj.insert("truncated".to_string(), Value::Bool(true));
+            }
+        }
+    }
+
+    first_response
 }
 
 pub async fn fetch(secret: &str, http: &reqwest::Client) -> Result<Value, ProviderUsage> {
@@ -148,14 +212,8 @@ pub async fn fetch(secret: &str, http: &reqwest::Client) -> Result<Value, Provid
     let usages = async {
         let token = creds.oasis_token.as_ref()?;
         let device = extract_device_id(token);
-        let mut req = http.post("https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanUsages")
-            .header("Connect-Protocol-Version","1").header("Oasis-Appid","10300")
-            .header("Oasis-Platform","web").header("Oasis-Token",token)
-            .header("Origin","https://platform.stepfun.com").header("Referer","https://platform.stepfun.com/");
-        if let Some(device)=&device{req=req.header("Oasis-Webid",device);}
         let cookie=credentials::stepfun_cookie(token,creds.cookie.as_deref(),device.as_deref());
-        let body = usage_request_body(chrono::Utc::now().timestamp());
-        Some(request(req.header("Cookie", cookie).json(&body), "用量明细", true).await)
+        fetch_usages_paginated(http, token, &device, &cookie).await
     };
     let (plan, cash, usages) = tokio::join!(plan, cash, usages);
     merge(plan, cash, usages)
@@ -175,7 +233,7 @@ pub fn source_label(secret: &str) -> &'static str {
     use super::*;
     use serde_json::json;
     #[test] fn usage_query_matches_dashboard_request_schema() {
-        let body = usage_request_body(1_790_000_000);
+        let body = usage_request_body(1_790_000_000, 1);
         assert_eq!(body, json!({
             "startTime": "1789913600", "toTime": "1790000000",
             "granularHour": 1, "pageSize": 200, "page": 1
