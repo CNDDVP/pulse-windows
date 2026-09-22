@@ -79,9 +79,21 @@ impl Default for UpdateService {
         }
     }
 }
+// 网络层错误分类提示：系统代理开启但代理软件退出（连接被拒）与直连超时是最常见的
+// 两种"检查更新网络失败"，给出可操作建议；不再吞掉真实错误类别
+fn network_error_message(e: &reqwest::Error) -> String {
+    let tail = "（不影响额度刷新）";
+    if e.is_timeout() {
+        format!("检查更新连接超时——若系统代理已开启但代理软件未运行，请关闭系统代理，或在设置中配置可用代理后重试{tail}")
+    } else if e.is_connect() {
+        format!("无法连接 GitHub——连接被拒绝或网络不可达；常见原因是系统代理已开启但代理软件已退出，请关闭系统代理，或在设置中配置可用代理后重试{tail}")
+    } else {
+        format!("检查更新网络失败：{e}{tail}")
+    }
+}
+
 impl UpdateService {
-    fn snapshot(&self) -> Status {
-        self.state.lock().unwrap().clone()
+    fn snapshot(&self) -> Status {        self.state.lock().unwrap().clone()
     }
     fn stage(&self, app: &tauri::AppHandle, phase: &str, message: &str) {
         let snapshot = {
@@ -145,97 +157,162 @@ impl UpdateService {
         *self.last_attempt.lock().unwrap() = Some(Instant::now());
         self.stage(app, "checking", "正在检查 GitHub 稳定版本…");
         let result: Result<()> = async {
-            let response = Self::client(app)
-                .await?
-                .get(API)
-                .timeout(Duration::from_secs(15))
-                .send()
-                .await
-                .map_err(|_| "检查更新网络失败（不影响额度刷新）")?;
-            if response.status().as_u16() == 429 || response.status().as_u16() == 403 {
-                let reset_seconds = response
-                    .headers()
-                    .get("x-ratelimit-reset")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<i64>().ok())
-                    .map(|ts| {
-                        let now = chrono::Utc::now().timestamp();
-                        (ts - now).max(10) as u64
-                    });
-                let seconds = reset_seconds
-                    .or_else(|| {
-                        response
-                            .headers()
-                            .get("retry-after")
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|s| s.parse::<u64>().ok())
-                    })
-                    .unwrap_or(1800)
-                    .clamp(10, 86400);
-                *self.retry_until.lock().unwrap() =
-                    Some(Instant::now() + Duration::from_secs(seconds));
-                let wait_min = (seconds + 59) / 60;
-                return Err(format!(
-                    "GitHub 请求限流，预计 {wait_min} 分钟后恢复；可更换代理后重试，或点击手动下载"
-                ));
-            }
-            if !response.status().is_success() {
-                return Err(format!(
-                    "GitHub 检查失败：HTTP {}",
-                    response.status().as_u16()
-                ));
-            }
-            let bytes = bounded(response, 1024 * 1024).await?;
-            let release: Release =
-                serde_json::from_slice(&bytes).map_err(|_| "GitHub 发布信息格式错误")?;
-            let state = self.snapshot();
-            let found = offer(release, &state.current, &state.mode)?;
-            {
-                let mut s = self.state.lock().unwrap();
-                s.offer = found.clone();
-                s.preferences.last_check = Some(chrono::Utc::now().timestamp());
-            }
-            if let Some(o) = found {
-                self.stage(
-                    app,
-                    "available",
-                    if state.mode == "advanced" {
-                        "发现新版；此为开发/自定义部署，请手动安装"
-                    } else {
-                        "发现新版本，点击下载后可确认退出并升级"
-                    },
-                );
-                let should_notify = {
-                    let mut s = self.state.lock().unwrap();
-                    if s.preferences.notify
-                        && s.preferences.last_notified.as_deref() != Some(&o.version)
-                    {
-                        s.preferences.last_notified = Some(o.version.clone());
-                        true
-                    } else {
-                        false
-                    }
-                };
-                if should_notify {
-                    use tauri_plugin_notification::NotificationExt;
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("Pulse 更新")
-                        .body(format!("Pulse v{} 已发布；在设置 → 关于中查看", o.version))
-                        .show();
+            let client = Self::client(app).await?;
+            let primary = match client.get(API).timeout(Duration::from_secs(15)).send().await {
+                Ok(response) => match self.consume_api_response(app, response).await {
+                    Ok(()) => return Ok(()),
+                    Err(e) => e,
+                },
+                Err(e) => network_error_message(&e),
+            };
+            // 主通道（api.github.com）失败：尝试 Releases Atom 备用通道。github.com 的
+            // Web 资产不受 API 未认证 60 次/小时限流约束——共享出口 NAT（限流常态）下
+            // 仍可完成检查。备用通道也失败时保留主通道错误（更具体、可操作）。
+            match self.check_via_atom(app, &client).await {
+                Ok(()) => {
+                    *self.retry_until.lock().unwrap() = None;
+                    Ok(())
                 }
-            } else {
-                self.stage(app, "up_to_date", "已是最新稳定版本")
+                Err(_) => Err(primary),
             }
-            self.save_preferences()?;
-            Ok(())
         }
         .await;
         if let Err(e) = &result {
             self.fail(app, e.clone())
         }
         result
+    }
+    // 主通道响应处理：限流退避、HTTP 错误、解析与严格校验；成功路径交给 finish_check 收尾
+    async fn consume_api_response(
+        &self,
+        app: &tauri::AppHandle,
+        response: reqwest::Response,
+    ) -> Result<()> {
+        if response.status().as_u16() == 429 || response.status().as_u16() == 403 {
+            let reset_seconds = response
+                .headers()
+                .get("x-ratelimit-reset")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<i64>().ok())
+                .map(|ts| {
+                    let now = chrono::Utc::now().timestamp();
+                    (ts - now).max(10) as u64
+                });
+            let seconds = reset_seconds
+                .or_else(|| {
+                    response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                })
+                .unwrap_or(1800)
+                .clamp(10, 86400);
+            *self.retry_until.lock().unwrap() = Some(Instant::now() + Duration::from_secs(seconds));
+            let wait_min = (seconds + 59) / 60;
+            return Err(format!(
+                "GitHub 请求限流，预计 {wait_min} 分钟后恢复；可更换代理后重试，或点击手动下载"
+            ));
+        }
+        if !response.status().is_success() {
+            return Err(format!(
+                "GitHub 检查失败：HTTP {}",
+                response.status().as_u16()
+            ));
+        }
+        let bytes = bounded(response, 1024 * 1024).await?;
+        let release: Release =
+            serde_json::from_slice(&bytes).map_err(|_| "GitHub 发布信息格式错误")?;
+        let state = self.snapshot();
+        let found = offer(release, &state.current, &state.mode)?;
+        self.finish_check(app, found).await
+    }
+    // 备用检查通道：Releases Atom 源取最新 tag → HEAD 探测确定性命名资产的大小 →
+    // 构造 Release 后复用 offer() 全部严格校验，与主通道同等安全
+    async fn check_via_atom(&self, app: &tauri::AppHandle, client: &reqwest::Client) -> Result<()> {
+        let response = client
+            .get(ATOM)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|_| "备用通道连接失败")?;
+        if !response.status().is_success() {
+            return Err(format!("备用通道 HTTP {}", response.status().as_u16()));
+        }
+        let bytes = bounded(response, 1024 * 1024).await?;
+        let tag = latest_tag_from_atom(&String::from_utf8_lossy(&bytes))?;
+        let v = version(&tag)?;
+        let mut sizes = std::collections::BTreeMap::new();
+        for name in [
+            format!("Pulse-{v}-windows-x64-setup.exe"),
+            format!("Pulse-{v}-windows-x64-portable.zip"),
+            "SHA256SUMS.txt".to_string(),
+            "BUILD_INFO.txt".to_string(),
+        ] {
+            let resp = client
+                .head(format!("{REPO}/releases/download/v{v}/{name}"))
+                .timeout(Duration::from_secs(15))
+                .send()
+                .await
+                .map_err(|_| format!("备用通道资产探测失败：{name}"))?;
+            let size = resp.content_length().unwrap_or(0);
+            if !resp.status().is_success() || size == 0 {
+                return Err(format!("备用通道资产不可用：{name}"));
+            }
+            sizes.insert(name, size);
+        }
+        let release = release_from_tag(
+            &tag,
+            &sizes,
+            "已通过备用通道获取版本信息；发布说明请见发布页。",
+        )?;
+        let state = self.snapshot();
+        let found = offer(release, &state.current, &state.mode)?;
+        self.finish_check(app, found).await
+    }
+    // 检查收尾：落盘 offer 与 last_check、阶段播报与每版一次的系统通知（两条通道共用）
+    async fn finish_check(&self, app: &tauri::AppHandle, found: Option<Offer>) -> Result<()> {
+        let state = self.snapshot();
+        {
+            let mut s = self.state.lock().unwrap();
+            s.offer = found.clone();
+            s.preferences.last_check = Some(chrono::Utc::now().timestamp());
+        }
+        if let Some(o) = found {
+            self.stage(
+                app,
+                "available",
+                if state.mode == "advanced" {
+                    "发现新版；此为开发/自定义部署，请手动安装"
+                } else {
+                    "发现新版本，点击下载后可确认退出并升级"
+                },
+            );
+            let should_notify = {
+                let mut s = self.state.lock().unwrap();
+                if s.preferences.notify
+                    && s.preferences.last_notified.as_deref() != Some(&o.version)
+                {
+                    s.preferences.last_notified = Some(o.version.clone());
+                    true
+                } else {
+                    false
+                }
+            };
+            if should_notify {
+                use tauri_plugin_notification::NotificationExt;
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title("Pulse 更新")
+                    .body(format!("Pulse v{} 已发布；在设置 → 关于中查看", o.version))
+                    .show();
+            }
+        } else {
+            self.stage(app, "up_to_date", "已是最新稳定版本")
+        }
+        self.save_preferences()?;
+        Ok(())
     }
     async fn download(&self, app: &tauri::AppHandle) -> Result<()> {
         let _gate = self.gate.try_lock().map_err(|_| "已有更新操作进行中")?;

@@ -9,6 +9,8 @@ use std::{
 pub type Result<T> = std::result::Result<T, String>;
 pub const REPO: &str = "https://github.com/CNDDVP/pulse-windows";
 pub const API: &str = "https://api.github.com/repos/CNDDVP/pulse-windows/releases/latest";
+// 备用检查通道：github.com 的 Web 资产，不受 api.github.com 未认证 60 次/小时限流约束
+pub const ATOM: &str = "https://github.com/CNDDVP/pulse-windows/releases.atom";
 pub const FILES: &[&str] = &[
     "Pulse.exe",
     "portable.flag",
@@ -88,8 +90,55 @@ pub fn offer(r: Release, current: &str, mode: &str) -> Result<Option<Offer>> {
         sums,
     }))
 }
-pub fn checksum(text: &str, name: &str) -> Result<String> {
-    let mut found = None;
+/// 从 Releases Atom 订阅源文本提取最新发布的 tag（feed 按时间倒序，第一条即最新）。
+/// 只认 `{REPO}/releases/tag/` 前缀的链接，draft 与 prerelease 不会出现在该 feed。
+pub fn latest_tag_from_atom(text: &str) -> Result<String> {
+    let marker = format!("{REPO}/releases/tag/");
+    let idx = text.find(&marker).ok_or("订阅源中没有发布条目")?;
+    let rest = &text[idx + marker.len()..];
+    let end = rest.find(['"', '<']).ok_or("订阅源条目格式异常")?;
+    let tag = &rest[..end];
+    let expect = format!("v{}", version(tag)?);
+    if tag != expect {
+        return Err("订阅源版本号不合法".into());
+    }
+    Ok(tag.to_string())
+}
+
+/// 已知 tag 时按确定性命名构造发布信息：资产 URL 固定模式，大小由 HEAD 探测填充，
+/// 随后复用 offer() 的全部严格校验（地址模式/大小上限/资产齐全）。
+pub fn release_from_tag(
+    tag: &str,
+    sizes: &std::collections::BTreeMap<String, u64>,
+    notes: &str,
+) -> Result<Release> {
+    let v = version(tag)?;
+    let asset = |name: &str| -> Result<Asset> {
+        let size = *sizes
+            .get(name)
+            .ok_or_else(|| format!("备用通道资产大小未知：{name}"))?;
+        Ok(Asset {
+            name: name.to_string(),
+            browser_download_url: format!("{REPO}/releases/download/v{v}/{name}"),
+            size,
+        })
+    };
+    Ok(Release {
+        tag_name: format!("v{v}"),
+        draft: false,
+        prerelease: false,
+        html_url: format!("{REPO}/releases/tag/v{v}"),
+        body: Some(notes.to_string()),
+        assets: vec![
+            asset(&format!("Pulse-{v}-windows-x64-setup.exe"))?,
+            asset(&format!("Pulse-{v}-windows-x64-portable.zip"))?,
+            asset("SHA256SUMS.txt")?,
+            asset("BUILD_INFO.txt")?,
+        ],
+    })
+}
+
+pub fn checksum(text: &str, name: &str) -> Result<String> {    let mut found = None;
     for line in text.trim_start_matches('\u{feff}').lines() {
         let line = line.trim();
         if line.len() < 66 {
@@ -435,6 +484,83 @@ mod tests {
             fs::write(root.join(n), b"new").unwrap()
         }
         write_json(&root.join("BUILD_INFO.json"),&serde_json::json!({"product":"Pulse for Windows","version":"0.6.4","target":"x86_64-pc-windows-msvc","exe_sha256":hash(&root.join("Pulse.exe")).unwrap()})).unwrap();
+    }
+    #[test]
+    fn atom_feed_latest_tag_extraction() {
+        let feed = r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>tag:github.com,2008:https://github.com/CNDDVP/pulse-windows/releases</id>
+  <link rel="self" href="https://github.com/CNDDVP/pulse-windows/releases.atom"/>
+  <title>Release notes from pulse-windows</title>
+  <entry>
+    <id>tag:github.com,2008:Repository/1375447670/v0.6.6</id>
+    <link rel="alternate" type="text/html" href="https://github.com/CNDDVP/pulse-windows/releases/tag/v0.6.6"/>
+    <title>Pulse for Windows v0.6.6</title>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/1375447670/v0.6.5</id>
+    <link rel="alternate" type="text/html" href="https://github.com/CNDDVP/pulse-windows/releases/tag/v0.6.5"/>
+    <title>Pulse for Windows v0.6.5</title>
+  </entry>
+</feed>"#;
+        // feed 倒序，第一条即最新发布
+        assert_eq!(latest_tag_from_atom(feed).unwrap(), "v0.6.6");
+        // 无条目 / 版本不合法都要报错，不得静默返回空
+        assert!(latest_tag_from_atom("<feed><entry/></feed>").is_err());
+        assert!(latest_tag_from_atom(
+            r#"<link href="https://github.com/CNDDVP/pulse-windows/releases/tag/not-semver"/>"#
+        )
+        .is_err());
+        // 前缀相同但非 tag 链接不参与匹配
+        assert!(latest_tag_from_atom(
+            r#"<link href="https://github.com/CNDDVP/pulse-windows/releases"/>"#
+        )
+        .is_err());
+    }
+    #[test]
+    fn release_from_tag_passes_offer_validation() {
+        let sizes: std::collections::BTreeMap<String, u64> = [
+            ("Pulse-0.6.6-windows-x64-setup.exe", 150_000_000u64),
+            ("Pulse-0.6.6-windows-x64-portable.zip", 80_000_000),
+            ("SHA256SUMS.txt", 700),
+            ("BUILD_INFO.txt", 400),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let r = release_from_tag("v0.6.6", &sizes, "备用通道").unwrap();
+        // 与 API 主通道同等校验：地址模式、大小上限、资产齐全
+        let o = offer(r, "0.6.5", "portable").unwrap().unwrap();
+        assert_eq!(o.version, "0.6.6");
+        assert_eq!(o.package.size, 80_000_000);
+        assert!(o.package.name.ends_with("portable.zip"));
+        assert!(o.url.ends_with("/releases/tag/v0.6.6"));
+        // 当前版本不新于发布版：不产生升级建议
+        let sizes_065: std::collections::BTreeMap<String, u64> = [
+            ("Pulse-0.6.5-windows-x64-setup.exe", 150_000_000u64),
+            ("Pulse-0.6.5-windows-x64-portable.zip", 80_000_000),
+            ("SHA256SUMS.txt", 700),
+            ("BUILD_INFO.txt", 400),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        assert!(
+            offer(
+                release_from_tag("v0.6.5", &sizes_065, "").unwrap(),
+                "0.6.6",
+                "portable"
+            )
+            .unwrap()
+            .is_none()
+        );
+        // 资产大小缺失必须报错，不得静默放行
+        let short: std::collections::BTreeMap<String, u64> = sizes
+            .iter()
+            .filter(|(k, _)| k.as_str() != "SHA256SUMS.txt")
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        assert!(release_from_tag("v0.6.6", &short, "").is_err());
     }
     #[test]
     fn semver_and_release_completeness() {
