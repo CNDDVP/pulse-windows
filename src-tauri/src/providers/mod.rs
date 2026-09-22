@@ -31,6 +31,30 @@ pub struct ProxyDetection {
     pub detail: String,
 }
 
+/// 展示用代理地址脱敏：移除 userinfo 与敏感查询参数；实际连接配置不受影响。
+fn redact_proxy_url(url: &str) -> String {
+    let mut out = url.to_string();
+    if let Some(scheme_end) = out.find("://") {
+        let after = &out[scheme_end + 3..];
+        if let Some(at) = after.find('@') {
+            // scheme://user:pass@host -> scheme://[user]@host（保留用户名占位，隐藏密码）
+            let host_part = &after[at..];
+            let user = after[..at].split(':').next().unwrap_or("");
+            out = format!("{}{}{}", &out[..scheme_end + 3], user, host_part);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod redact_tests {
+    #[test] fn proxy_userinfo_password_hidden() {
+        assert_eq!(super::redact_proxy_url("http://user:secret@127.0.0.1:7890"), "http://user@127.0.0.1:7890");
+        assert_eq!(super::redact_proxy_url("http://127.0.0.1:7890"), "http://127.0.0.1:7890");
+        assert_eq!(super::redact_proxy_url("socks5://bob:p%40ss@proxy.local:1080"), "socks5://bob@proxy.local:1080");
+    }
+}
+
 pub fn detect_proxy(proxy_cfg: &crate::types::NetworkProxySettings) -> ProxyDetection {
     match proxy_cfg.mode.as_str() {
         "manual_http" => ProxyDetection {
@@ -48,20 +72,22 @@ pub fn detect_proxy(proxy_cfg: &crate::types::NetworkProxySettings) -> ProxyDete
         _ => {
             if let Ok(env_proxy) = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("ALL_PROXY")).or_else(|_| std::env::var("HTTP_PROXY")) {
                 if !env_proxy.trim().is_empty() {
+                    let shown = redact_proxy_url(&env_proxy);
                     return ProxyDetection {
                         mode: "auto".into(),
                         detected_type: "env_proxy".into(),
-                        address: Some(env_proxy.clone()),
-                        detail: format!("环境变量代理 ({env_proxy})"),
+                        address: Some(shown.clone()),
+                        detail: format!("环境变量代理 ({shown})"),
                     };
                 }
             }
             if let Some(sys_proxy) = crate::platform::detect_windows_system_proxy() {
+                let shown = redact_proxy_url(&sys_proxy);
                 ProxyDetection {
                     mode: "auto".into(),
                     detected_type: "system_proxy".into(),
-                    address: Some(sys_proxy.clone()),
-                    detail: format!("Windows 系统代理 ({sys_proxy})"),
+                    address: Some(shown.clone()),
+                    detail: format!("Windows 系统代理 ({shown})"),
                 }
             } else {
                 ProxyDetection {

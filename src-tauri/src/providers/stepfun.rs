@@ -97,9 +97,18 @@ fn merge(
     }
     if let Some(Ok(u)) = usages {
         let list = u.get("usages").or_else(|| u.get("items")).or_else(|| u.get("records")).unwrap_or(&u);
-        if list.is_array() {
-            if list.as_array().is_some_and(|a|a.len()>=200){warnings.push("用量明细达到单页上限，图表仅表示已返回记录，可能不完整".into());}
+        if let Some(arr) = list.as_array() {
+            // S7：status 成功但 records 非法（字段缺失/类型变化）时显式警告，不再静默丢图。
+            let truncated = u.get("truncated").and_then(Value::as_bool).unwrap_or(false);
+            if arr.len() >= 200 || truncated {
+                warnings.push("用量明细超过单页上限，图表仅统计已返回记录，可能不完整".into());
+            }
+            if arr.is_empty() {
+                warnings.push("用量明细返回空记录（可能确实无消耗）".into());
+            }
             merged.insert("hourly_usages".into(), list.clone());
+        } else {
+            warnings.push("用量明细响应结构异常（记录字段缺失或类型变化），24h 图表暂不可用".into());
         }
     }
     if !warnings.is_empty() {
@@ -181,6 +190,20 @@ pub fn source_label(secret: &str) -> &'static str {
         assert!(v.get("plan_credit_rate_limit").is_some());
         assert_eq!(v["web_auth_required"], false);
         assert!(v["token_warning"].as_str().unwrap().contains("HTTP 400"));
+    }
+    #[test] fn usage_schema_anomaly_warns_and_keeps_data() {
+        // S7：records 类型异常时不再静默丢图——warnings 显式标注，其余成功数据保留
+        let v = merge(Some(Ok(plan())), Some(Ok(json!({"balance":15.0}))),
+            Some(Ok(json!({"status":1,"usages":{"unexpected":"shape"}})))).unwrap();
+        assert_eq!(v["balance"], 15.0);
+        assert!(v["token_warning"].as_str().unwrap().contains("结构异常"));
+        assert!(v.get("hourly_usages").is_none());
+    }
+    #[test] fn usage_truncated_flag_warns() {
+        let records: Vec<_> = (0..50).map(|i| json!({"usage_time": i, "credit": 1.0})).collect();
+        let v = merge(Some(Ok(plan())), None,
+            Some(Ok(json!({"status":1,"usages":records,"truncated":true})))).unwrap();
+        assert!(v["token_warning"].as_str().unwrap().contains("可能不完整"));
     }
     #[test] fn rpc_success_is_one_not_zero() {
         for status in [json!(1),json!("1")] {

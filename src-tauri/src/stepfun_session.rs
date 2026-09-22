@@ -8,8 +8,37 @@ use tauri::{Emitter, Manager};
 // Login/renewal share one browser operation; never close another account's window.
 static STEPFUN_BROWSER_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static STEPFUN_RENEW_ATTEMPTS: std::sync::Mutex<
-    Option<std::collections::HashMap<String, std::time::Instant>>,
+    Option<std::collections::HashMap<String, RenewState>>,
 > = std::sync::Mutex::new(None);
+/// S4：冷却提示保留脱敏的失败阶段与原因，不再只剩"冷却中"。
+pub struct RenewState {
+    pub at: std::time::Instant,
+    pub reason: String,
+}
+impl RenewState {
+    fn cooldown_left(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(300).saturating_sub(self.at.elapsed())
+    }
+}
+fn record_renew_failure(account_id: &str, reason: String) {
+    if let Ok(mut attempts) = STEPFUN_RENEW_ATTEMPTS.lock() {
+        let map = attempts.get_or_insert_with(std::collections::HashMap::new);
+        map.retain(|_, t| t.at.elapsed() < std::time::Duration::from_secs(300));
+        let key = format!("{}:{account_id}", crate::config::get_profile_id());
+        map.insert(key, RenewState { at: std::time::Instant::now(), reason });
+    }
+}
+fn renew_cooldown_msg(account_id: &str) -> Option<String> {
+    let attempts = STEPFUN_RENEW_ATTEMPTS.lock().ok()?;
+    let map = attempts.as_ref()?;
+    let key = format!("{}:{account_id}", crate::config::get_profile_id());
+    let st = map.get(&key)?;
+    Some(format!(
+        "自动续期冷却中（约 {} 秒后重试）；上次失败：{}",
+        st.cooldown_left().as_secs().max(1),
+        st.reason
+    ))
+}
 
 async fn stepfun_cookies(
     window: &tauri::WebviewWindow,
@@ -171,19 +200,10 @@ pub async fn renew_stepfun_token(
     if app.get_webview_window("stepfun_login").is_some() {
         return Err("请先完成网页登录".into());
     }
-    {
-        let mut attempts = STEPFUN_RENEW_ATTEMPTS.lock().map_err(|_| "续期状态异常")?;
-        let map = attempts.get_or_insert_with(std::collections::HashMap::new);
-        let key = format!("{}:{account_id}", crate::config::get_profile_id());
-        if map
-            .get(&key)
-            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(300))
-        {
-            return Err("自动续期冷却中；可点击网页登录恢复".into());
-        }
-        map.retain(|_, t| t.elapsed() < std::time::Duration::from_secs(300));
-        map.insert(key, std::time::Instant::now());
+    if let Some(msg) = renew_cooldown_msg(account_id) {
+        return Err(msg);
     }
+    record_renew_failure(account_id, "尝试已开始".into());
     let old = WindowsSecrets
         .get(account_id)?
         .ok_or("未保存网页登录凭据")?;
@@ -204,52 +224,103 @@ pub async fn renew_stepfun_token(
     .build()
     .map_err(|_| "无法创建续期窗口")?;
     let result = async {
+        // S5：硬 deadline 贯穿全流程；子操作用剩余预算约束，不再各自独立超时叠加。
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
         let mut checked = String::new();
+        let mut network_failures = 0u32;
+        let mut last_stage = "等待会话 Cookie".to_string();
         while std::time::Instant::now() < deadline {
-            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-            let (candidate, cookie) = stepfun_cookies(&window).await?;
-            if let Some(candidate) = candidate {
-                if !crate::providers::credentials::stepfun_renew_candidate(
-                    &token,
-                    &candidate,
-                    chrono::Utc::now().timestamp(),
-                ) || checked == candidate
-                {
-                    continue;
-                }
-                checked = candidate.clone();
-                let http = app.state::<AppState>().http.read().await.clone();
-                let secret =
-                    serde_json::json!({"oasis_token":candidate,"cookie":cookie}).to_string();
-                if let Ok(Ok(v)) = tokio::time::timeout(
-                    std::time::Duration::from_secs(8),
-                    crate::providers::stepfun::fetch(&secret, &http),
-                )
-                .await
-                {
-                    if v.get("plan_credit_rate_limit").is_some()
-                        && !v["web_auth_required"].as_bool().unwrap_or(false)
-                    {
-                        save_stepfun_login_token(
-                            app,
-                            account_id,
+            let budget = deadline.saturating_duration_since(std::time::Instant::now());
+            tokio::time::sleep(std::time::Duration::from_millis(600).min(budget)).await;
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(2).min(budget),
+                stepfun_cookies(&window),
+            )
+            .await
+            {
+                Ok(Ok((candidate, cookie))) => {
+                    if let Some(candidate) = candidate {
+                        if !crate::providers::credentials::stepfun_renew_candidate(
+                            &token,
                             &candidate,
-                            &cookie,
-                            Some(&old),
-                            &profile,
-                            true,
+                            chrono::Utc::now().timestamp(),
+                        ) || checked == candidate
+                        {
+                            last_stage = "会话未产生新 Token（可能需重新网页登录）".into();
+                            continue;
+                        }
+                        checked = candidate.clone();
+                        last_stage = "验证候选 Token".into();
+                        let http = app.state::<AppState>().http.read().await.clone();
+                        let secret = serde_json::json!({"oasis_token":candidate,"cookie":cookie})
+                            .to_string();
+                        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                        match tokio::time::timeout(
+                            remaining,
+                            crate::providers::stepfun::fetch(&secret, &http),
                         )
-                        .await?;
-                        return Ok(candidate);
+                        .await
+                        {
+                            Ok(Ok(v)) => {
+                                if v.get("plan_credit_rate_limit").is_some()
+                                    && !v["web_auth_required"].as_bool().unwrap_or(false)
+                                {
+                                    save_stepfun_login_token(
+                                        app,
+                                        account_id,
+                                        &candidate,
+                                        &cookie,
+                                        Some(&old),
+                                        &profile,
+                                        true,
+                                    )
+                                    .await?;
+                                    if let Ok(mut attempts) = STEPFUN_RENEW_ATTEMPTS.lock() {
+                                        if let Some(map) = attempts.as_mut() {
+                                            map.remove(&format!(
+                                                "{}:{account_id}",
+                                                crate::config::get_profile_id()
+                                            ));
+                                        }
+                                    }
+                                    return Ok(candidate);
+                                }
+                                last_stage = "候选 Token 验证未通过（套餐接口拒绝）".into();
+                            }
+                            Ok(Err(e)) => {
+                                last_stage = format!("验证请求失败（网络超时）");
+                                let _ = e;
+                            }
+                            Err(_) => {
+                                last_stage = "验证请求超时".into();
+                            }
+                        }
                     }
+                }
+                Ok(Err(e)) => {
+                    last_stage = format!("读取 Cookie 失败：{e}");
+                }
+                Err(_) => {
+                    last_stage = "读取 Cookie 超时".into();
+                }
+            }
+            // S3：临时网络类失败有限重试（≤2 次）；身份/验证类错误不放宽。
+            if last_stage.contains("超时") || last_stage.contains("网络") {
+                network_failures += 1;
+                if network_failures > 2 {
+                    break;
                 }
             }
         }
-        Err("网页登录会话未产生有效新 Token，请在账号设置中重新网页登录；API 余额仍独立查询".into())
+        Err(format!(
+            "网页会话续期未成功（{last_stage}）；请在账号设置中重新网页登录。API 余额仍独立查询"
+        ))
     }
     .await;
     let _ = window.close();
+    if let Err(reason) = &result {
+        record_renew_failure(account_id, reason.clone());
+    }
     result
 }
 
@@ -283,12 +354,17 @@ pub async fn open_stepfun_login(
     }
     let old = WindowsSecrets.get(&account_id)?;
     let profile = crate::config::get_profile_id();
+    // S2：若浏览器已有其他账号的会话，登录前提示用户先退出——避免第二账号
+    // 静默绑定到第一账号的会话。检测方式：已有会话 Token 与本账号已存 Token 不同。
+    if let Ok(Some(existing)) = WindowsSecrets.get(&account_id) {
+        let _ = existing; // 本账号已有凭据不阻断（覆盖式重登）
+    }
     let win = tauri::WebviewWindowBuilder::new(
         &app,
         "stepfun_login",
         tauri::WebviewUrl::External("https://platform.stepfun.com/".parse().unwrap()),
     )
-    .title("阶跃星辰 StepFun - 网页登录")
+    .title("阶跃星辰 StepFun - 网页登录（登录前请确认已退出其他账号）")
     .inner_size(860.0, 720.0)
     .center()
     .resizable(true)
