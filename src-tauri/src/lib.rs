@@ -1,3 +1,4 @@
+pub mod stepfun_session;
 pub mod updater;
 pub mod commands;
 pub mod config;
@@ -105,17 +106,7 @@ impl AppState {
                     Ok(p)=>{let _p=p;tokio::time::timeout(Duration::from_secs(25),providers::fetch_one(&aid,&cfg_clone,&http)).await.ok()}
                     Err(_)=>None,
                 };
-                if let Some(ref r) = reading {
-                    if cfg_clone.provider_id == "stepfun" && r.error_code.as_deref() == Some("auth") {
-                        if let Some(msg) = &r.error_message {
-                            if msg.contains("Token 已过期") || msg.contains("expired") {
-                                if crate::commands::renew_stepfun_token(&app2, &aid).await.is_ok() {
-                                    reading = tokio::time::timeout(Duration::from_secs(25), providers::fetch_one(&aid, &cfg_clone, &http)).await.ok();
-                                }
-                            }
-                        }
-                    }
-                }
+                if let Some(r)=reading {reading=Some(crate::stepfun_session::recover_stepfun_reading(&app2,&aid,&cfg_clone,&http,r).await);}
                 let st=app2.state::<AppState>();
                 let still_valid={
                     let s=st.settings.lock().await;
@@ -311,25 +302,14 @@ pub async fn refresh_usages_and_emit(app:&AppHandle,manual:bool)->Result<Refresh
 
     let start_gens=state.account_generations.lock().await.clone();
     let http=state.http.read().await.clone();
-    let mut rx=providers::fetch_all_stream(&due,&http,state.refresh_slots.clone());
+    let mut rx=providers::fetch_all_stream(&due,&http,state.refresh_slots.clone(),Some(app.clone()));
     let mut incoming=vec![];
     let mut passed:Vec<ProviderUsage>=vec![];
     let mut finished_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    while let Some(mut fresh)=rx.recv().await {
+    while let Some(fresh)=rx.recv().await {
         let current_settings=state.settings.lock().await.clone();
         let id=fresh.account_id.clone();
-        if let Some(cfg) = current_settings.providers.get(&id) {
-            if cfg.provider_id == "stepfun" && fresh.error_code.as_deref() == Some("auth") {
-                if let Some(msg) = &fresh.error_message {
-                    if msg.contains("Token 已过期") || msg.contains("expired") {
-                        if crate::commands::renew_stepfun_token(app, &id).await.is_ok() {
-                            fresh = providers::fetch_one(&id, cfg, &http).await;
-                        }
-                    }
-                }
-            }
-        }
         incoming.push(fresh.clone());
         state.inflight.lock().await.remove(&id); // 本轮发起的请求已落地，放行后续手动刷新
         finished_ids.insert(id.clone());

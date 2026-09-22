@@ -27,6 +27,7 @@ async fn request(req: reqwest::RequestBuilder, label: &str, plan_rpc: bool) -> R
         let code=match status {401|403=>"auth",429=>"rate_limited",404=>"not_found",_=>"server"};
         let mut error=problem(code,&format!("{label}：HTTP {status}{}",if status==401||status==403 {"，请检查或更新该来源凭据"} else {""}));
         error.retry_after_seconds=response.headers().get("retry-after").and_then(|v|v.to_str().ok()).and_then(|v|v.parse().ok());
+        error.web_auth_required=plan_rpc && (status==401||status==403);
         return Err(error);
     }
     let value=response.json::<Value>().await.map_err(|_|problem("schema",&format!("{label}：响应格式无效")))?;
@@ -54,11 +55,11 @@ fn validate_response(value: Value, label: &str, plan_rpc: bool) -> Result<Value,
             } else if msg_lower.contains("invalid credentials") || msg_lower.contains("invalid token") || msg_lower.contains("unauthorized") || msg_lower.contains("unauthenticated") {
                 ("auth", "登录凭据无效或未授权，请核对 Token")
             } else if !msg.is_empty() {
-                ("server", msg)
+                ("server", "控制台业务请求失败")
             } else {
                 ("server", "控制台业务状态未成功")
             };
-            return Err(problem(code, &format!("{label}：{custom_msg}")));
+            let mut e=problem(code, &format!("{label}：{custom_msg}"));e.web_auth_required=code=="auth";return Err(e);
         }
     }
     Ok(value)
@@ -73,6 +74,7 @@ fn merge(
     let mut warnings = Vec::new();
     let mut failures = Vec::new();
     let mut successes = 0;
+    let web_auth_required=plan.as_ref().is_some_and(|r|r.as_ref().is_err_and(|e|e.web_auth_required)) || usages.as_ref().is_some_and(|r|r.as_ref().is_err_and(|e|e.web_auth_required));
     for (label, result, keys) in [
         ("套餐", plan, vec!["plan_credit_rate_limit","five_hour_usage_left_rate","five_hour_usage_reset_time","weekly_usage_left_rate","weekly_usage_reset_time","plan_family","plan_name"]),
         ("API 余额", cash, vec!["balance"])
@@ -88,12 +90,15 @@ fn merge(
             }
         }
     }
+    merged.insert("web_auth_required".into(),Value::Bool(web_auth_required));
+    if let Some(Err(e))=&usages{warnings.push(e.error_message.clone().unwrap_or_else(||"用量明细查询失败".into()));}
     if successes == 0 {
-        return Err(failures.into_iter().next().unwrap_or_else(|| problem("missing_credentials", "未配置 StepFun 凭据")));
+        let mut e=failures.into_iter().next().unwrap_or_else(|| problem("missing_credentials", "未配置 StepFun 凭据"));e.web_auth_required=web_auth_required;return Err(e);
     }
     if let Some(Ok(u)) = usages {
         let list = u.get("usages").or_else(|| u.get("items")).or_else(|| u.get("records")).unwrap_or(&u);
         if list.is_array() {
+            if list.as_array().is_some_and(|a|a.len()>=200){warnings.push("用量明细达到单页上限，图表仅表示已返回记录，可能不完整".into());}
             merged.insert("hourly_usages".into(), list.clone());
         }
     }
@@ -112,16 +117,8 @@ pub async fn fetch(secret: &str, http: &reqwest::Client) -> Result<Value, Provid
             .header("Connect-Protocol-Version","1").header("Oasis-Appid","10300")
             .header("Oasis-Platform","web").header("Oasis-Token",token)
             .header("Origin","https://platform.stepfun.com").header("Referer","https://platform.stepfun.com/");
-        let cookie = if let Some(custom) = &creds.cookie {
-            if custom.contains("Oasis-Token=") { custom.clone() }
-            else if let Some(device) = &device { req = req.header("Oasis-Webid", device); format!("Oasis-Token={token}; Oasis-Webid={device}; {custom}") }
-            else { format!("Oasis-Token={token}; {custom}") }
-        } else if let Some(device) = &device {
-            req = req.header("Oasis-Webid", device);
-            format!("Oasis-Token={token}; Oasis-Webid={device}")
-        } else {
-            format!("Oasis-Token={token}")
-        };
+        if let Some(device)=&device{req=req.header("Oasis-Webid",device);}
+        let cookie=credentials::stepfun_cookie(token,creds.cookie.as_deref(),device.as_deref());
         Some(request(req.header("Cookie", cookie).json(&serde_json::json!({})), "套餐", true).await)
     };
     let cash = async {
@@ -136,16 +133,8 @@ pub async fn fetch(secret: &str, http: &reqwest::Client) -> Result<Value, Provid
             .header("Connect-Protocol-Version","1").header("Oasis-Appid","10300")
             .header("Oasis-Platform","web").header("Oasis-Token",token)
             .header("Origin","https://platform.stepfun.com").header("Referer","https://platform.stepfun.com/");
-        let cookie = if let Some(custom) = &creds.cookie {
-            if custom.contains("Oasis-Token=") { custom.clone() }
-            else if let Some(device) = &device { req = req.header("Oasis-Webid", device); format!("Oasis-Token={token}; Oasis-Webid={device}; {custom}") }
-            else { format!("Oasis-Token={token}; {custom}") }
-        } else if let Some(device) = &device {
-            req = req.header("Oasis-Webid", device);
-            format!("Oasis-Token={token}; Oasis-Webid={device}")
-        } else {
-            format!("Oasis-Token={token}")
-        };
+        if let Some(device)=&device{req=req.header("Oasis-Webid",device);}
+        let cookie=credentials::stepfun_cookie(token,creds.cookie.as_deref(),device.as_deref());
         let body = serde_json::json!({
             "fromTime": from_time,
             "pageSize": 200,
@@ -234,4 +223,23 @@ pub fn source_label(secret: &str) -> &'static str {
         let c=credentials::parse_stepfun_credentials(&second);
         assert_eq!(c.api_key.as_deref(),Some("replacement"));assert_eq!(c.oasis_token.as_deref(),Some("synthetic-token"));
     }
+}
+
+#[cfg(test)]mod renewal_regressions{
+ use super::*;use serde_json::json;
+ #[tokio::test]async fn http_401_remains_visible_with_successful_cash(){
+  use tokio::io::{AsyncReadExt,AsyncWriteExt};
+  let server=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let url=format!("http://{}",server.local_addr().unwrap());
+  let task=tokio::spawn(async move{let(mut socket,_)=server.accept().await.unwrap();let mut b=[0;4096];socket.read(&mut b).await.unwrap();socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();});
+  let error=request(reqwest::Client::builder().no_proxy().build().unwrap().get(url),"套餐",true).await.unwrap_err();task.await.unwrap();assert!(error.web_auth_required);
+  let value=merge(Some(Err(error)),Some(Ok(json!({"balance":15}))),None).unwrap();let r=super::super::parsers::parse("stepfun",&value,0);
+  assert_eq!(r.state,"live");assert!(r.web_auth_required);assert!(r.error_message.unwrap().contains("401"));assert_eq!(r.balances[0].amount,15.0);
+ }
+ #[test]fn cash_auth_error_does_not_trigger_web_renewal(){let v=merge(Some(Ok(json!({"plan_credit_rate_limit":{"subscription_credit_left_rate":0.9}}))),Some(Err(problem("auth","API 余额：HTTP 401"))),None).unwrap();assert_eq!(v["web_auth_required"],false);}
+ #[test]fn detail_failure_is_not_silently_discarded(){let mut e=problem("auth","用量明细：HTTP 401");e.web_auth_required=true;let v=merge(None,Some(Ok(json!({"balance":15}))),Some(Err(e))).unwrap();assert_eq!(v["web_auth_required"],true);assert!(v["token_warning"].as_str().unwrap().contains("用量明细"));}
+ #[test]fn topup_expiry_and_unknown_buckets(){let r=super::super::parsers::parse("stepfun",&json!({"plan_credit_rate_limit":{"credit_buckets":[{"type":2,"credit_residual":10,"expire_at":"2026-12-01T00:00:00Z"},{"type":2,"credit_residual":20,"expire_at":"2026-10-01T00:00:00Z"},{"type":99,"credit_residual":999},{"type":1}]}}),0);assert_eq!(r.balances.len(),1);assert_eq!(r.balances[0].amount,30.0);assert_eq!(r.balances[0].expires_at.as_deref(),Some("2026-10-01T00:00:00+00:00"));}
+}
+
+#[cfg(test)]mod timestamp_regression{
+ #[test]fn hourly_timestamps_accept_milliseconds_and_numeric_strings(){let r=super::super::parsers::parse("stepfun",&serde_json::json!({"balance":15,"hourly_usages":[{"fromTime":"1790000000000","creditConsumed":5},{"fromTime":1790000000,"creditConsumed":3}]}),0);let rows=r.hourly_usages.unwrap();assert_eq!(rows.len(),2);assert_eq!(rows[0].timestamp,1790000000);assert_eq!(rows[0].timestamp,rows[1].timestamp);}
 }

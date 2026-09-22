@@ -154,3 +154,36 @@ pub fn merge_stepfun_credentials(old: &str, update: &str) -> String {
         assert_eq!(c4.oasis_token.as_deref(), Some("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ...eyJhbGciOi..."));
     }
 }
+
+/// Explicit token wins over an old Cookie token. Never send conflicting auth values.
+pub fn stepfun_cookie(token:&str,cookie:Option<&str>,device:Option<&str>)->String{
+ let mut entries=vec![format!("Oasis-Token={token}")];
+ if let Some(id)=device{entries.push(format!("Oasis-Webid={id}"));}
+ for entry in cookie.unwrap_or("").split(';'){
+  if let Some((name,value))=entry.trim().split_once('='){
+   if name.eq_ignore_ascii_case("Oasis-Token")||device.is_some()&&name.eq_ignore_ascii_case("Oasis-Webid"){continue}
+   if !name.is_empty()&&!entry.contains(['\r','\n']){entries.push(format!("{name}={value}"));}
+  }
+ }entries.join("; ")
+}
+pub fn stepfun_expires_at(token:&str)->Option<i64>{claims(token.split("...").next()?).and_then(|c|c["exp"].as_i64())}
+pub fn stepfun_same_session(old:&str,new:&str)->bool{
+ let old_tail=old.split("...").last().unwrap_or(old);let new_tail=new.split("...").last().unwrap_or(new);
+ if old.contains("...")&&new.contains("...")&&old_tail==new_tail{return true}
+ let (Some(a),Some(b))=(claims(old_tail),claims(new_tail))else{return false};
+ let mut matched=false;
+ for key in ["sub","uid","user_id","userId","account_id"]{if let Some(v)=a.get(key).filter(|v|v.as_str().is_some_and(|s|!s.is_empty())||v.as_i64().is_some_and(|n|n>0)){
+  if b.get(key)!=Some(v){return false}matched=true;
+ }}matched
+}
+pub fn stepfun_renew_candidate(old:&str,new:&str,now:i64)->bool{
+ old!=new&&stepfun_expires_at(new).is_none_or(|exp|exp>now+60)&&stepfun_same_session(old,new)
+}
+
+#[cfg(test)]mod stepfun_session_tests{
+ use super::*;use serde_json::json;
+ fn token(user:&str,exp:i64)->String{format!("e30.{}.sig",URL_SAFE_NO_PAD.encode(json!({"sub":user,"exp":exp}).to_string()))}
+ #[test]fn cookie_header_uses_new_token_and_keeps_session_cookie(){let c=stepfun_cookie("new",Some("Oasis-Token=old; Oasis-Webid=old-device; INGRESSCOOKIE=session"),Some("new-device"));assert_eq!(c,"Oasis-Token=new; Oasis-Webid=new-device; INGRESSCOOKIE=session");}
+ #[test]fn renewal_rejects_unchanged_expired_and_other_account_tokens(){let old=token("user-a",100);assert!(!stepfun_renew_candidate(&old,&old,200));assert!(!stepfun_renew_candidate(&old,&token("user-a",250),200));assert!(!stepfun_renew_candidate(&old,&token("user-b",1000),200));assert!(stepfun_renew_candidate(&old,&token("user-a",1000),200));assert!(!stepfun_renew_candidate("opaque-old","opaque-new",200));}
+ #[test]fn compound_token_uses_access_expiry_not_refresh_expiry(){let t=format!("{}...{}",token("user",100),token("user",10000));assert_eq!(stepfun_expires_at(&t),Some(100));}
+}

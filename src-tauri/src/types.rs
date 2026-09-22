@@ -49,6 +49,7 @@ pub struct ProviderUsage {
     pub duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hourly_usages: Option<Vec<HourlyUsage>>,
+    #[serde(default)] pub web_auth_required: bool,
 }
 impl ProviderUsage {
     pub fn problem(provider: &str, code: &str, message: &str) -> Self {

@@ -395,6 +395,7 @@ fn recover(path: &Path) -> Result<()> {
     let mut j: Journal = read_json(&p.work.join("journal.json"))?;
     rollback(p.exe.parent().unwrap(), &p.work.join("backup"), &j)?;
     verify(&p.exe, &p.old_hash)?;
+    write_json(&cache_for(&p.exe).join("last-result.json"),&"更新未通过启动确认，已恢复旧程序；数据未回退")?;
     j.phase = "rolled_back".into();
     write_json(&p.work.join("journal.json"), &j)?;
     fs::remove_file(cache_for(&p.exe).join("pending.json")).map_err(|_| "恢复标记清理失败")?;

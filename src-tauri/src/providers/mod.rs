@@ -6,7 +6,7 @@ pub mod command_code;
 pub mod devin;
 pub mod ollama;
 pub mod xiaomi;
-pub mod stepfun;
+pub(crate) mod stepfun;
 
 use crate::{secrets::{SecretStore,WindowsSecrets},types::{AppSettings,ProviderConfig,ProviderUsage}};
 use std::{sync::Arc,time::Duration};
@@ -289,12 +289,12 @@ async fn fetch_inner(account:&str,cfg:&ProviderConfig,http:&reqwest::Client)->Pr
     r
 }
 
-pub fn fetch_all_stream(settings:&AppSettings,http:&reqwest::Client,semaphore:Arc<Semaphore>)->tokio::sync::mpsc::Receiver<ProviderUsage>{
+pub fn fetch_all_stream(settings:&AppSettings,http:&reqwest::Client,semaphore:Arc<Semaphore>,app:Option<tauri::AppHandle>)->tokio::sync::mpsc::Receiver<ProviderUsage>{
     let (tx,rx)=tokio::sync::mpsc::channel(16);
     let mut ordered:Vec<_>=settings.providers.iter().filter(|(_,c)|c.enabled).collect();
     ordered.sort_by_key(|(id,c)|(c.order,*id));
     for (id,cfg) in ordered {
-        let id=id.clone();let cfg=cfg.clone();let http=http.clone();let gate=semaphore.clone();let tx=tx.clone();
+        let id=id.clone();let cfg=cfg.clone();let http=http.clone();let gate=semaphore.clone();let tx=tx.clone();let app=app.clone();
         tokio::spawn(async move{
             let _permit=gate.acquire_owned().await.expect("semaphore lives for fetch");
             let r=match tokio::time::timeout(Duration::from_secs(25),fetch_one(&id,&cfg,&http)).await {
@@ -308,6 +308,7 @@ pub fn fetch_all_stream(settings:&AppSettings,http:&reqwest::Client,semaphore:Ar
                     r
                 }
             };
+            let r=if let Some(app)=app{crate::stepfun_session::recover_stepfun_reading(&app,&id,&cfg,&http,r).await}else{r};
             let _=tx.send(r).await;
         });
     }
@@ -315,7 +316,7 @@ pub fn fetch_all_stream(settings:&AppSettings,http:&reqwest::Client,semaphore:Ar
 }
 
 pub async fn fetch_all_usages(settings:&AppSettings,http:&reqwest::Client,semaphore:Arc<Semaphore>)->Vec<ProviderUsage>{
-    let mut rx=fetch_all_stream(settings,http,semaphore);
+    let mut rx=fetch_all_stream(settings,http,semaphore,None);
     let mut out=vec![];
     while let Some(r)=rx.recv().await{
         out.push(r);

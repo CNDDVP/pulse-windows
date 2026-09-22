@@ -370,6 +370,9 @@ fn durable_copy(source: &Path, target: &Path) -> Result<()> {
     plain(target)?;
     let temp = target.with_extension(format!("{}.pulse-update-new", uuid::Uuid::new_v4()));
     plain(&temp)?;
+    struct TempGuard(std::path::PathBuf);
+    impl Drop for TempGuard{fn drop(&mut self){let _=std::fs::remove_file(&self.0);}}
+    let _cleanup=TempGuard(temp.clone());
     fs::copy(source, &temp).map_err(|_| "更新文件复制失败")?;
     fs::OpenOptions::new()
         .write(true)

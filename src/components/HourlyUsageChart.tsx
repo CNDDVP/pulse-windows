@@ -1,3 +1,4 @@
+import {useEffect,useState} from "react";
 import type { HourlyUsage } from "../types";
 import { balanceText } from "../presentation";
 
@@ -8,14 +9,17 @@ export function HourlyUsageChart({
   usages: HourlyUsage[];
   compact?: boolean;
 }) {
+  const [nowSeconds,setNowSeconds]=useState(()=>Math.floor(Date.now()/1000));
+  useEffect(()=>{const timer=setInterval(()=>setNowSeconds(Math.floor(Date.now()/1000)),60000);return()=>clearInterval(timer);},[]);
   if (!usages || usages.length === 0) return null;
-
-  // Aggregate by hour
+  const nowHour=Math.floor(nowSeconds/3600)*3600;
+  // Aggregate the same 24 displayed hour buckets for both bars and totals.
   const hourlyMap = new Map<number, { timestamp: number; credits: number; calls: number; models: Record<string, number> }>();
   let totalCredits = 0;
   let totalCalls = 0;
 
   for (const u of usages) {
+    if(!Number.isFinite(u.timestamp)||u.timestamp<nowHour-23*3600||u.timestamp>nowSeconds||!Number.isFinite(u.credit_consumed)||u.credit_consumed<0||!Number.isFinite(u.calls)||u.calls<0)continue;
     totalCredits += u.credit_consumed;
     totalCalls += u.calls;
     // Align timestamp to hour
@@ -28,7 +32,7 @@ export function HourlyUsageChart({
   }
 
   // Get last 24 hours
-  const nowHour = Math.floor(Date.now() / 1000 / 3600) * 3600;
+
   const hours: { hourLabel: string; credits: number; calls: number; models: Record<string, number> }[] = [];
   let maxHourCredits = 1;
 
@@ -47,7 +51,7 @@ export function HourlyUsageChart({
   return (
     <div className={`mt-3 p-2.5 rounded-xl border border-white/5 bg-zinc-900/40 text-xs ${compact ? "" : "p-3"}`}>
       <div className="flex justify-between items-center mb-1.5">
-        <span className="font-medium text-zinc-300">24h 积分消耗趋势</span>
+        <span className="font-medium text-zinc-300">24h 积分消耗趋势（已返回记录）</span>
         <span className="text-[11px] text-zinc-400 font-mono">
           共 {balanceText("Credit", totalCredits)}
         </span>

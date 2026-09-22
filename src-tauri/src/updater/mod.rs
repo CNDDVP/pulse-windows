@@ -415,9 +415,6 @@ pub async fn update_apply(window: tauri::WebviewWindow, app: tauri::AppHandle) -
     }
     state.cancel_ledger_scan();
     let result: Result<()> = async {
-        let _settings = tokio::time::timeout(Duration::from_secs(20), state.settings_io.lock())
-            .await
-            .map_err(|_| "设置仍在保存，未退出")?;
         let _ledger = tokio::time::timeout(Duration::from_secs(20), state.ledger_gate.lock())
             .await
             .map_err(|_| "统计事务仍在运行，未退出")?;
@@ -429,6 +426,9 @@ pub async fn update_apply(window: tauri::WebviewWindow, app: tauri::AppHandle) -
                 .await
                 .map_err(|_| "仍有请求未结束，未退出")?
                 .map_err(|_| "刷新调度已关闭")?;
+        let _settings = tokio::time::timeout(Duration::from_secs(20), state.settings_io.lock())
+            .await
+            .map_err(|_| "设置仍在保存，未退出")?;
         crate::config::save_settings(&state.settings.lock().await.clone())?;
         service.stage(&app, "waiting_for_exit", "正在交接更新助手…");
         tokio::task::spawn_blocking(move || helper::spawn(&p))

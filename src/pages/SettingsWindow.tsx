@@ -47,16 +47,10 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
   const usages = localUsages;
   const [isPortable, setIsPortable] = useState(false);
   useEffect(() => {
-    invoke<boolean>("is_portable_mode").then(setIsPortable).catch(() => {});
+    invoke<boolean>("is_portable").then(setIsPortable).catch(() => {});
   }, []);
   const [view, setView] = useState<View>({ kind: "accounts" });
-  useEffect(() => {
-    invoke<ProviderUsage[]>("get_usages")
-      .then(u => {
-        if (u && u.length > 0) setLocalUsages(u);
-      })
-      .catch(() => {});
-  }, [view]);
+
   const [search, setSearch] = useState("");
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
@@ -82,31 +76,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
     }
   }, [hasAntigravity]);
 
-  useEffect(() => {
-    const unlistenSuccess = listen<{ account_id: string }>("stepfun-login-success", event => {
-      const aid = event.payload.account_id;
-      setWebLoginLoading(s => ({ ...s, [aid]: false }));
-      showToast("success", "阶跃星辰登录成功，凭据已自动保存并更新！");
-      setStepfunCredentials(s => ({ ...s, [aid]: { apiKey: "", oasisToken: "" } }));
-      invoke<AppSettings>("get_settings")
-        .then(saved => {
-          markApplied(saved);
-          setSettings(saved);
-          onSaved(saved);
-          invoke("refresh_account", { accountId: aid }).catch(() => {});
-        })
-        .catch(() => {});
-    });
 
-    const unlistenClosed = listen("stepfun-login-closed", () => {
-      setWebLoginLoading({});
-    });
-
-    return () => {
-      unlistenSuccess.then(fn => fn()).catch(() => {});
-      unlistenClosed.then(fn => fn()).catch(() => {});
-    };
-  }, [onSaved]);
 
   const handleQuickAddAntigravity = async () => {
     try {
@@ -174,6 +144,27 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
     setToast({ type, text });
     toastTimerRef.current = setTimeout(() => setToast(null), 3500);
   };
+  useEffect(() => {
+    const unlistenSuccess = listen<{ account_id: string }>("stepfun-login-success", event => {
+      const aid = event.payload.account_id;
+      setWebLoginLoading(s => ({ ...s, [aid]: false }));
+      showToast("success", "阶跃星辰登录成功，凭据已自动保存并更新！");
+      // The settings-updated bridge below reconciles remote changes with drafts.
+      // Do not erase unsaved API Key / account edits when a web login completes.
+
+    });
+
+    const unlistenError = listen<string>("stepfun-login-error", event => {setWebLoginLoading({});showToast("error", event.payload);});
+    const unlistenClosed = listen("stepfun-login-closed", () => {
+      setWebLoginLoading({});
+    });
+
+    return () => {
+      unlistenSuccess.then(fn => fn()).catch(() => {});
+      unlistenClosed.then(fn => fn()).catch(() => {});
+      unlistenError.then(fn => fn()).catch(() => {});
+    };
+  }, [onSaved]);
   // 破坏性操作的非阻塞确认（替代 window.confirm——WebView2 的模态对话框会挂起渲染线程）：
   // 第一次点击进入 armed 态（按钮变确认文案），3 秒未确认自动解除。
   const [confirmArmed, setConfirmArmed] = useState<string | null>(null);

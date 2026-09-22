@@ -20,8 +20,8 @@ it('shows topup bucket with expiry and hourly usages chart',()=>{
      { currency: 'Credit-Topup', amount: 500000, expires_at: '2026-12-31T23:59:59Z' },
    ],
    hourly_usages: [
-     { timestamp: 1774137600, model_id: 'step-2-16k', calls: 12, credit_consumed: 3000 },
-     { timestamp: 1774141200, model_id: 'step-2-16k', calls: 5, credit_consumed: 1500 },
+     { timestamp: Math.floor(Date.now()/1000)-7200, model_id: 'step-2-16k', calls: 12, credit_consumed: 3000 },
+     { timestamp: Math.floor(Date.now()/1000)-3600, model_id: 'step-2-16k', calls: 5, credit_consumed: 1500 },
    ],
  };
  const {container}=render(<UsageDetailCard usage={usageWithTopup} settings={settings}/>);
@@ -33,4 +33,11 @@ it('shows topup bucket with expiry and hourly usages chart',()=>{
 it('reduced motion removes both activity and refresh spins',()=>{
  const {container}=render(<UsageRing usage={usage} settings={settings} onHover={()=>{}} refreshing/>);
  expect(container.querySelector('.animate-spin')).toBeNull();expect(container.querySelector('.bg-white')).not.toBeNull();
+});
+
+it('hourly chart totals exclude old and future records',()=>{
+ const now=Math.floor(Date.now()/1000);
+ const sample={...usage,hourly_usages:[{timestamp:now-60,model_id:'m',calls:1,credit_consumed:5},{timestamp:now-90000,model_id:'m',calls:99,credit_consumed:999},{timestamp:now+3600,model_id:'m',calls:99,credit_consumed:888}]};
+ const {container}=render(<UsageDetailCard usage={sample} settings={settings}/>);
+ expect(container.textContent).toContain('5');expect(container.textContent).not.toContain('999');expect(container.textContent).not.toContain('888');
 });

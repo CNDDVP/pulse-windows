@@ -270,19 +270,14 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
                         let b_type = b["type"].as_i64()
                             .or_else(|| b["type"].as_str().and_then(|s| s.parse().ok()))
                             .unwrap_or(1);
-                        let res = number(&b["credit_residual"])
-                            .or_else(|| number(&b["residual"]))
-                            .unwrap_or(0.0);
+                        let Some(res) = number(&b["credit_residual"]).or_else(|| number(&b["residual"])) else {continue};
+                        if res<0.0{continue}
                         if b_type == 2 {
                             topup_residual += res;
                             has_topup = true;
-                            if topup_expire_at.is_none() {
-                                topup_expire_at = date(&b["expireAt"])
-                                    .or_else(|| date(&b["expire_at"]))
-                                    .or_else(|| date(&b["expireTime"]))
-                                    .or_else(|| date(&b["expire_time"]));
-                            }
-                        } else {
+                            let expiry=date(&b["expireAt"]).or_else(||date(&b["expire_at"])).or_else(||date(&b["expireTime"])).or_else(||date(&b["expire_time"]));
+                            if let Some(expiry)=expiry{if topup_expire_at.as_ref().is_none_or(|old|expiry<*old){topup_expire_at=Some(expiry);}}
+                        } else if b_type==1 {
                             subscription_residual += res;
                             has_subscription = true;
                         }
@@ -350,10 +345,7 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
             if let Some(usages) = v.get("hourly_usages").or_else(|| v.get("usages")).and_then(Value::as_array) {
                 let mut list = Vec::new();
                 for u in usages {
-                    let ts = u["fromTime"].as_i64()
-                        .or_else(|| u["from_time"].as_i64())
-                        .or_else(|| u["timestamp"].as_i64())
-                        .unwrap_or(0);
+                    let ts=["fromTime","from_time","timestamp"].iter().find_map(|k|date(&u[*k]).and_then(|s|chrono::DateTime::parse_from_rfc3339(&s).ok()).map(|d|d.timestamp())).unwrap_or(0);
                     let model = u["modelId"].as_str()
                         .or_else(|| u["model_id"].as_str())
                         .unwrap_or("")
@@ -390,6 +382,7 @@ pub fn parse(id:&str,v:&Value,now:i64)->ProviderUsage{
                 reading.plan_name=Some(name.into());
             }
 
+            reading.web_auth_required=v["web_auth_required"].as_bool().unwrap_or(false);
             if let Some(warn) = v["token_warning"].as_str() {
                 reading.error_message = Some(warn.to_string());
             }
