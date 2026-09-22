@@ -134,11 +134,17 @@ pub fn merge_stepfun_credentials(old: &str, update: &str) -> String {
     let previous = parse_stepfun_credentials(old);
     let incoming = parse_stepfun_credentials(update);
     let nonempty = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
+    // 网页绑定标记的管理规则：手动更换 oasis_token（轮换）时旧绑定作废——
+    // 新 Token 来自粘贴而非浏览器会话，旧 cookie 对应旧登录，不能继续视为可续期；
+    // 仅更新 API Key（token 不变）或自动续期流程（incoming 自带 web_bound=true）时保留。
+    let token_rotated = incoming.oasis_token.is_some()
+        && incoming.oasis_token != previous.oasis_token;
+    let web_bound = if token_rotated { incoming.web_bound } else { incoming.web_bound || previous.web_bound };
     serde_json::json!({
         "api_key": nonempty(incoming.api_key).or_else(|| nonempty(previous.api_key)),
         "oasis_token": nonempty(incoming.oasis_token).or_else(|| nonempty(previous.oasis_token)),
-        "cookie": nonempty(incoming.cookie).or_else(|| nonempty(previous.cookie)),
-        "web_bound": incoming.web_bound || previous.web_bound
+        "cookie": if token_rotated { nonempty(incoming.cookie) } else { nonempty(incoming.cookie).or_else(|| nonempty(previous.cookie)) },
+        "web_bound": web_bound
     }).to_string()
 }
 
@@ -154,6 +160,24 @@ pub fn merge_stepfun_credentials(old: &str, update: &str) -> String {
         // 显式 false 尊重存储值
         let explicit = parse_stepfun_credentials(r#"{"oasis_token":"t","web_bound":false}"#);
         assert!(!explicit.web_bound);
+    }
+    #[test]fn manual_token_rotation_drops_web_binding(){
+        // 网页登录凭据（web_bound=true）→ 手动粘贴新 Token → 绑定撤销 + 旧 cookie 清除
+        let webbed = merge_stepfun_credentials("", r#"{"oasis_token":"old-tok","cookie":"Oasis-Token=old-tok; x=1","web_bound":true}"#);
+        assert!(parse_stepfun_credentials(&webbed).web_bound);
+        let rotated = merge_stepfun_credentials(&webbed, r#"{"oasis_token":"pasted-new-tok"}"#);
+        let c = parse_stepfun_credentials(&rotated);
+        assert!(!c.web_bound, "手动换 Token 必须撤销网页绑定");
+        assert_eq!(c.oasis_token.as_deref(), Some("pasted-new-tok"));
+        assert!(c.cookie.is_none(), "旧会话 cookie 不随新 Token 继承");
+        // 仅更新 API Key：绑定保留
+        let key_only = merge_stepfun_credentials(&webbed, r#"{"api_key":"sk-new"}"#);
+        assert!(parse_stepfun_credentials(&key_only).web_bound, "仅换 API Key 保留网页绑定");
+        // 自动续期轮换（incoming 带 web_bound=true + 新 cookie）：绑定保持
+        let auto = merge_stepfun_credentials(&webbed, r#"{"oasis_token":"fresh-tok","cookie":"Oasis-Token=fresh-tok; y=2","web_bound":true}"#);
+        let ac = parse_stepfun_credentials(&auto);
+        assert!(ac.web_bound);
+        assert_eq!(ac.cookie.as_deref(), Some("Oasis-Token=fresh-tok; y=2"));
     }
     #[test]fn web_bound_manual_paste_stays_false(){
         // 手动粘贴裸 Token / 整串 Cookie → 恒为 false，不误判为可续期会话

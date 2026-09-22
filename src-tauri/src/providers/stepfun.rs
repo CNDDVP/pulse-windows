@@ -98,11 +98,19 @@ fn merge(
     if let Some(Ok(u)) = usages {
         let list = u.get("usages").or_else(|| u.get("items")).or_else(|| u.get("records")).unwrap_or(&u);
         if let Some(arr) = list.as_array() {
-            // 问题 7 & 8：判断 total 与分页上限，正常空记录不报错
+            // P3 #8：完整性只按 truncated 标记与 total 差值判断——
+            // 分页已完整取回 300/300 条时不再因"单页大小 200"误报达到上限
             let total = u.get("total").and_then(Value::as_u64).unwrap_or(arr.len() as u64);
             let truncated = u.get("truncated").and_then(Value::as_bool).unwrap_or(false) || total > arr.len() as u64;
-            if arr.len() >= 200 || truncated {
-                warnings.push(format!("用量明细达到上限（已获取 {} / 共 {} 条），图表仅统计已返回记录", arr.len(), total));
+            if truncated {
+                warnings.push(format!("用量明细不完整（已获取 {} / 共 {} 条），图表仅统计已返回记录", arr.len(), total));
+            }
+            // P2 #4：后续页失败的具体原因透出到警告，不静默吞掉
+            if let Some(page_err) = u.get("usage_page_error").and_then(Value::as_str) {
+                warnings.push(format!("明细分页中断：{page_err}"));
+            }
+            if u.get("usage_page_auth").and_then(Value::as_bool).unwrap_or(false) {
+                warnings.push("明细后续页返回认证失败，可能需要重新网页登录".into());
             }
             // 合法空记录正常挂载，不产生任何不必要的警告
             merged.insert("hourly_usages".into(), list.clone());
@@ -130,7 +138,12 @@ fn usage_request_body(now: i64, page: u32) -> Value {
 }
 
 /// P2 #9：按 total 分页拉取用量明细，最多 3 页（600 条）。
-/// 返回合并后的响应（usages 数组合并，truncated 标记是否还有未拉取页）。
+/// 分页拉取用量明细（P2 #4/#5/#6/#8）：
+/// - 独立总预算 10s（页间与页内都以剩余预算为限），保护外层 25s 账户预算——
+///   明细拖慢不再连带丢弃已成功的套餐与现金结果
+/// - 后续页失败不吞错：错误写入 usage_page_error，认证失败标记 web_auth_required
+/// - 按 (fromTime, modelId) 小时粒度去重 + 重复页检测（服务重复返回同一页时停止）
+/// - truncated 只按 total>已取 或 预算/错误中断 判定，不再用单页大小推断
 async fn fetch_usages_paginated(
     http: &reqwest::Client,
     token: &str,
@@ -138,28 +151,60 @@ async fn fetch_usages_paginated(
     cookie: &str,
 ) -> Option<Result<Value, ProviderUsage>> {
     let now = chrono::Utc::now().timestamp();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut all_records: Vec<Value> = Vec::new();
+    let mut seen_keys: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut first_response: Option<Result<Value, ProviderUsage>> = None;
     let mut truncated = false;
     let mut pages_fetched = 0u32;
+    let mut page_error: Option<String> = None;
+    let mut page_auth_flag = false;
+    // 记录每页首条记录键，检测服务端重复返回同一页
+    let mut last_page_first_key: Option<(String, String)> = None;
 
     for page in 1..=3u32 {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            truncated = true;
+            page_error = Some("明细分页预算耗尽".into());
+            break;
+        }
         let mut req = http.post("https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanUsages")
             .header("Connect-Protocol-Version","1").header("Oasis-Appid","10300")
             .header("Oasis-Platform","web").header("Oasis-Token",token)
             .header("Origin","https://platform.stepfun.com").header("Referer","https://platform.stepfun.com/");
         if let Some(device)=device{req=req.header("Oasis-Webid",device);}
         let body = usage_request_body(now, page);
-        let result = request(req.header("Cookie", cookie).json(&body), "用量明细", true).await;
+        let result = tokio::time::timeout(remaining,
+            request(req.header("Cookie", cookie).json(&body), "用量明细", true)).await;
 
         match result {
-            Ok(v) => {
+            Ok(Ok(v)) => {
                 if first_response.is_none() {
                     first_response = Some(Ok(v.clone()));
                 }
                 let list = v.get("usages").or_else(|| v.get("items")).or_else(|| v.get("records"));
                 if let Some(arr) = list.and_then(Value::as_array) {
-                    all_records.extend(arr.iter().cloned());
+                    // 重复页检测：整页首键与上页相同且长度相同 → 服务端分页失效，停止
+                    let page_first_key = arr.first().map(record_key);
+                    if page == 1 && arr.is_empty() {
+                        break; // 合法空结果
+                    }
+                    if let (Some(k), Some(pk)) = (&page_first_key, &last_page_first_key) {
+                        if k == pk && arr.len() == seen_keys.len() && page > 1 {
+                            truncated = true;
+                            page_error = Some("服务端重复返回同一页".into());
+                            break;
+                        }
+                    }
+                    last_page_first_key = page_first_key;
+                    // 小时粒度去重：同一 (fromTime, model) 只保留一条
+                    for rec in arr.iter() {
+                        let key = record_key(rec);
+                        if seen_keys.insert(key) {
+                            all_records.push(rec.clone());
+                        }
+                    }
                     pages_fetched = page;
                     let total = v.get("total").and_then(Value::as_u64).unwrap_or(0);
                     if (all_records.len() as u64) >= total || page >= 3 {
@@ -170,17 +215,30 @@ async fn fetch_usages_paginated(
                     break;
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 if first_response.is_none() {
                     first_response = Some(Err(e));
+                    break; // 首页失败：整体失败
                 }
+                // 后续页失败：保留已获取记录，记录错误与认证标记（P2 #4）
+                page_error = Some(e.error_message.clone().unwrap_or_else(|| "后续页请求失败".into()));
+                if e.web_auth_required { page_auth_flag = true; }
+                truncated = true;
+                break;
+            }
+            Err(_) => {
+                if first_response.is_none() {
+                    first_response = Some(Err(problem("timeout", "用量明细：请求超时")));
+                    break;
+                }
+                page_error = Some("后续页请求超时".into());
+                truncated = true;
                 break;
             }
         }
     }
 
-    // 多页合并：按实际拉取页数判断（服务端可能缩小页大小，不能用固定 200 条阈值），
-    // 把合并后的 records 和 truncated 标记写回第一个响应
+    // 合并与标记：按实际拉取页数合并（服务端可能缩小页大小，不能用固定阈值）
     if let Some(Ok(v)) = &mut first_response {
         if let Some(obj) = v.as_object_mut() {
             if pages_fetched > 1 {
@@ -189,10 +247,30 @@ async fn fetch_usages_paginated(
             if truncated {
                 obj.insert("truncated".to_string(), Value::Bool(true));
             }
+            if let Some(err) = page_error {
+                obj.insert("usage_page_error".to_string(), Value::String(err));
+            }
+            if page_auth_flag {
+                obj.insert("usage_page_auth".to_string(), Value::Bool(true));
+            }
         }
     }
 
     first_response
+}
+
+/// 明细记录的稳定键：小时粒度（granularHour=1）下 (fromTime, modelId) 唯一。
+fn record_key(rec: &Value) -> (String, String) {
+    let ts = rec.get("fromTime").or_else(|| rec.get("from_time")).or_else(|| rec.get("timestamp"))
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            _ => String::new(),
+        })
+        .unwrap_or_default();
+    let model = rec.get("modelId").or_else(|| rec.get("model_id"))
+        .and_then(Value::as_str).unwrap_or("").to_string();
+    (ts, model)
 }
 
 pub async fn fetch(secret: &str, http: &reqwest::Client) -> Result<Value, ProviderUsage> {
@@ -263,7 +341,7 @@ pub fn source_label(secret: &str) -> &'static str {
         let records: Vec<_> = (0..50).map(|i| json!({"usage_time": i, "credit": 1.0})).collect();
         let v = merge(Some(Ok(plan())), None,
             Some(Ok(json!({"status":1,"usages":records,"total":100})))).unwrap();
-        assert!(v["token_warning"].as_str().unwrap().contains("用量明细达到上限"));
+        assert!(v["token_warning"].as_str().unwrap().contains("用量明细不完整"));
     }
     #[test] fn empty_records_does_not_warn() {
         // 问题 8：合法空记录不产生 warning

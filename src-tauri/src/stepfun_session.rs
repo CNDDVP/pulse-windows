@@ -136,6 +136,16 @@ async fn stepfun_cookies(
 
 /// P1 #1：清除 WebView2 中 platform.stepfun.com 的旧 Oasis-Token 会话，
 /// 防止多账号登录时自动绑定到浏览器里已有的其他账号身份。
+/// P1 #1 会话隔离设计说明：Tauri 的 WebView2 用户数据目录是进程级的，
+/// 无法为每个窗口/账号配置独立 profile（环境变量只认进程启动值）。因此隔离
+/// 依赖三道护栏而非独立 profile：
+/// 1. STEPFUN_BROWSER_GATE 串行化所有浏览器操作——登录与续期不会并发，
+///    清除共享 Cookie 不会命中另一个账号正在进行的登录；
+/// 2. 本函数在登录前清除 Oasis-Token 共享 Cookie 并刷新——强制全新登录
+///    表单，第二账号不会静默继承第一账号的登录态；
+/// 3. 保存前的候选验证（stepfun_renew_candidate 拒绝其他账号/未变化的
+///    Token，见 renewal_rejects_unchanged_expired_and_other_account_tokens）
+///    兜底：即使浏览器里残留别的账号会话，也不会写进当前账号凭据。
 async fn clear_stepfun_session(window: &tauri::WebviewWindow) {
     let win_clone = window.clone();
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -364,10 +374,12 @@ pub async fn renew_stepfun_token(
                                 last_failed_reason = Some(format!("候选 Token 验证拒绝: {err_detail}"));
                             }
                             Ok(Err(e)) => {
-                                // P2 #5：按错误类别决定是否重试——认证/结构错误停止当前候选验证，
-                                // 仅网络临时故障（timeout/network/rate_limited）允许有限重试
+                                // P2 #5/#9：按错误类别决定是否重试——认证/结构错误停止当前候选验证，
+                                // 仅网络临时故障（timeout/network）允许有限重试；rate_limited
+                                // 不立即重试（尊重 Retry-After，等待由 5 分钟冷却与
+                                // provider 退避调度承担）
                                 let code = e.error_code.as_deref().unwrap_or("");
-                                let retryable = matches!(code, "timeout" | "network" | "rate_limited");
+                                let retryable = matches!(code, "timeout" | "network");
                                 retry_allowed = retryable;
                                 let err_msg = e.error_message.unwrap_or_else(|| "网络请求异常".into());
                                 last_failed_reason = Some(format!("验证请求失败: {err_msg}"));
@@ -500,10 +512,11 @@ pub async fn open_stepfun_login(
                 Ok(v) if v.get("plan_credit_rate_limit").is_some()&&!v["web_auth_required"].as_bool().unwrap_or(false) => {
                     login_retry_allowed = false;
                 }
-                // P2 #4：临时网络故障对同一 Token 有限重试（≤2 次）；认证拒绝不重试
+                // P2 #4/#9：临时网络故障对同一 Token 有限重试（≤2 次）；认证拒绝与
+                // 限流不立即重试（rate_limited 尊重 Retry-After，等待冷却后再来）
                 Err(e) => {
                     let code = e.error_code.as_deref().unwrap_or("");
-                    login_retry_allowed = matches!(code, "timeout" | "network" | "rate_limited");
+                    login_retry_allowed = matches!(code, "timeout" | "network");
                     login_network_failures += 1;
                     if !login_retry_allowed || login_network_failures > 2 {
                         // 达到上限或不可重试：清除标志，同一 Token 不再重复验证，
