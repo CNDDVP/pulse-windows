@@ -15,6 +15,7 @@ pub mod platform;
 pub mod settings_close;
 pub mod rail_state;
 pub mod provider_status;
+pub mod discord_presence;
 use std::{collections::HashMap,time::{Duration,Instant},sync::atomic::{AtomicBool,AtomicU64,Ordering},sync::Arc};
 use tauri::{AppHandle,Emitter,Manager};
 use tokio::sync::{Mutex,Semaphore};
@@ -681,6 +682,8 @@ pub fn run(){
             tray::setup_tray(&app_handle)?;
             let handle=app_handle.clone();
             let window_handle=app_handle.clone();
+            // Round5d 项目二：Discord 状态广播（opt-in 默认关）——60s 一拍，连接失败静默。
+            let presence_handle=app_handle.clone();
             install_rail_context_menu_subclass(&app_handle);
             tauri::async_runtime::spawn(async move{
                 let mut tick_no=0u32;
@@ -819,6 +822,11 @@ pub fn run(){
                     }
                 });
             });
+            // Round5d 项目二：Discord 状态广播线程（presence_handle 已在上方 clone）。
+            // 启动时无条件常驻（设置此时尚未异步加载完成，无法按开关门控）；
+            // 关态每拍仅 settings try_lock + 原子标志读取——零网络/零 IPC/零文件 IO，
+            // 由 runner_switch_off_never_touches_network 单测钉住。
+            discord_presence::spawn(presence_handle);
             Ok(())
         })
         .on_menu_event(|app,event|{

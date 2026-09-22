@@ -70,8 +70,9 @@
 
 ### 🧮 本地 Token 消耗审计引擎（Token Spend）与费用估算
 
-- 内置高性能 SQLite 缓存与流式日志解析器，支持对 **Claude Code**、**Codex**、**Gemini**、**Cline**、**Roo Code**、**Kilo Code**、**OpenClaw**、**ZCode CLI**、**Qwen CLI**、**OpenCode** 进行多维本地使用量聚合与审计；各来源可按设置追加自定义扫描目录（`token_spend_extra_paths`，每来源上限 20 条，绝对路径），缺失目录静默跳过。
+- 内置高性能 SQLite 缓存与流式日志解析器，支持对 **Claude Code**、**Codex**、**Gemini**、**Cline**、**Roo Code**、**Kilo Code**、**OpenClaw**、**ZCode CLI**、**Qwen CLI**、**OpenCode**、**Kiro CLI**、**Cherry Studio** 进行多维本地使用量聚合与审计；各来源可按设置追加自定义扫描目录（`token_spend_extra_paths`，每来源上限 20 条，绝对路径），缺失目录静默跳过。
 - **WSL 用量（opt-in，默认关）**：开启后经 `wsl.exe` 只读读取**默认发行版**内的 Claude Code / Qwen Code 会话日志（`~/.claude/projects`、`~/.qwen/projects`，仅 `.jsonl` 文件型来源），与 Windows 侧同来源合并统计；文件路径键加 `wsl:` 前缀，同会话双侧重复按事件 id 折叠不双计。命令构造防注入：读取/发现一律 `wsl.exe -e` 直接 exec（不经 shell），路径过严格字符白名单后才参与命令。独立文件数预算 2000、单文件上限 256KB；`wsl.exe` 不可用/超时/发行版无数据一律静默降级并在统计说明（notes）中标注。**不做** SQLite 类来源（如 OpenCode 的 storage 库）的 WSL 读取——需在发行版内运行 headless agent，复杂度与收益不成比例，此类来源仅支持 Windows 侧。
+- **Discord 状态广播（opt-in，默认关）**：开启后 Pulse 仅在**本机**与 Discord 客户端通过本地 IPC（命名管道）通信，每 60 秒节流更新一次聚合状态——「正在写代码/空闲」（复用活动灯信号）、已启用账号数、今日 token 总量（与趋势面板当日值同口径，需同时开启 Token 消耗统计）。**不广播**账号名、供应商名或任何明细，payload 只含聚合数字；Discord 未运行或连接失败一律静默忽略。⚠️ 前置条件：需在 [Discord Developer Portal](https://discord.com/developers/applications) 注册应用并取得 Client ID，通过环境变量 `PULSE_DISCORD_CLIENT_ID` 提供；未配置时该功能保持不可用（同样零 IPC 行为），Pulse 不内置任何第三方应用 ID。
 - 内置主流公有云模型单价库，自动估算历史 Token 的云端美金费用。
 
 ### 🔔 通知、快捷键与应用内更新
@@ -109,21 +110,23 @@ Pulse 展示的每个百分比都来自服务商自身的应答——使用各�
 | **Devin (Windsurf)** | 官方接口凭据，或 Windsurf 本地 `state.vscdb` 零凭据读取 | ✅ 每日 / 每周窗口；本地库时间戳缺失或过期时标记 `unverified`，不充当实时读数 | — | — |
 | **Ollama Cloud** | ollama.com 会话 Cookie | ✅ 5 小时会话 + 每周双窗口 | — | — |
 | **小米 Coding Plan** | 会话 Cookie → 控制台接口 | ✅ 套餐桶用量百分比 + CNY 余额（接口未上报周期长度，故无时间环） | — | — |
-| **Gemini CLI** | 本地日志解析：`~/.gemini/tmp`（`GEMINI_CLI_HOME` 可覆盖），无网络请求 | — | ✅ `session-*` 会话文件流式解析 | —（审计按天 / 小时 / 来源×模型聚合） |
-| **Cline** | 本地日志解析：VS Code / Insiders / VSCodium 插件全局存储，无网络请求 | — | ✅ 各任务 `ui_messages.json` | —（同上） |
-| **Roo Code** | 同 Cline 路线（`rooveterinaryinc.roo-cline`），无网络请求 | — | ✅ 各任务 `ui_messages.json` | —（同上） |
-| **Kilo Code** | 同 Cline 路线（`kilocode.kilo-code`），无网络请求 | — | ✅ 各任务 `ui_messages.json` | —（同上） |
-| **OpenClaw** | 本地日志解析：`~/.openclaw/agents`，无网络请求 | — | ✅ 会话 JSONL 流式解析 | —（同上） |
-| **ZCode CLI** | 本地日志解析：`~/.zcode/projects` 与 `~/.zcode/v2/agent-config/claude`（Claude Code 同构转录）+ `~/.zcode/cli/db/db.sqlite`（CLI 信封权威根，`ZCODE_HOME` 可覆盖），无网络请求 | — | ✅ Claude 同构转录流式解析 + CLI 库 `model_usage` 表只读投影（真实数据实测）；`cli/agents`、`cli/rollout` 的 JSONL 信封与该库为同一批请求的重复记录，不收集（防双计） | —（审计按天 / 小时 / 来源×模型聚合；活动灯另监测 `cli/log` 事件流） |
-| **Qwen CLI** | 本地日志解析：`~/.qwen/projects`（`QWEN_CONFIG_DIR` 可覆盖），无网络请求 | — | ✅ 会话 JSONL 流式解析（复用 Claude Code 同构分支；本机无该目录，未经真实数据验证） | —（同上） |
-| **OpenCode** | 本地日志解析：`$XDG_DATA_HOME`/`~/.local/share` 下 `opencode/storage`（含旧版 `session/message` 布局），无网络请求 | — | ✅ `storage/message` 助手消息解析（按上游源码实现；本机无该目录，未经真实数据验证） | —（同上） |
+| **Gemini CLI** | 本地日志解析：`~/.gemini/tmp`（`GEMINI_CLI_HOME` 可覆盖），无网络请求 | — | ✅ `session-*` 会话文件流式解析 | ✅ 会话页签（会话列表 + 逐事件明细）；审计按天 / 小时 / 来源×模型聚合 |
+| **Cline** | 本地日志解析：VS Code / Insiders / VSCodium 插件全局存储，无网络请求 | — | ✅ 各任务 `ui_messages.json` | ✅ 会话页签（同上） |
+| **Roo Code** | 同 Cline 路线（`rooveterinaryinc.roo-cline`），无网络请求 | — | ✅ 各任务 `ui_messages.json` | ✅ 会话页签（同上） |
+| **Kilo Code** | 同 Cline 路线（`kilocode.kilo-code`），无网络请求 | — | ✅ 各任务 `ui_messages.json` | ✅ 会话页签（同上） |
+| **OpenClaw** | 本地日志解析：`~/.openclaw/agents`，无网络请求 | — | ✅ 会话 JSONL 流式解析 | ✅ 会话页签（同上） |
+| **ZCode CLI** | 本地日志解析：`~/.zcode/projects` 与 `~/.zcode/v2/agent-config/claude`（Claude Code 同构转录）+ `~/.zcode/cli/db/db.sqlite`（CLI 信封权威根，`ZCODE_HOME` 可覆盖），无网络请求 | — | ✅ Claude 同构转录流式解析 + CLI 库 `model_usage` 表只读投影（真实数据实测）；`cli/agents`、`cli/rollout` 的 JSONL 信封与该库为同一批请求的重复记录，不收集（防双计） | ✅ 会话页签（同上；活动灯另监测 `cli/log` 事件流） |
+| **Qwen CLI** | 本地日志解析：`~/.qwen/projects`（`QWEN_CONFIG_DIR` 可覆盖），无网络请求 | — | ✅ 会话 JSONL 流式解析（复用 Claude Code 同构分支；本机无该目录，未经真实数据验证） | ✅ 会话页签（同上） |
+| **OpenCode** | 本地日志解析：`$XDG_DATA_HOME`/`~/.local/share` 下 `opencode/storage`（含旧版 `session/message` 布局），无网络请求 | — | ✅ `storage/message` 助手消息解析（按上游源码实现；本机无该目录，未经真实数据验证） | ✅ 会话页签（同上） |
+| **Kiro CLI** | 本地日志解析：`~/.kiro/sessions/cli` 会话树（`KIRO_CONFIG_DIR` 覆盖 `~/.kiro` 根），无网络请求 | — | ✅ 会话头 `.json` 逐回合解析 Kiro 格式中唯一实测计数器（`input/output_token_count`），同名 `.jsonl` 侧车仅提供 prompt 时间戳；按上游 KiroReader 同构实现，本机无该目录，未经真实数据验证 | ✅ 会话页签（会话列表 + 逐事件明细）；审计按天 / 小时 / 来源×模型聚合 |
+| **Cherry Studio** | 本地日志解析：`<app-data>/CherryStudio/Data/Agents/.claude/projects`（V2）与 `<app-data>/CherryStudio/.claude/projects`（legacy，`<app-data>` 为 `dirs::data_dir()` 平台规则、Windows 为 `%APPDATA%`），无网络请求 | — | ✅ Claude 同构转录流式解析：同一次调用流式落盘的 3~4 份快照按 requestId 身份折叠为一次调用（字段级最大值），V2 与 legacy 同名相对会话以 V2 为准；复用 Claude 同构分支字段形状，按上游 CherryStudioReader 同构实现，本机无该目录，未经真实数据验证 | ✅ 会话页签（同上） |
 
 <details>
 <summary><strong>诚实说明：能力边界与已知误差</strong></summary>
 
 - **缺失不造假**：解析器遵守"数字缺失不是零"——服务商应答缺少数据时，账号显示具体错误或降级读数，不会伪装成 0% 或 100%。DeepSeek 只返回余额、没有任何额度窗口，应用如实只显示余额，不虚构百分比（均有单元测试断言兜底）。
 - **周期长度可能是推断值**：部分接口只给窗口名称、不给周期长度，此时按标准命名推断（每周 = 7 天、每月 = 30 天等），存在约 ±1/30 的周期误差；推断不出名称的窗口（如 Antigravity 部分桶、小米套餐、Cursor 未命名窗口）不显示时间环与预测，而不是编造周期。
-- **本地日志审计的天然缺口**：审计完全依赖各源工具自行写入的日志，源工具会按自身保留策略清理、轮转或归档会话日志，早于保留期的消耗无法统计。扫描设有目录深度（18 层）与文件数（10,000）预算，超限即标记截断；检测到统计缺口时界面显示"统计不完整 / 覆盖缺口"提示，而不是假装完整。Cline / Roo Code / Kilo Code、Gemini、OpenClaw、OpenCode 的解析事件一律带“部分统计”标记，Claude（ZCode CLI、Qwen CLI 同）在日志行缺少 id 或用量字段时同样降级；ZCode CLI 的 CLI 库投影中，非完成状态（error/cancelled）请求按真实消耗计入但标记“部分统计”；OpenCode 与 Qwen CLI 两条路线本机无数据目录，格式按上游源码 / Claude 同构假设实现，均属未经真实数据验证，工具布局变更时可能失效；自定义扫描路径与默认扫描根之间只按文件路径去重：嵌套目录发现的同一文件路径相同、不会重复计数；跨目录复制的文件对事件 id 稳定的来源（Claude / ZCode / Qwen / Codex / Gemini / OpenClaw / OpenCode）在统计中按（来源，事件 id）折叠、同样不双计，但会重复解析并使文件计数翻倍；Cline / Roo Code / Kilo Code 的事件 id 按路径命名空间生成、缺失 id 的事件降级为 offset 兜底 id，这两类复制件会按路径重复计入统计，为这些来源配置自定义目录时应避免文件复制；Codex 事件本无逐行 id（按累计值合成），在累计值回退、缓存增量异常或模型未知时降级，缺用量字段的行直接跳过、不计入。
+- **本地日志审计的天然缺口**：审计完全依赖各源工具自行写入的日志，源工具会按自身保留策略清理、轮转或归档会话日志，早于保留期的消耗无法统计。扫描设有目录深度（18 层）与文件数（10,000）预算，超限即标记截断；检测到统计缺口时界面显示"统计不完整 / 覆盖缺口"提示，而不是假装完整。Cline / Roo Code / Kilo Code、Gemini、OpenClaw、OpenCode 的解析事件一律带“部分统计”标记，Claude（ZCode CLI、Qwen CLI 同）在日志行缺少 id 或用量字段时同样降级；ZCode CLI 的 CLI 库投影中，非完成状态（error/cancelled）请求按真实消耗计入但标记“部分统计”；OpenCode、Qwen CLI、Kiro CLI、Cherry Studio 四条路线本机无数据目录，格式按上游源码 / Claude 同构假设实现，均属未经真实数据验证，工具布局变更时可能失效——其中 Kiro 只读其格式中唯一实测计数器（逐回合 input/output_token_count），Kiro 的 IDE/globalStorage 与 kiro-cli SQLite 库按上游同款结论只含估计值（上下文窗口×百分比、字符数÷4），不读取、不折算，宁缺毋假；Cherry Studio 流式落盘的同一调用多份快照按 requestId 身份折叠、身份全缺的行降级“部分统计”，V2 与 legacy 两根同名会话以 V2 为准、不双计；自定义扫描路径与默认扫描根之间只按文件路径去重：嵌套目录发现的同一文件路径相同、不会重复计数；跨目录复制的文件对事件 id 稳定的来源（Claude / ZCode / Qwen / Codex / Gemini / OpenClaw / OpenCode / Cherry Studio）在统计中按（来源，事件 id）折叠、同样不双计，但会重复解析并使文件计数翻倍；Kiro 会话头带 session_id 时同属此类（事件 id 为 {session}:{index}），缺失 session_id 的会话头事件 id 降级为 offset 兜底 id、按路径命名空间生成，这类复制件会按路径重复计入统计；Cline / Roo Code / Kilo Code 的事件 id 按路径命名空间生成、缺失 id 的事件降级为 offset 兜底 id，这些复制件会按路径重复计入统计，为这些来源（含缺 session_id 的 Kiro）配置自定义目录时应避免文件复制；Codex 事件本无逐行 id（按累计值合成），在累计值回退、缓存增量异常或模型未知时降级，缺用量字段的行直接跳过、不计入。
 - **费用是估算值**：Token Spend 的金额按已知模型公开定价折算，仅供参考，不构成账单。
 - **实测覆盖有限**：实时路线中 Kimi Code、OpenCode Go、Antigravity 做过真实凭据实测（见 `docs/provider-matrix.json`），其余路线以单元测试验证解析逻辑为主；服务商接口改版可能导致个别路线临时失效，失效时显示具体错误而非静默清零。
 - **活动灯只是信号**：Claude Code / Codex / Kimi / 智谱 / Antigravity 五渠道的活动灯由本地日志事件流推断"工作 / 空闲"，不读取、不展示任何会话内容。

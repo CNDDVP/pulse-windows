@@ -17,19 +17,19 @@ it('renders one row per audited source; missing data shows — and never fabrica
   render(<SubscriptionPanel subs={{}} onSubsChange={()=>{}} monthCostBySource={null} monthCoverageNote={null} displayCurrency="USD" fxRate={7.2} />);
   // 展开面板
   fireEvent.click(screen.getByText(/订阅记录/));
-  for(const label of ['Claude Code','Codex','Gemini CLI','Cline','Roo Code','Kilo Code','OpenClaw','ZCode','Qwen CLI','OpenCode']){
+  for(const label of ['Claude Code','Codex','Gemini CLI','Cline','Roo Code','Kilo Code','OpenClaw','ZCode','Qwen CLI','OpenCode','Kiro CLI','Cherry Studio']){
     expect(screen.getByText(label)).toBeTruthy();
   }
-  // 未读取使用记录：本月已用与倍数两列共 20 个「—」= 10 来源 × 2（脚注里出现的是长句，不计）。
-  expect(screen.getAllByText('—')).toHaveLength(20);
+  // 未读取使用记录：本月已用与倍数两列共 24 个「—」= 12 来源 × 2（Round5d 新增 Kiro CLI / Cherry Studio；脚注里出现的是长句，不计）。
+  expect(screen.getAllByText('—')).toHaveLength(24);
 });
 
 it('shows the monthly estimate and an orange multiple ≥1; multiple stays — without a recorded price',async()=>{
   invoke.mockImplementation((name:string)=>name==='get_subscriptions'?Promise.resolve({claude:usd(5)}):Promise.resolve());
   const {container}=render(<SubscriptionPanel subs={{claude:usd(5)}} onSubsChange={()=>{}} monthCostBySource={{claude:10,codex:3}} monthCoverageNote={null} displayCurrency="USD" fxRate={7.2} />);
   fireEvent.click(screen.getByText(/订阅记录/));
-  // claude：$10 / $5 = 2.0×，≥1 橙色强调。
-  const orange=container.querySelector('.text-orange-500');
+  // claude：$10 / $5 = 2.0×，≥1 警示色强调（Round5d 项目一：text-orange-500 收敛为 var(--warn) 令牌）。
+  const orange=container.querySelector('[class*="text-[var(--warn)]"]');
   expect(orange).toBeTruthy();
   expect(orange!.textContent).toBe('2×');
   expect(container.textContent).toContain('$10.00');
@@ -81,7 +81,8 @@ it('a failed read keeps the panel usable and shows the error instead of fake dat
   render(<SubscriptionPanel subs={{}} onSubsChange={()=>{}} monthCostBySource={null} monthCoverageNote={null} displayCurrency="USD" fxRate={7.2} />);
   await act(async()=>{fireEvent.click(screen.getByText(/订阅记录/));});
   expect(screen.getByText('设置读取失败')).toBeTruthy();
-  expect(screen.getAllByText('—')).toHaveLength(20);
+  // 12 来源 × 2 列均为「—」，读取失败不伪造数据。
+  expect(screen.getAllByText('—')).toHaveLength(24);
 });
 
 it('en spot-check: header, columns, honest description and save flow render in English',async()=>{

@@ -320,7 +320,8 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
   },[]);
   useEffect(()=>()=>{if(leave.current)clearTimeout(leave.current)},[]);
   const top=effSide==="top",left=effSide==="left";
-  const dark=settings.theme==="obsidian";
+  // Round5d 项目一：深浅主题由 data-theme 驱动 index.css 语义令牌（.glass-panel），
+  // rail 不再按主题分叉类名；机器人眼色对比仍按主题传参（UsageRing）。
   const enter = () => {
     if (leave.current) clearTimeout(leave.current);
     handleExpand();
@@ -442,7 +443,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
           : free
           ? "rounded-2xl border"
           : "rounded-l-2xl border-l border-y border-r-0"
-      } p-1.5 ${dark ? "glass-obsidian text-zinc-200" : "glass-translucent text-zinc-800"} ${isHidden ? "invisible" : ""} ${transformCls} ${transitionCls} cursor-move touch-none ${draggingUI ? "opacity-80" : ""}`}
+      } p-1.5 glass-panel text-[var(--text-1)] ${isHidden ? "invisible" : ""} ${transformCls} ${transitionCls} cursor-move touch-none ${draggingUI ? "opacity-80" : ""}`}
     >
       <div className={`flex ${top ? "flex-row space-x-2" : "flex-col space-y-1.5"} overflow-y-auto max-h-full scrollbar-none`}>
         {slots.map(s => (
@@ -452,16 +453,16 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
         {!slots.length && (
           antigravityAvailable ? (
             <button
-              className="flex flex-col items-center justify-center p-2 text-center rounded-xl bg-indigo-950/70 hover:bg-indigo-900/90 border border-indigo-700/60 text-indigo-200 hover:text-white transition-all cursor-pointer group shadow-sm"
+              className="flex flex-col items-center justify-center p-2 text-center rounded-xl bg-[var(--surface-3)] hover:bg-[var(--surface-hover)] border border-[var(--border-strong)] text-[var(--text-1)] transition-all cursor-pointer group shadow-sm"
               onClick={() => void handleQuickAddAntigravity()}
               title={t("rail.antigravity.hint")}
             >
               <span className="text-sm mb-0.5 animate-pulse">✨</span>
               <span className="text-[10px] font-semibold leading-tight whitespace-nowrap">{t("rail.antigravity.quick_add")}</span>
-              <span className="text-[9px] text-indigo-400 group-hover:text-indigo-300">Antigravity</span>
+              <span className="text-[9px] text-[var(--text-3)] group-hover:text-[var(--text-2)]">Antigravity</span>
             </button>
           ) : (
-            <button className="text-xs p-2 text-zinc-400 hover:text-zinc-200" onClick={() => void invoke("open_settings")}>
+            <button className="text-xs p-2 text-[var(--text-2)] hover:text-[var(--text-1)]" onClick={() => void invoke("open_settings")}>
               {t("rail.add_account")}
             </button>
           )

@@ -43,10 +43,11 @@ export const ROUTES: Record<string, { local?: string; manual?: string }> = {
 
 export const getPlaceholder = (pid: string, T: TFn = moduleT) => T(`settings.placeholder.${pid}`);
 
-export const selectCls = "w-full bg-zinc-800/90 border border-zinc-700/80 rounded-xl px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500 transition-colors";
-export const inputCls = "w-full bg-zinc-800/80 border border-zinc-700/70 rounded-xl px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500 transition-colors";
-export const btnPrimary = "px-4 py-2 bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white rounded-xl text-xs font-medium transition-all shadow-md cursor-pointer disabled:opacity-40";
-export const btnGhost = "px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 rounded-xl text-xs font-medium transition-all cursor-pointer disabled:opacity-40";
+/** Round5d 项目一：全部走 index.css 的语义令牌，深浅主题自动切换。 */
+export const selectCls = "w-full bg-[var(--surface-3)] border border-[var(--border-strong)] rounded-xl px-3 py-2 text-xs text-[var(--text-1)] focus:outline-none focus:border-[var(--accent)] transition-colors";
+export const inputCls = "w-full bg-[var(--surface-3)] border border-[var(--border-strong)] rounded-xl px-3 py-1.5 text-xs text-[var(--text-1)] focus:outline-none focus:border-[var(--accent)] transition-colors";
+export const btnPrimary = "px-4 py-2 bg-[var(--accent-solid)] hover:brightness-110 active:scale-95 text-[var(--on-solid)] rounded-xl text-xs font-medium transition-all shadow-md cursor-pointer disabled:opacity-40";
+export const btnGhost = "px-3 py-1.5 bg-[var(--surface-3)] hover:bg-[var(--surface-hover)] active:scale-95 text-[var(--text-1)] rounded-xl text-xs font-medium transition-all cursor-pointer disabled:opacity-40";
 
 /** 读取状态 → i18n key；未知状态原样展示（后端新状态不静默编造文案）。 */
 export const STATE_KEYS: Record<string, string> = {

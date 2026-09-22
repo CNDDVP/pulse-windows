@@ -81,25 +81,25 @@ export function SessionList({active,displayCurrency,fxRate}:{active:boolean;disp
   if(!active)return null;
   return <div className="space-y-3">
     <div className="flex items-center gap-3">
-      <select aria-label={t('spend.sessions.aria_filter')} className="bg-zinc-800 p-2 rounded" value={source} onChange={e=>setSource(e.target.value)}>
+      <select aria-label={t('spend.sessions.aria_filter')} className="bg-[var(--surface-3)] p-2 rounded" value={source} onChange={e=>setSource(e.target.value)}>
         <option value="">{t('spend.sessions.all_sources')}</option>
         {SPEND_SOURCES.map(([v,label])=><option key={v} value={v}>{label}</option>)}
       </select>
-      <span className="text-xs text-zinc-500">{t('spend.sessions.privacy_note')}</span>
+      <span className="text-xs text-[var(--text-3)]">{t('spend.sessions.privacy_note')}</span>
     </div>
     {/* TODO(EN-backend)：error 为 Rust 侧消息，原样展示不翻译 */}
-    {error&&<p className="text-amber-400">{error}</p>}
-    {loading&&<p className="text-xs text-zinc-500">{t('spend.sessions.loading')}</p>}
-    {rows&&!rows.length&&!loading&&<p className="text-sm text-zinc-400">{t('spend.sessions.empty',{summary:t('spend.tab.summary')})}</p>}
+    {error&&<p className="text-[var(--warn)]">{error}</p>}
+    {loading&&<p className="text-xs text-[var(--text-3)]">{t('spend.sessions.loading')}</p>}
+    {rows&&!rows.length&&!loading&&<p className="text-sm text-[var(--text-2)]">{t('spend.sessions.empty',{summary:t('spend.tab.summary')})}</p>}
     {rows&&rows.length>0&&<div className="overflow-auto"><table className="w-full text-xs text-right">
-      <thead><tr>{(['session','source','time','model','events','tokens','cost'] as const).map(k=><th key={k} className="p-2 border-b border-zinc-700">{t(`spend.sessions.col.${k}`)}</th>)}</tr></thead>
+      <thead><tr>{(['session','source','time','model','events','tokens','cost'] as const).map(k=><th key={k} className="p-2 border-b border-[var(--border-strong)]">{t(`spend.sessions.col.${k}`)}</th>)}</tr></thead>
       <tbody>{rows.map(r=>{
         const isOpen=open.has(r.path);
         const detail=details[r.path];
         return <FragmentRow key={r.path} row={r} open={isOpen} onToggle={()=>void toggle(r.path)} detail={detail} displayCurrency={displayCurrency} fxRate={fxRate} cap={SESSION_DETAIL_CAP}/>;
       })}</tbody>
     </table></div>}
-    {rows&&rows.length>0&&!exhausted&&<button disabled={loading} className="bg-zinc-800 px-3 py-1 rounded text-sm disabled:opacity-40" onClick={()=>void loadMore()}>{loading?t('spend.sessions.loading_more'):t('spend.sessions.load_more')}</button>}
+    {rows&&rows.length>0&&!exhausted&&<button disabled={loading} className="bg-[var(--surface-3)] px-3 py-1 rounded text-sm disabled:opacity-40" onClick={()=>void loadMore()}>{loading?t('spend.sessions.loading_more'):t('spend.sessions.load_more')}</button>}
   </div>;
 }
 
@@ -108,8 +108,8 @@ function FragmentRow({row,open,onToggle,detail,displayCurrency,fxRate,cap}:{row:
   return <>
     <tr>
       <td className="p-2 text-left max-w-[16rem]">
-        <button type="button" aria-expanded={open} title={row.note??row.title} className="cursor-pointer text-zinc-300 hover:text-zinc-100 text-left block w-full truncate" onClick={onToggle}>{open?'▾':'▸'} {row.title}</button>
-        {row.note&&<span className="block text-[11px] text-amber-400">{row.note}</span>}
+        <button type="button" aria-expanded={open} title={row.note??row.title} className="cursor-pointer text-[var(--text-1)] hover:text-[var(--text-1)] text-left block w-full truncate" onClick={onToggle}>{open?'▾':'▸'} {row.title}</button>
+        {row.note&&<span className="block text-[11px] text-[var(--warn)]">{row.note}</span>}
       </td>
       <td className="p-2">{row.source}</td>
       <td className="p-2 whitespace-nowrap">{formatSessionRange(row.first_ts,row.last_ts)}</td>
@@ -118,13 +118,13 @@ function FragmentRow({row,open,onToggle,detail,displayCurrency,fxRate,cap}:{row:
       <td className="p-2" title={t('spend.detail_row',{input:row.input.toLocaleString(),output:row.output.toLocaleString(),cache_read:row.cache_read.toLocaleString(),cache_write:row.cache_write.toLocaleString()})}>{totalTokens(row).toLocaleString()}</td>
       <td className="p-2">{row.cost_estimate==null?'—':formatMoney(convertFromUsd(row.cost_estimate,displayCurrency,fxRate),displayCurrency)}</td>
     </tr>
-    {open&&<tr className="bg-zinc-900/40"><td colSpan={7} className="p-2 text-left">
-      {(!detail||detail.status==='loading')&&<p className="text-xs text-zinc-500">{t('spend.sessions.detail_loading')}</p>}
+    {open&&<tr className="bg-[var(--surface-2)]"><td colSpan={7} className="p-2 text-left">
+      {(!detail||detail.status==='loading')&&<p className="text-xs text-[var(--text-3)]">{t('spend.sessions.detail_loading')}</p>}
       {/* TODO(EN-backend)：明细读取失败为 Rust 侧消息，原样展示不翻译 */}
-      {detail?.status==='error'&&<p className="text-xs text-amber-400">{detail.message}</p>}
+      {detail?.status==='error'&&<p className="text-xs text-[var(--warn)]">{detail.message}</p>}
       {detail?.status==='ready'&&<div className="space-y-1">
-        <p className="text-xs text-zinc-400">{t('spend.sessions.total_events',{total:detail.data.total.toLocaleString()})}{detail.data.truncated?t('spend.sessions.truncated',{cap,count:detail.data.events.length}):''}{t('spend.sentence_end')}</p>
-        {detail.data.events.length>0&&<table className="w-full text-xs text-right"><thead><tr>{[t('spend.sessions.col.time'),t('spend.sessions.col.model'),t('spend.col.input'),t('spend.col.output'),t('spend.col.cache_read'),t('spend.col.cache_write')].map((h,i)=><th key={i} className="p-1 border-b border-zinc-800">{h}</th>)}</tr></thead>
+        <p className="text-xs text-[var(--text-2)]">{t('spend.sessions.total_events',{total:detail.data.total.toLocaleString()})}{detail.data.truncated?t('spend.sessions.truncated',{cap,count:detail.data.events.length}):''}{t('spend.sentence_end')}</p>
+        {detail.data.events.length>0&&<table className="w-full text-xs text-right"><thead><tr>{[t('spend.sessions.col.time'),t('spend.sessions.col.model'),t('spend.col.input'),t('spend.col.output'),t('spend.col.cache_read'),t('spend.col.cache_write')].map((h,i)=><th key={i} className="p-1 border-b border-[var(--border)]">{h}</th>)}</tr></thead>
           <tbody>{detail.data.events.map((e,i)=><tr key={i}><td className="p-1 whitespace-nowrap">{formatSessionRange(e.ts,e.ts)}</td><td className="p-1">{e.model}</td><td className="p-1">{e.input.toLocaleString()}</td><td className="p-1">{e.output.toLocaleString()}</td><td className="p-1">{e.cache_read.toLocaleString()}</td><td className="p-1">{e.cache_write.toLocaleString()}</td></tr>)}</tbody>
         </table>}
       </div>}

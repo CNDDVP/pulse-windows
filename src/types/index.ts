@@ -89,6 +89,10 @@ export interface AppSettings {
   /** Round5c 项目一：界面语言（"zh" | "en"，默认 zh）。走既有设置通道持久化；
    *  后端侧已登记同名默认字段（deny_unknown_fields），翻译只在前端词典内完成。 */
   language?: "zh" | "en";
+  /** Round5d 项目二：Discord 状态广播（opt-in 默认关）。开启后仅在本机与 Discord 客户端
+   *  经本地 IPC 通信，广播聚合信息（正在写代码/空闲、启用账号数、今日 token 总量），
+   *  不广播账号名/供应商明细；连接失败静默。 */
+  discord_presence_enabled?: boolean;
   notifications: NotificationSettings; hotkeys: HotkeySettings;
   providers: Record<string, ProviderConfig>;
 }

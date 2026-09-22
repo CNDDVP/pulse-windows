@@ -170,28 +170,28 @@ export function AboutPage({hasDraft}: {hasDraft: () => boolean}) {
         <dl className="grid grid-cols-[6.5rem_1fr] gap-y-2 text-xs">
           {rows.map(([k, v]) => (
             <Fragment key={k}>
-              <dt className="text-zinc-500">{k}</dt>
-              <dd className="text-zinc-200 font-mono break-all">{v}</dd>
+              <dt className="text-[var(--text-3)]">{k}</dt>
+              <dd className="text-[var(--text-1)] font-mono break-all">{v}</dd>
             </Fragment>
           ))}
         </dl>
-        <p className="text-[11px] text-zinc-400">
+        <p className="text-[11px] text-[var(--text-2)]">
           {t("settings.about.alignment_note")}
         </p>
       </Section>
 
       <Section title={t("settings.about.isolation_title")} icon="🛡️" subtitle={t("settings.about.isolation_sub")}>
         {profileStatus?.is_copy && (
-          <div className="p-3 bg-amber-950/40 border border-amber-500/30 rounded-xl text-amber-200 text-xs flex items-start gap-2.5 mb-3">
+          <div className="p-3 bg-[var(--warn-soft)] border border-[var(--warn-border)] rounded-xl text-[var(--warn)] text-xs flex items-start gap-2.5 mb-3">
             <span className="text-base leading-none">⚠️</span>
             <div className="flex-1 space-y-1">
-              <div className="font-medium text-amber-300">{t("settings.about.copy_detected")}</div>
-              <div className="text-[11px] text-amber-200/80 leading-relaxed">
+              <div className="font-medium text-[var(--warn)]">{t("settings.about.copy_detected")}</div>
+              <div className="text-[11px] text-[var(--warn)]/80 leading-relaxed">
                 {t("settings.about.copy_note")}
               </div>
               <div className="pt-1">
                 <button
-                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 rounded-lg text-xs font-medium transition cursor-pointer"
+                  className="px-2.5 py-1 bg-[var(--warn-soft)] hover:brightness-110 text-[var(--warn)] border border-[var(--warn-border)] rounded-lg text-xs font-medium transition cursor-pointer"
                   onClick={() => void handleIsolateProfile()}
                 >
                   {confirmArmed === "isolate_profile" ? t("settings.about.isolate_confirm") : t("settings.about.isolate_btn")}
@@ -203,26 +203,26 @@ export function AboutPage({hasDraft}: {hasDraft: () => boolean}) {
         <div className="flex flex-wrap gap-3">
           {profile?.mode === "portable" && (
             <button
-              className={confirmArmed === "import_installed" ? "px-3 py-1.5 bg-emerald-950/50 text-emerald-300 border border-emerald-900/60 rounded-xl text-xs font-medium transition-all cursor-pointer" : btnGhost}
+              className={confirmArmed === "import_installed" ? "px-3 py-1.5 bg-[var(--ok-soft)] text-[var(--ok)] border border-[var(--ok-border)] rounded-xl text-xs font-medium transition-all cursor-pointer" : btnGhost}
               onClick={() => void handleImportInstalled()}
             >
               {confirmArmed === "import_installed" ? t("settings.about.import_confirm") : t("settings.about.import_btn")}
             </button>
           )}
           <button
-            className={confirmArmed === "clear_creds" ? "px-3 py-1.5 bg-red-950/50 text-red-300 border border-red-900/60 rounded-xl text-xs font-medium transition-all cursor-pointer" : btnGhost}
+            className={confirmArmed === "clear_creds" ? "px-3 py-1.5 bg-[var(--danger-soft)] text-[var(--danger)] border border-[var(--danger-border)] rounded-xl text-xs font-medium transition-all cursor-pointer" : btnGhost}
             onClick={() => void handleClearCreds()}
           >
             {confirmArmed === "clear_creds" ? t("settings.about.clear_confirm") : t("settings.about.clear_btn")}
           </button>
           <button
-            className={confirmArmed === "isolate_profile" ? "px-3 py-1.5 bg-amber-950/50 text-amber-300 border border-amber-900/60 rounded-xl text-xs font-medium transition-all cursor-pointer" : btnGhost}
+            className={confirmArmed === "isolate_profile" ? "px-3 py-1.5 bg-[var(--warn-soft)] text-[var(--warn)] border border-[var(--warn-border)] rounded-xl text-xs font-medium transition-all cursor-pointer" : btnGhost}
             onClick={() => void handleIsolateProfile()}
           >
             {confirmArmed === "isolate_profile" ? t("settings.about.regenerate_confirm") : t("settings.about.regenerate_btn")}
           </button>
         </div>
-        {msg && <p className="text-xs text-emerald-400 mt-2">{msg}</p>}
+        {msg && <p className="text-xs text-[var(--ok)] mt-2">{msg}</p>}
       </Section>
 
       <Section title={t("settings.about.update_title")} icon="⬆️" subtitle={t("settings.about.license_note")}
@@ -233,12 +233,12 @@ export function AboutPage({hasDraft}: {hasDraft: () => boolean}) {
           </div>
         }>
         <UpdateCenter hasDraft={hasDraft} />
-        <div className="text-xs text-zinc-400">{t("settings.about.privacy_line", { version: runtime?.version || __APP_VERSION__ })}</div>
+        <div className="text-xs text-[var(--text-2)]">{t("settings.about.privacy_line", { version: runtime?.version || __APP_VERSION__ })}</div>
       </Section>
 
       <Section title={t("settings.about.dev_title")} icon="🧩" subtitle={t("settings.about.dev_sub")}>
-        <pre className="bg-zinc-950 border border-white/5 rounded-xl px-3 py-2 text-[11px] font-mono text-zinc-300 select-text overflow-auto">pulse-windows.exe --json</pre>
-        <p className="text-[11px] text-zinc-500">{t("settings.about.dev_note")}</p>
+        <pre className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-[11px] font-mono text-[var(--text-1)] select-text overflow-auto">pulse-windows.exe --json</pre>
+        <p className="text-[11px] text-[var(--text-3)]">{t("settings.about.dev_note")}</p>
       </Section>
     </div>
   );

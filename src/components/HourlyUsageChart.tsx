@@ -51,10 +51,10 @@ export function HourlyUsageChart({
   }
 
   return (
-    <div className={`mt-3 p-2.5 rounded-xl border border-white/5 bg-zinc-900/40 text-xs ${compact ? "" : "p-3"}`}>
+    <div className={`mt-3 p-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] text-xs ${compact ? "" : "p-3"}`}>
       <div className="flex justify-between items-center mb-1.5">
-        <span className="font-medium text-zinc-300">{t("rail.chart.title")}</span>
-        <span className="text-[11px] text-zinc-400 font-mono">
+        <span className="font-medium text-[var(--text-1)]">{t("rail.chart.title")}</span>
+        <span className="text-[11px] text-[var(--text-2)] font-mono">
           {t("rail.chart.total",{amount:balanceText("Credit", totalCredits, lang)})}
         </span>
       </div>
@@ -70,7 +70,7 @@ export function HourlyUsageChart({
             >
               <div
                 className={`w-full rounded-t-sm transition-all ${
-                  h.credits > 0 ? "bg-emerald-500 hover:bg-emerald-400" : "bg-zinc-700/30"
+                  h.credits > 0 ? "bg-[var(--accent)] hover:bg-[var(--accent-strong)]" : "bg-[var(--hover)]"
                 }`}
                 style={{ height: `${heightPct}%` }}
               />
@@ -78,7 +78,7 @@ export function HourlyUsageChart({
           );
         })}
       </div>
-      <div className="flex justify-between text-[10px] text-zinc-500 mt-1">
+      <div className="flex justify-between text-[10px] text-[var(--text-3)] mt-1">
         <span>{t("rail.chart.ago_24h")}</span>
         <span>{t("rail.chart.now",{calls:totalCalls})}</span>
       </div>

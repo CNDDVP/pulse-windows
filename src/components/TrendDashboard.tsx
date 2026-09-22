@@ -3,15 +3,16 @@ import {invoke} from "@tauri-apps/api/core";
 import {candles,compactTokens,formatActiveTime,heatmapColumns,type TrendMetrics} from "./trendMetrics";
 import {useLang} from "../lib/i18n";
 
-// 5 档配色（level 0..4）：空档 → 最深 → 最亮，GitHub 贡献格风格。
-const LEVEL_BG = ["bg-zinc-800", "bg-emerald-900", "bg-emerald-700", "bg-emerald-500", "bg-emerald-300"];
+// 5 档配色（level 0..4）：空档 → 最浅 → 最深，GitHub 贡献格风格。
+// Round5d 项目一：档位色在 index.css 用强调令牌混出（.heat-0..4），深浅主题各自成立。
+const LEVEL_BG = ["heat-0", "heat-1", "heat-2", "heat-3", "heat-4"];
 
 function MetricCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className="p-3 bg-zinc-900/60 rounded-xl border border-white/5">
-      <p className="text-xs text-zinc-500">{label}</p>
-      <p className="text-lg font-semibold text-zinc-100">{value}</p>
-      {sub && <p className="text-[11px] text-zinc-500">{sub}</p>}
+    <div className="p-3 bg-[var(--surface-2)] rounded-xl border border-[var(--border)]">
+      <p className="text-xs text-[var(--text-3)]">{label}</p>
+      <p className="text-lg font-semibold text-[var(--text-1)]">{value}</p>
+      {sub && <p className="text-[11px] text-[var(--text-3)]">{sub}</p>}
     </div>
   );
 }
@@ -27,7 +28,7 @@ function CandleChart({ buckets }: { buckets: ReturnType<typeof candles> }) {
   const y = (v: number) => H - pad - (v / max) * (H - pad * 2);
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-40 mt-1" role="img" aria-label={t("spend.trend.candles_title")}>
-      <line x1={0} x2={W} y1={H - pad} y2={H - pad} stroke="currentColor" className="text-zinc-700" strokeWidth={1} />
+      <line x1={0} x2={W} y1={H - pad} y2={H - pad} stroke="currentColor" className="text-[var(--text-1)]" strokeWidth={1} />
       {buckets.map((k, i) => {
         const cx = (i + 0.5) * step;
         const top = y(Math.max(k.open, k.close));
@@ -40,7 +41,7 @@ function CandleChart({ buckets }: { buckets: ReturnType<typeof candles> }) {
             <line x1={cx} x2={cx} y1={y(k.high)} y2={y(k.low)} stroke={color} strokeWidth={1.5} />
             <rect x={cx - bodyW / 2} y={top} width={bodyW} height={Math.max(bottom - top, 2)} fill={color} rx={1} />
             {(i % 4 === 0 || i === buckets.length - 1) && (
-              <text x={cx} y={H - 4} textAnchor="middle" className="fill-zinc-500" fontSize={10}>{k.start.slice(5)}</text>
+              <text x={cx} y={H - 4} textAnchor="middle" className="fill-[var(--text-3)]" fontSize={10}>{k.start.slice(5)}</text>
             )}
           </g>
         );
@@ -113,15 +114,15 @@ export function TrendDashboard({ active = true }: { active?: boolean }) {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-zinc-400">{t("spend.trend.description")}</p>
+      <p className="text-sm text-[var(--text-2)]">{t("spend.trend.description")}</p>
       <div className="flex gap-3">
-        <button disabled={busy} className="bg-emerald-700 px-3 rounded disabled:opacity-40" onClick={() => void load()}>{busy ? t("spend.scanning") : t("spend.trend.load")}</button>
-        <button disabled={!days.length || exporting} className="bg-zinc-800 px-3 rounded disabled:opacity-40" onClick={() => void doExport()}>{exporting ? t("spend.exporting") : t("spend.trend.export")}</button>
+        <button disabled={busy} className="bg-[var(--accent-solid)] text-[var(--on-solid)] px-3 rounded disabled:opacity-40" onClick={() => void load()}>{busy ? t("spend.scanning") : t("spend.trend.load")}</button>
+        <button disabled={!days.length || exporting} className="bg-[var(--surface-3)] px-3 rounded disabled:opacity-40" onClick={() => void doExport()}>{exporting ? t("spend.exporting") : t("spend.trend.export")}</button>
       </div>
       {/* TODO(EN-backend)：error 为 Rust 侧消息，原样展示不翻译 */}
-      {error && <p className="text-amber-400">{error}</p>}
-      {exported && <p className="text-xs text-emerald-400 break-all">{t("spend.exported_to", { path: exported })}</p>}
-      {!hasData && !busy && !error && <p className="text-sm text-zinc-500">{t("spend.trend.empty", { summary: t("spend.tab.summary") })}</p>}
+      {error && <p className="text-[var(--warn)]">{error}</p>}
+      {exported && <p className="text-xs text-[var(--ok)] break-all">{t("spend.exported_to", { path: exported })}</p>}
+      {!hasData && !busy && !error && <p className="text-sm text-[var(--text-3)]">{t("spend.trend.empty", { summary: t("spend.tab.summary") })}</p>}
       {hasData && (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -132,10 +133,10 @@ export function TrendDashboard({ active = true }: { active?: boolean }) {
             <MetricCard label={t("spend.trend.metric.peak_day")} value={compactTokens(metrics?.peak_tokens ?? 0)} sub={metrics?.peak_day ?? "—"} />
             <MetricCard label={t("spend.trend.metric.window_total")} value={compactTokens(total)} sub={t("spend.trend.sub.window_total")} />
           </div>
-          <div className="p-4 bg-zinc-900/60 rounded-xl border border-white/5">
+          <div className="p-4 bg-[var(--surface-2)] rounded-xl border border-[var(--border)]">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-sm font-semibold text-zinc-200">{t("spend.trend.heatmap_title")}</h3>
-              <div className="flex items-center gap-1 text-[10px] text-zinc-500">{t("spend.trend.legend_less")}{LEVEL_BG.map(c => <span key={c} className={`w-3 h-3 rounded-[3px] ${c}`} data-level-legend />)}{t("spend.trend.legend_more")}</div>
+              <h3 className="text-sm font-semibold text-[var(--text-1)]">{t("spend.trend.heatmap_title")}</h3>
+              <div className="flex items-center gap-1 text-[10px] text-[var(--text-3)]">{t("spend.trend.legend_less")}{LEVEL_BG.map(c => <span key={c} className={`w-3 h-3 rounded-[3px] ${c}`} data-level-legend />)}{t("spend.trend.legend_more")}</div>
             </div>
             <div className="overflow-x-auto pb-1">
               <div className="grid grid-flow-col gap-[3px]" style={{ gridTemplateRows: "repeat(7,12px)", gridAutoColumns: "12px" }}>
@@ -145,10 +146,10 @@ export function TrendDashboard({ active = true }: { active?: boolean }) {
               </div>
             </div>
           </div>
-          <div className="p-4 bg-zinc-900/60 rounded-xl border border-white/5">
-            <h3 className="text-sm font-semibold text-zinc-200">{t("spend.trend.candles_title")}</h3>
+          <div className="p-4 bg-[var(--surface-2)] rounded-xl border border-[var(--border)]">
+            <h3 className="text-sm font-semibold text-[var(--text-1)]">{t("spend.trend.candles_title")}</h3>
             <CandleChart buckets={buckets} />
-            <div className="flex justify-between text-[10px] text-zinc-500 mt-1">
+            <div className="flex justify-between text-[10px] text-[var(--text-3)] mt-1">
               <span>{t("spend.trend.bucket_note")}</span>
               <span>{t("spend.trend.peak_per_day", { tokens: compactTokens(max) })}</span>
             </div>

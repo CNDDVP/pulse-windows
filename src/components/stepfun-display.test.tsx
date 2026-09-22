@@ -32,7 +32,9 @@ it('shows topup bucket with expiry and hourly usages chart',()=>{
 });
 it('reduced motion removes both activity and refresh spins',()=>{
  const {container}=render(<UsageRing usage={usage} settings={settings} onHover={()=>{}} refreshing/>);
- expect(container.querySelector('.animate-spin')).toBeNull();expect(container.querySelector('.bg-white')).not.toBeNull();
+ expect(container.querySelector('.animate-spin')).toBeNull();
+ // Round5d 项目一：巡游灯颜色走语义令牌（浅色主题为深色灯），类名断言同步。
+ expect(container.querySelector('[class*="bg-[var(--text-1)]"]')).not.toBeNull();
 });
 
 it('hourly chart totals exclude old and future records',()=>{

@@ -244,6 +244,11 @@ pub struct AppSettings {
     /// deny_unknown_fields——不登记则前端携带语言设置保存时整单被拒。翻译只在前端
     /// 词典（src/lib/i18n.ts）内完成；后端 emit 的消息本轮保持中文（TODO(EN-backend)）。
     pub language: String,
+    /// Discord 状态广播（Round5d 项目二，opt-in 默认关）：开启后仅在本机与 Discord
+    /// 客户端经本地 IPC 通信，广播聚合信息——活动状态（working/idle，复用活动灯信号）、
+    /// 已启用账号数、今日 token 总量（读 ledger 当日聚合；需同时开启 token_spend_enabled）。
+    /// 隐私边界：不广播账号名/供应商名明细；每 60s 节流；连接失败静默。
+    pub discord_presence_enabled: bool,
     /// 成本显示币种（Round4 项目二）：仅 "USD" | "CNY"；换算只发生在前端展示层，
     /// 成本估算入库与导出始终保持 USD 原值。
     pub display_currency: String,
@@ -270,6 +275,7 @@ impl Default for AppSettings {
             token_spend_extra_paths:BTreeMap::new(),
             token_spend_wsl:false,
             language:"zh".into(),
+            discord_presence_enabled:false,
             display_currency:"USD".into(), usd_cny_rate:7.2,
             providers }
     }
@@ -405,6 +411,19 @@ mod tests{
         let mut root=serde_json::to_value(AppSettings::default()).unwrap();
         root.as_object_mut().unwrap().insert("token_spend_wsl".into(),serde_json::json!(true));
         assert!(serde_json::from_value::<AppSettings>(root).unwrap().token_spend_wsl);
+    }
+    #[test]fn discord_presence_defaults_off_and_tolerates_old_settings(){
+        // Round5d 项目二：Discord 状态广播 opt-in——默认关；旧 settings.json 缺该字段时
+        // serde default 兜底为关（零网络行为是缺省语义），显式 true 可持久化。
+        assert!(!AppSettings::default().discord_presence_enabled);
+        let mut root=serde_json::to_value(AppSettings::default()).unwrap();
+        root.as_object_mut().unwrap().remove("discord_presence_enabled");
+        let s:AppSettings=serde_json::from_value(root).unwrap();
+        assert!(!s.discord_presence_enabled);
+        let mut root=serde_json::to_value(AppSettings::default()).unwrap();
+        root.as_object_mut().unwrap().insert("discord_presence_enabled".into(),serde_json::json!(true));
+        assert!(serde_json::from_value::<AppSettings>(root).unwrap().discord_presence_enabled);
+        let mut s=AppSettings::default();s.discord_presence_enabled=true;assert!(s.validate().is_ok());
     }
     #[test]fn display_currency_and_rate_validate(){
         let mut s=AppSettings::default();

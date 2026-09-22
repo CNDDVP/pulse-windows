@@ -8,7 +8,7 @@
 
 | # | Token Monitor 功能 | 我们的状态 | 备注/轮次 |
 |---|---|---|---|
-| 1 | 38+ 工具本地 Token 审计 | ✅ Round 5a：11 来源（+ZCode 信封与 CLI 库、OpenCode、Qwen CLI）；Kiro/Trae/CherryStudio 等按需继续 | 本机主力 ZCode 全链路已覆盖 |
+| 1 | 38+ 工具本地 Token 审计 | ✅ Round 5a/5d：13 来源（+ZCode 信封与 CLI 库、OpenCode、Qwen、Kiro、CherryStudio）；Trae CN 等凭据型路线按需继续 | 本机主力 ZCode 全链路已覆盖 |
 | 2 | 24+ 供应商实时额度限制 | ✅ 领先：18+ 额度引擎（API 级，含 StepFun 扫码+无感续期） | 持续跟进新供应商限额窗口细分 |
 | 3 | 会话级明细（每 prompt 拆分） | ✅ Round 5b：会话 tab（按转录文件/CLI session 聚合 + 懒加载逐事件，不读正文） | 每行级 prompt 拆分按需评估 |
 | 4 | 缓存命中统计（分项展示） | ✅ Round 4：模型明细四分项 + 命中率展示；守卫 Round 3 已落 | |
@@ -45,10 +45,10 @@
 | 25 | 托盘 popover | ✅ 有托盘 | |
 | 26 | Floating Bubble 模式 | ⚖️ 与自由浮动模式重叠 | 评估后可能 N/A |
 | 27 | 菜单栏布局编排器 | ⚖️ 悬浮栏语义固定（每账号一环） | 低优先 |
-| 28 | 浅色模式/主题/字体 | 🗓 暗色玻璃已有 | Round 5 可选 |
+| 28 | 浅色模式/主题/字体 | ✅ Round 5d：语义色彩令牌 + 深色/浅色主题设置（对比度 AA 校验） | 字体自定义未做 |
 | 29 | 全局快捷键 | ✅ 有 | |
 | 30 | 应用内更新中心 | ✅ 有，本轮强化 Atom 备用通道 | |
-| 31 | Discord Rich Presence | 🗓 无 | Round 5 彩蛋（opt-in） |
+| 31 | Discord Rich Presence | ✅ Round 5d：opt-in 广播聚合数字（需自备 Client ID，应用内已披露） | |
 | 32 | 多账号同供应商 | ✅ 有 | |
 | 33 | Codex 账号一键切换 | 🗓 无 | Round 5 评估 |
 | 34 | Codex reset 预测 | ✅ 领先：全供应商燃烧率预测 | Banked 细分评估 |

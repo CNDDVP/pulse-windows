@@ -7,6 +7,7 @@ import {
   workingStates, type BotEvent, type Mood,
 } from "./bot/mood";
 import type { BotFrame, MorphShape, Painted } from "./bot/types";
+import { botEyeColor } from "./bot/eye";
 
 const PERSONAS = ["calm", "eager", "steady", "curious", "sleepy", "playful", "stoic", "proud"] as const;
 
@@ -30,14 +31,6 @@ if (typeof document !== "undefined") document.addEventListener("visibilitychange
   if (document.hidden && raf) { cancelAnimationFrame(raf); raf = 0; }
   else if (!raf && subs.size) raf = requestAnimationFrame(tick);
 });
-
-/** 简单亮度：决定眼睛用深色还是浅色。 */
-function luminance(hex: string): number {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
-  if (!m) return 0.5;
-  const n = parseInt(m[1]!, 16);
-  return (0.2126 * (n >> 16 & 255) + 0.7152 * (n >> 8 & 255) + 0.0722 * (n & 255)) / 255;
-}
 
 // 池子大小：morph 同屏最多 活跃5 + 出场5 + 哼唱2 = 12；粒子爆裂上限 120、丝带前层 ≤9。
 const SHAPE_POOL = 14;
@@ -86,10 +79,8 @@ export function BotMark({ shape: shapeId, persona, color, mood, size, reduceMoti
   useEffect(() => { if (!data) void loadBotData().then(setData).catch(() => {}); }, [data]);
 
   const bodyColor = color ?? "currentColor";
-  // 阈值取 0.45：橙色/蓝色等中亮度的品牌色也配深色眼睛（与 GIF 一致）。
-  const eyeColor = color
-    ? (luminance(color) > 0.45 ? "#27272a" : "#fafafa")
-    : (dark ? "#27272a" : "#fafafa");
+  // 眼色对比规则见 botEyeColor；dark=深色主题（身体 currentColor 为浅色）→ 深色眼。
+  const eyeColor = botEyeColor(color, dark);
 
   // 最新 props 供 rAF 回调读取，避免每次属性变化都重挂订阅。
   const propsRef = useRef({ shapeId, persona, mood, lookX, event, alerting, pointed, size, states: states ?? null });

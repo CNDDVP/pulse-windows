@@ -33,10 +33,14 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,onDoubleCli
   // 的 max 语义一致取任一耗尽。此前 some() 会被未选中的次窗口绑架（主额度 0% 也全环变红）。
   const primaryWin=cfg?.primary_window&&!isPureBalance?usage.windows.find(w=>w.id===cfg.primary_window):null;
   const exhausted=primaryWin?primaryWin.exhausted:(!isPureBalance&&usage.windows.some(w=>w.exhausted));
-  const color=!valid?"#71717a":usage.state==="stale"?"#a1a1aa":(exhausted||used>=red)?"#ef4444":used>=amber?"#f97316":custom??(used>=50?"#eab308":"#10b981");
+  // Round5d 项目一：环色阶梯的语义端点（未知灰/过期灰/危险/正常）走令牌随主题取值；
+  // 中间过渡档（橙 #f97316、黄 #eab308）与用户自定义 ring_color 保持字面量（配额压力阶梯白名单）。
+  const color=!valid?"var(--text-3)":usage.state==="stale"?"var(--text-2)":(exhausted||used>=red)?"var(--danger)":used>=amber?"#f97316":custom??(used>=50?"#eab308":"var(--accent)");
   // The outer time ring follows the account's own pick (or the soonest reset), independent of the inner quota ring.
   const timed=["live","stale"].includes(usage.state)?pickElapsedWindow(timingWindows(usage,cfg),cfg?.elapsed_window??null):null;
   const clock=settings.show_elapsed&&timed?elapsed(timed):null;
+  // Round5d 项目一：面板底色/描边由 data-theme 语义令牌接管；dark 仅保留给 BotMark
+  // 的眼色对比规则（浅色主题=深色身体配浅色眼，深色主题反之），供应商品牌色不变。
   const dark = settings.theme === "obsidian";
   // Animated bot mark replaces the provider badge when enabled; the white travelling
   // activity arc is not drawn then (the bot itself shows the working state).
@@ -56,7 +60,7 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,onDoubleCli
   const sec=["live","stale"].includes(usage.state)&&secCfg?usage.windows.find(w=>w.id===secCfg)??null:null;
   const secLive=sec&&["live","stale"].includes(usage.state)&&sec.id!==cfg?.primary_window;
   const secPct=sec?(settings.display_mode==="remaining"?Math.max(0,100-sec.used_percent):sec.used_percent):0;
-  const secColor=sec?(sec.exhausted||sec.used_percent>=red?"#ef4444":sec.used_percent>=amber?"#f97316":"#10b981"):"#71717a";
+  const secColor=sec?(sec.exhausted||sec.used_percent>=red?"var(--danger)":sec.used_percent>=amber?"#f97316":"var(--accent)"):"var(--text-3)";
   const isErr=!["live","stale"].includes(usage.state);
   // TODO(EN-backend)：usage.error_message 是 Rust 侧消息，原样嵌入标题不做翻译映射。
   const ringTitle=isErr
@@ -68,28 +72,29 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,onDoubleCli
     className={`shrink-0 flex flex-col items-center p-1 text-xs rounded-lg focus:outline-none ${reduced?"":"hover:scale-105 transition-transform duration-150"}`}>
     <div className="relative w-11 h-11 flex items-center justify-center">
       <svg viewBox="0 0 44 44" className="w-11 h-11 -rotate-90">
-        <circle cx="22" cy="22" r="18" fill="none" stroke={dark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.08)"} strokeWidth="2.8"/>
+        <circle cx="22" cy="22" r="18" fill="none" stroke="var(--ring-track)" strokeWidth="2.8"/>
         <circle cx="22" cy="22" r="18" fill="none" stroke={color} strokeWidth="2.8" strokeLinecap="round" opacity={refreshing?0.35:1} strokeDasharray={`${pct/100*113.097} 113.097`} className={reduced?undefined:"transition-all duration-500 ease-out"}/>
         {refreshing&&<g className={reduced?undefined:"animate-spin"} style={{animationDuration:"1s",animationDelay:arcDelay,transformOrigin:"22px 22px"}}><circle cx="22" cy="22" r="18" fill="none" stroke={color} strokeWidth="2.8" strokeLinecap="round" strokeDasharray="22 91"/></g>}
-        {secLive&&sec&&<circle cx="22" cy="22" r="11" fill="none" stroke={dark?"rgba(255,255,255,0.1)":"rgba(0,0,0,0.07)"} strokeWidth="2.2"/>}
+        {secLive&&sec&&<circle cx="22" cy="22" r="11" fill="none" stroke="var(--ring-track)" strokeWidth="2.2"/>}
         {secLive&&sec&&<circle cx="22" cy="22" r="11" fill="none" stroke={secColor} strokeWidth="2.2" strokeLinecap="round" strokeDasharray={`${Math.min(100,Math.max(0,secPct))/100*69.12} 69.12`} className={reduced?undefined:"transition-all duration-500 ease-out"}/>}
-        {clock!==null&&<circle cx="22" cy="22" r="21" fill="none" stroke="#ffffff" strokeWidth="1.5" strokeLinecap="round" opacity="0.95" strokeDasharray={`${(clock>0?Math.max(clock,0.025):0)*131.95} 131.95`}/>}
+        {clock!==null&&<circle cx="22" cy="22" r="21" fill="none" stroke="var(--text-1)" strokeWidth="1.5" strokeLinecap="round" opacity="0.95" strokeDasharray={`${(clock>0?Math.max(clock,0.025):0)*131.95} 131.95`}/>}
       </svg>
-      <span className={`absolute inset-1.5 rounded-full flex items-center justify-center ${dark ? "bg-zinc-800/40 text-zinc-200" : "bg-black/5 text-zinc-700"}`}>
+      <span className="absolute inset-1.5 rounded-full flex items-center justify-center bg-[var(--surface-3)] text-[var(--text-1)]">
         {useBot?
           <BotMark shape={cfg?.bot_shape??"blob"} persona={cfg?.bot_persona??"calm"} color={cfg?.bot_color??(usage.provider_id==="kimi"?"#7AA5FF":undefined)}
             mood={mood} size={20} dark={dark} alerting={alerting} pointed={hovered} event={botEvent}
             poke={pokeCount} reduceMotion={reduced} lookX={lookX}/>:
           <ProviderIcon id={usage.provider_id} size={18}/>}
       </span>
-      {/* 账号正在干活时的白色巡游灯：机器人模式也保留——20px 的机器人
-          自己表达"在忙"不够醒目，这颗灯是用户习惯的信号。 */}
+      {/* 账号正在干活时的巡游灯：机器人模式也保留——20px 的机器人
+          自己表达"在忙"不够醒目，这颗灯是用户习惯的信号。颜色随主题令牌
+          （浅色主题为深色灯，保证在浅色 rail 上可见）。 */}
       {usage.is_active && (
         <div className={`absolute inset-0 pointer-events-none ${reduced?"":"animate-spin"}`} style={{ animationDuration: '3s', animationDelay: spinDelay }}>
-          <div className="w-1.5 h-1.5 rounded-full bg-white shadow-[0_0_6px_#ffffff]" style={{ position: 'absolute', top: '1px', left: 'calc(50% - 3px)' }} />
+          <div className="w-1.5 h-1.5 rounded-full bg-[var(--text-1)] shadow-[0_0_6px_var(--text-1)]" style={{ position: 'absolute', top: '1px', left: 'calc(50% - 3px)' }} />
         </div>
       )}
     </div>
-    <span className={`text-[11px] font-medium mt-0.5 ${dark ? "text-zinc-300" : "text-zinc-700"}`}>{percentText(effectiveUsage,settings.display_mode,lang)}</span>
+    <span className="text-[11px] font-medium mt-0.5 text-[var(--text-2)]">{percentText(effectiveUsage,settings.display_mode,lang)}</span>
   </button>;
 }

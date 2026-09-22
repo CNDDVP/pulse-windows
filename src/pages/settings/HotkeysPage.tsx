@@ -33,10 +33,10 @@ function Recorder({ label, value, onChange, onError }: { label: string; value: s
   return (
     <div className="flex items-center justify-between gap-4">
       <div className="min-w-0">
-        <strong className="text-xs text-zinc-200">{label}</strong>
-        <p className="text-[11px] text-zinc-400">{t("settings.hotkeys.recorder_hint")}</p>
+        <strong className="text-xs text-[var(--text-1)]">{label}</strong>
+        <p className="text-[11px] text-[var(--text-2)]">{t("settings.hotkeys.recorder_hint")}</p>
       </div>
-      <button type="button" className={`${btnGhost} font-mono min-w-36 ${recording ? "ring-2 ring-emerald-500" : ""}`} onClick={() => setRecording(r => !r)} aria-label={t("settings.hotkeys.recorder_aria", { label })}>
+      <button type="button" className={`${btnGhost} font-mono min-w-36 ${recording ? "ring-2 ring-[var(--accent)]" : ""}`} onClick={() => setRecording(r => !r)} aria-label={t("settings.hotkeys.recorder_aria", { label })}>
         {recording ? t("settings.hotkeys.recording") : value ?? t("settings.hotkeys.unset")}
       </button>
     </div>

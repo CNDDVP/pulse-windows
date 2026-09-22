@@ -8,7 +8,7 @@ import {
   type DisplayCurrency,
 } from '../lib/currency';
 
-const inputCls = 'bg-zinc-800 p-1 rounded text-xs text-zinc-200 border border-white/10 focus:outline-none focus:border-emerald-500';
+const inputCls = 'bg-[var(--surface-3)] p-1 rounded text-xs text-[var(--text-1)] border border-[var(--border)] focus:outline-none focus:border-[var(--accent)]';
 
 export function SubscriptionPanel({subs, onSubsChange, onSaved, monthCostBySource, monthCoverageNote, displayCurrency, fxRate}: {
   /** 订阅记录草稿（TokenSpend 持有，导出也要用）；键为来源标识。 */
@@ -72,24 +72,24 @@ export function SubscriptionPanel({subs, onSubsChange, onSaved, monthCostBySourc
   const monthCost = (src: string): number | null => monthCostBySource == null ? null : (Number.isFinite(monthCostBySource[src]) ? monthCostBySource[src] : null);
   const note = rateEstimateNote(displayCurrency, fxRate, lang);
 
-  return <div className="bg-zinc-900/60 rounded-xl border border-white/5">
+  return <div className="bg-[var(--surface-2)] rounded-xl border border-[var(--border)]">
     <button type="button" aria-expanded={open} className="w-full flex items-center justify-between px-4 py-2.5 cursor-pointer text-left"
       onClick={() => setOpen(o => !o)}>
-      <span className="text-sm font-semibold text-zinc-200">{t('spend.subs.title')}{registered > 0 ? t('spend.subs.registered', {count: registered}) : ''}</span>
-      <span className="text-xs text-zinc-400">{open ? t('spend.collapse') : t('spend.expand')}</span>
+      <span className="text-sm font-semibold text-[var(--text-1)]">{t('spend.subs.title')}{registered > 0 ? t('spend.subs.registered', {count: registered}) : ''}</span>
+      <span className="text-xs text-[var(--text-2)]">{open ? t('spend.collapse') : t('spend.expand')}</span>
     </button>
     {open && <div className="px-4 pb-3 space-y-2">
-      <p className="text-[11px] text-zinc-500">{t('spend.subs.description')}</p>
+      <p className="text-[11px] text-[var(--text-3)]">{t('spend.subs.description')}</p>
       <div className="overflow-auto">
         <table className="w-full text-xs text-right">
-          <thead><tr>{(['source','price','currency','cycle','start','month_used','multiple'] as const).map(k => <th key={k} className="p-2 border-b border-zinc-700 first:text-left">{t(`spend.subs.col.${k}`)}</th>)}</tr></thead>
+          <thead><tr>{(['source','price','currency','cycle','start','month_used','multiple'] as const).map(k => <th key={k} className="p-2 border-b border-[var(--border-strong)] first:text-left">{t(`spend.subs.col.${k}`)}</th>)}</tr></thead>
           <tbody>
             {SPEND_SOURCES.map(([id, label]) => {
               const rec = recordOf(id);
               const cost = monthCost(id);
               const mult = subscriptionMultiple(cost, Number(rec.price), rec.currency, fxRate);
               return <tr key={id}>
-                <td className="p-2 text-left text-zinc-300">{label}</td>
+                <td className="p-2 text-left text-[var(--text-1)]">{label}</td>
                 <td className="p-2"><input type="number" min={0} step={0.01} aria-label={t('spend.subs.aria_price', {label})} className={`${inputCls} w-24 text-right`} value={rec.price || ''} placeholder={t('spend.subs.placeholder_unregistered')} onChange={e => edit(id, {price: e.target.value === '' ? 0 : Number(e.target.value)})} /></td>
                 <td className="p-2">
                   <select aria-label={t('spend.subs.aria_currency', {label})} className={inputCls} value={rec.currency} onChange={e => edit(id, {currency: e.target.value})}>
@@ -98,21 +98,21 @@ export function SubscriptionPanel({subs, onSubsChange, onSaved, monthCostBySourc
                 </td>
                 <td className="p-2"><input type="number" min={1} max={366} aria-label={t('spend.subs.aria_cycle', {label})} className={`${inputCls} w-16 text-right`} value={rec.cycle_days} onChange={e => edit(id, {cycle_days: Math.round(Number(e.target.value) || 0)})} /></td>
                 <td className="p-2"><input type="date" aria-label={t('spend.subs.aria_start', {label})} className={inputCls} value={rec.start_date} onChange={e => edit(id, {start_date: e.target.value})} /></td>
-                <td className="p-2 text-zinc-300">{cost == null ? '—' : formatMoney(convertFromUsd(cost, displayCurrency, fxRate), displayCurrency)}</td>
-                <td className={`p-2 ${mult != null && mult >= 1 ? 'text-orange-500 font-semibold' : 'text-zinc-300'}`}>{mult == null ? '—' : formatMultiple(mult)}</td>
+                <td className="p-2 text-[var(--text-1)]">{cost == null ? '—' : formatMoney(convertFromUsd(cost, displayCurrency, fxRate), displayCurrency)}</td>
+                <td className={`p-2 ${mult != null && mult >= 1 ? 'text-[var(--warn)] font-semibold' : 'text-[var(--text-1)]'}`}>{mult == null ? '—' : formatMultiple(mult)}</td>
               </tr>;
             })}
           </tbody>
         </table>
       </div>
-      <p className="text-[11px] text-zinc-500">{t('spend.subs.footnote', {scan: t('spend.scan')})}{note && monthCostBySource != null ? t('spend.subs.month_cost_note', {note}) : ''}{monthCoverageNote ? ` ${monthCoverageNote}` : ''}</p>
+      <p className="text-[11px] text-[var(--text-3)]">{t('spend.subs.footnote', {scan: t('spend.scan')})}{note && monthCostBySource != null ? t('spend.subs.month_cost_note', {note}) : ''}{monthCoverageNote ? ` ${monthCoverageNote}` : ''}</p>
       <div className="flex items-center gap-3">
-        <button disabled={busy} className="bg-emerald-700 px-3 py-1 rounded text-xs disabled:opacity-40 cursor-pointer" onClick={() => void save()}>{busy ? t('spend.saving') : t('spend.subs.save')}</button>
-        <span className="text-[11px] text-zinc-500">{t('spend.subs.zero_hint')}</span>
+        <button disabled={busy} className="bg-[var(--accent-solid)] text-[var(--on-solid)] px-3 py-1 rounded text-xs disabled:opacity-40 cursor-pointer" onClick={() => void save()}>{busy ? t('spend.saving') : t('spend.subs.save')}</button>
+        <span className="text-[11px] text-[var(--text-3)]">{t('spend.subs.zero_hint')}</span>
       </div>
-      {msg && <p className="text-xs text-emerald-400">{t(msg)}</p>}
+      {msg && <p className="text-xs text-[var(--ok)]">{t(msg)}</p>}
       {/* TODO(EN-backend)：err 为 Rust 侧消息，原样展示不翻译 */}
-      {err && <p className="text-xs text-amber-400">{err}</p>}
+      {err && <p className="text-xs text-[var(--warn)]">{err}</p>}
     </div>}
   </div>;
 }

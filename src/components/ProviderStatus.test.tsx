@@ -26,10 +26,10 @@ it('renders four-color lights with labels, description and status-page updated t
   await act(async()=>{});
   const call=callsOf('fetch_provider_status');
   expect(call).toHaveLength(1);
-  // 四色：绿/红/灰（class 断言，黄档由 indicatorColor 单独覆盖）。
-  expect(container.querySelector('[data-provider="anthropic"] span')!.className).toContain('bg-emerald-500');
-  expect(container.querySelector('[data-provider="openai"] span')!.className).toContain('bg-red-500');
-  expect(container.querySelector('[data-provider="x"] span')!.className).toContain('bg-zinc-500');
+  // 四色：绿/红/灰（class 断言，黄档由 indicatorColor 单独覆盖）；Round5d 起为语义令牌。
+  expect(container.querySelector('[data-provider="anthropic"] span')!.className).toContain('bg-[var(--ok)]');
+  expect(container.querySelector('[data-provider="openai"] span')!.className).toContain('bg-[var(--danger)]');
+  expect(container.querySelector('[data-provider="x"] span')!.className).toContain('bg-[var(--text-3)]');
   expect(screen.getByText('服务正常')).toBeTruthy();
   expect(screen.getByText('服务故障')).toBeTruthy();
   expect(screen.getByText('状态未知')).toBeTruthy();
@@ -78,11 +78,12 @@ it('surfaces a command failure without losing the block or the honest endpoint n
 });
 
 it('indicator helpers cover the four colors and formatUpdatedAt rejects garbage',()=>{
-  expect(indicatorColor('operational')).toContain('emerald');
-  expect(indicatorColor('degraded')).toContain('amber');
-  expect(indicatorColor('outage')).toContain('red');
-  expect(indicatorColor('unknown')).toContain('zinc');
-  expect(indicatorColor('anything-else')).toContain('zinc');
+  // Round5d 令牌化：断言语义令牌（--ok/--warn/--danger/--text-3 随主题取色）。
+  expect(indicatorColor('operational')).toContain('var(--ok)');
+  expect(indicatorColor('degraded')).toContain('var(--warn)');
+  expect(indicatorColor('outage')).toContain('var(--danger)');
+  expect(indicatorColor('unknown')).toContain('var(--text-3)');
+  expect(indicatorColor('anything-else')).toContain('var(--text-3)');
   expect(indicatorLabel('degraded')).toBe('服务降级');
   expect(indicatorLabel('weird')).toBe('状态未知');
   expect(formatUpdatedAt(null)).toBe('—');

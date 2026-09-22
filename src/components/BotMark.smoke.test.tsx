@@ -2,8 +2,26 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 import { BotMark } from "./BotMark";
+import { botEyeColor } from "./bot/eye";
 
 afterEach(cleanup);
+
+describe("botEyeColor 眼色对比规则（Round5d 项目一：随主题自适应）", () => {
+  it("未自定义颜色：深色主题（浅色身体）配深色眼，浅色主题（深色身体）配浅色眼", () => {
+    expect(botEyeColor(undefined, true)).toBe("#27272a");
+    expect(botEyeColor(undefined, false)).toBe("#fafafa");
+  });
+
+  it("自定义浅亮身体色（品牌浅色）配深色眼；深色身体配浅色眼", () => {
+    expect(botEyeColor("#7AA5FF", true)).toBe("#27272a"); // Kimi 品牌浅蓝 → 深色眼
+    expect(botEyeColor("#10b981", true)).toBe("#27272a"); // 中亮度品牌色也配深色眼（阈值 0.45）
+    expect(botEyeColor("#27272a", false)).toBe("#fafafa"); // 深色身体 → 浅色眼
+  });
+
+  it("自定义色优先于主题：同一自定义色在两主题下眼色一致（品牌色不随主题翻转）", () => {
+    expect(botEyeColor("#7AA5FF", true)).toBe(botEyeColor("#7AA5FF", false));
+  });
+});
 
 /** svg > defs, g(back), g(shapes), g(head), g(front), circle(badge) */
 function headPath(container: HTMLElement): SVGPathElement {

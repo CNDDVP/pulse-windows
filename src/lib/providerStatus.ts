@@ -12,13 +12,15 @@ export interface ProviderStatusEntry {
 /** 无公开状态端点的供应商：与后端 STATUS_ENDPOINTS 互补，界面诚实注明。 */
 export const NO_PUBLIC_ENDPOINT: readonly [string, string][] = [['stepfun', 'StepFun'], ['zhipu', 'Zhipu']];
 
-/** 四色指示灯：绿=operational / 黄=degraded / 红=outage / 灰=unknown。 */
+/** 四色指示灯：绿=operational / 黄=degraded / 红=outage / 灰=unknown。
+ *  Round5d 项目一：走 index.css 语义令牌（--ok/--warn/--danger/--text-3），随主题取色；
+ *  浅色下四色对窗口底/白卡均 ≥3:1（WCAG 1.4.11 非文字图形），旧硬编码 amber-400 对白卡仅 1.67:1。 */
 export function indicatorColor(indicator: string): string {
   switch (indicator) {
-    case 'operational': return 'bg-emerald-500';
-    case 'degraded': return 'bg-amber-400';
-    case 'outage': return 'bg-red-500';
-    default: return 'bg-zinc-500';
+    case 'operational': return 'bg-[var(--ok)]';
+    case 'degraded': return 'bg-[var(--warn)]';
+    case 'outage': return 'bg-[var(--danger)]';
+    default: return 'bg-[var(--text-3)]';
   }
 }
 

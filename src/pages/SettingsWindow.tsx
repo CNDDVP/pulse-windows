@@ -496,34 +496,34 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
   const firstMatch = (): View | null => matchedPages[0] ? { kind: matchedPages[0].kind } : matchedAccounts[0] ? { kind: "account", id: matchedAccounts[0] } : null;
 
   const navItem = (active: boolean, onClick: () => void, children: React.ReactNode, key?: string) => (
-    <button key={key} onClick={onClick} className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left text-xs transition-colors cursor-pointer ${active ? "bg-zinc-800 text-white font-semibold" : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"}`}>{children}</button>
+    <button key={key} onClick={onClick} className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left text-xs transition-colors cursor-pointer ${active ? "bg-[var(--surface-3)] text-[var(--text-1)] font-semibold" : "text-[var(--text-2)] hover:bg-[var(--hover)] hover:text-[var(--text-1)]"}`}>{children}</button>
   );
-  const stateDot = (u?: ProviderUsage, enabled = true) => <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${!enabled ? "bg-zinc-700" : u?.state === "live" ? "bg-emerald-400" : u?.state === "stale" ? "bg-amber-400" : u ? "bg-red-400" : "bg-zinc-600"}`} />;
+  const stateDot = (u?: ProviderUsage, enabled = true) => <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${!enabled ? "bg-[var(--border-strong)]" : u?.state === "live" ? "bg-[var(--ok)]" : u?.state === "stale" ? "bg-[var(--warn)]" : u ? "bg-[var(--danger)]" : "bg-[var(--text-3)]"}`} />;
   const quotaCapsule = (u?: ProviderUsage, enabled = true) => {
     if (!enabled) {
       return (
-        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-zinc-800/80 text-zinc-500 border border-zinc-700/40 shrink-0">
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-[var(--surface-3)] text-[var(--text-3)] border border-[var(--border-strong)] shrink-0">
           {t("settings.state.disabled")}
         </span>
       );
     }
     if (!u) {
       return (
-        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-zinc-800/60 text-zinc-500 border border-zinc-700/30 shrink-0">
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-[var(--surface-3)] text-[var(--text-3)] border border-[var(--border-strong)] shrink-0">
           {t("settings.state.pending")}
         </span>
       );
     }
     if (u.state === "error" || u.state === "unavailable") {
       return (
-        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-red-950/40 text-red-400 border border-red-800/50 shrink-0" title={u.error_message || t("settings.state.bad_title")}>
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-[var(--danger-soft)] text-[var(--danger)] border border-[var(--danger-border)] shrink-0" title={u.error_message || t("settings.state.bad_title")}>
           {t("settings.state.bad")}
         </span>
       );
     }
     if (u.state === "loading") {
       return (
-        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-950/40 text-blue-300 border border-blue-800/40 shrink-0 animate-pulse">
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-[var(--surface-3)] text-[var(--text-2)] border border-[var(--info-border)] shrink-0 animate-pulse">
           {t("settings.state.refreshing")}
         </span>
       );
@@ -536,7 +536,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
       const amounts = balances.map(b => `${b.currency} ${b.amount.toFixed(2)}`);
       return (
         <span
-          className={`inline-flex flex-col items-end px-1.5 py-0.5 rounded text-[10px] font-mono border shrink-0 max-w-[120px] ${stale ? "bg-amber-950/40 text-amber-300 border-amber-800/40" : "bg-emerald-950/40 text-emerald-300 border-emerald-800/40"}`}
+          className={`inline-flex flex-col items-end px-1.5 py-0.5 rounded text-[10px] font-mono border shrink-0 max-w-[120px] ${stale ? "bg-[var(--warn-soft)] text-[var(--warn)] border-[var(--warn-border)]" : "bg-[var(--ok-soft)] text-[var(--ok)] border-[var(--ok-border)]"}`}
           title={`${stale ? t("settings.bal.cached_title") : t("settings.bal.current_title")}: ${amounts.join("；")}`}
           aria-label={`${stale ? t("settings.bal.cached_aria") : t("settings.bal.aria")}: ${amounts.join("；")}`}
         >
@@ -546,7 +546,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
     }
     if (pct == null) {
       return (
-        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-zinc-800/60 text-zinc-400 border border-zinc-700/40 shrink-0">
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-[var(--surface-3)] text-[var(--text-2)] border border-[var(--border-strong)] shrink-0">
           {t("settings.state.pending")}
         </span>
       );
@@ -554,22 +554,22 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
 
     const isStale = u.state === "stale";
     const colorCls = pct >= 85
-      ? "bg-red-950/60 text-red-300 border-red-800/60"
+      ? "bg-[var(--danger-soft)] text-[var(--danger)] border-[var(--danger-border)]"
       : pct >= 65
-      ? "bg-amber-950/60 text-amber-300 border-amber-800/60"
-      : "bg-emerald-950/60 text-emerald-300 border-emerald-800/60";
+      ? "bg-[var(--warn-soft)] text-[var(--warn)] border-[var(--warn-border)]"
+      : "bg-[var(--ok-soft)] text-[var(--ok)] border-[var(--ok-border)]";
     const barCls = pct >= 85
-      ? "bg-red-400"
+      ? "bg-[var(--danger)]"
       : pct >= 65
-      ? "bg-amber-400"
-      : "bg-emerald-400";
+      ? "bg-[var(--warn)]"
+      : "bg-[var(--ok)]";
 
     return (
       <div className={`inline-flex flex-col justify-center px-1.5 py-0.5 rounded border text-[10px] font-mono ${colorCls} min-w-[44px] shrink-0`} title={isStale ? t("settings.ring.cached_title", { pct }) : t("settings.ring.usage_title", { pct })}>
         <div className="flex items-center justify-between gap-1 leading-none">
           <span className="font-semibold">{pct}%{isStale ? "*" : ""}</span>
         </div>
-        <div className="w-full bg-zinc-800/80 rounded-full h-[2px] mt-0.5 overflow-hidden">
+        <div className="w-full bg-[var(--surface-3)] rounded-full h-[2px] mt-0.5 overflow-hidden">
           <div className={`h-full rounded-full ${barCls}`} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
         </div>
       </div>
@@ -579,27 +579,27 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
   const dirtyHere = view.kind === "account" && (accountDirty(view.id) || !(view.id in applied.providers));
 
   return (
-    <main className="h-screen flex flex-col bg-[#0f0f12] text-zinc-200 text-sm select-none font-sans overflow-hidden">
+    <main className="h-screen flex flex-col bg-[var(--surface)] text-[var(--text-1)] text-sm select-none font-sans overflow-hidden">
       {closeModal?.isOpen && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-150">
-          <div className="bg-zinc-900 border border-zinc-700/80 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
+          <div className="bg-[var(--surface-2)] border border-[var(--border-strong)] rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 text-lg font-bold shrink-0">
+              <div className="w-10 h-10 rounded-xl bg-[var(--warn-soft)] border border-[var(--warn-border)] flex items-center justify-center text-[var(--warn)] text-lg font-bold shrink-0">
                 ⚠️
               </div>
               <div>
-                <h3 className="text-sm font-bold text-white">{t("settings.close.title")}</h3>
-                <p className="text-xs text-zinc-400 mt-0.5">{t("settings.close.body")}</p>
+                <h3 className="text-sm font-bold text-[var(--text-1)]">{t("settings.close.title")}</h3>
+                <p className="text-xs text-[var(--text-2)] mt-0.5">{t("settings.close.body")}</p>
               </div>
             </div>
             <div className="flex flex-col gap-2 pt-2">
-              <button onClick={() => void handleModalSaveAndClose()} disabled={busy} className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer transition-colors shadow-lg">
+              <button onClick={() => void handleModalSaveAndClose()} disabled={busy} className="w-full py-2.5 px-4 rounded-xl bg-[var(--accent-solid)] hover:brightness-110 text-[var(--on-solid)] text-xs font-semibold cursor-pointer transition-colors shadow-lg">
                 {busy ? t("settings.common.saving") : t("settings.close.save")}
               </button>
-              <button onClick={() => void handleModalDiscardAndClose()} disabled={busy} className="w-full py-2 px-4 rounded-xl bg-zinc-800 hover:bg-red-950/40 hover:text-red-300 text-zinc-300 border border-zinc-700/60 text-xs font-medium cursor-pointer transition-colors">
+              <button onClick={() => void handleModalDiscardAndClose()} disabled={busy} className="w-full py-2 px-4 rounded-xl bg-[var(--surface-3)] hover:bg-[var(--danger-soft)] hover:text-[var(--danger)] text-[var(--text-1)] border border-[var(--border-strong)] text-xs font-medium cursor-pointer transition-colors">
                 {t("settings.close.discard")}
               </button>
-              <button onClick={() => void handleModalCancel()} disabled={busy} className="w-full py-2 px-4 rounded-xl text-zinc-400 hover:text-zinc-200 text-xs cursor-pointer transition-colors">
+              <button onClick={() => void handleModalCancel()} disabled={busy} className="w-full py-2 px-4 rounded-xl text-[var(--text-2)] hover:text-[var(--text-1)] text-xs cursor-pointer transition-colors">
                 {t("settings.common.cancel")}
               </button>
             </div>
@@ -607,73 +607,73 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
         </div>
       )}
       {toast && (
-        <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-2xl border text-xs font-medium ${toast.type === "success" ? "bg-emerald-950/95 border-emerald-700/60 text-emerald-200" : toast.type === "error" ? "bg-red-950/95 border-red-700/60 text-red-200" : "bg-zinc-900/95 border-zinc-700 text-zinc-200"}`} role="status">
+        <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-2xl border text-xs font-medium ${toast.type === "success" ? "bg-[var(--surface-2)] border-[var(--ok-border)] text-[var(--ok)]" : toast.type === "error" ? "bg-[var(--danger-soft)]/95 border-[var(--danger-border)] text-[var(--danger)]" : "bg-[var(--surface-2)]/95 border-[var(--border-strong)] text-[var(--text-1)]"}`} role="status">
           <span className="font-bold">{toast.type === "success" ? "✓" : toast.type === "error" ? "✕" : "ℹ"}</span><span>{toast.text}</span>
-          <button onClick={() => setToast(null)} className="ml-2 text-zinc-400 hover:text-white" aria-label={t("settings.common.dismiss_toast")}>✕</button>
+          <button onClick={() => setToast(null)} className="ml-2 text-[var(--text-2)] hover:text-[var(--text-1)]" aria-label={t("settings.common.dismiss_toast")}>✕</button>
         </div>
       )}
       {importable && Object.keys(settings.providers).length === 0 && (
-        <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-2.5 bg-emerald-950/80 border-b border-emerald-800/60 text-xs text-emerald-200">
+        <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-2.5 bg-[var(--ok-soft)] border-b border-[var(--ok-border)] text-xs text-[var(--ok)]">
           <div className="flex items-center gap-2">
             <span className="text-sm">📦</span>
             <span>{t("settings.import.banner", { count: importable.account_count, names: importable.provider_names.join("、") })}</span>
           </div>
           <div className="flex gap-2 shrink-0">
-            <button onClick={() => void handleImportConfig()} className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium cursor-pointer">{t("settings.import.now")}</button>
-            <button onClick={() => setImportable(null)} className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer">{t("settings.import.later")}</button>
+            <button onClick={() => void handleImportConfig()} className="px-3 py-1 rounded-lg bg-[var(--accent-solid)] hover:brightness-110 text-[var(--on-solid)] font-medium cursor-pointer">{t("settings.import.now")}</button>
+            <button onClick={() => setImportable(null)} className="px-2.5 py-1 rounded-lg bg-[var(--surface-3)] hover:bg-[var(--surface-hover)] text-[var(--text-1)] cursor-pointer">{t("settings.import.later")}</button>
           </div>
         </div>
       )}
       {antigravityDetected && !hasAntigravity && !dismissedAntigravity && (
-        <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-2.5 bg-indigo-950/80 border-b border-indigo-800/60 text-xs text-indigo-200">
+        <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-2.5 bg-[var(--surface-2)] border-b border-[var(--info-border)] text-xs text-[var(--text-1)]">
           <div className="flex items-center gap-2">
             <span className="text-sm animate-pulse">✨</span>
             <span>{t("settings.aggr.banner")}</span>
           </div>
           <div className="flex gap-2 shrink-0">
-            <button onClick={() => void handleQuickAddAntigravity()} disabled={busy} className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium cursor-pointer transition-colors shadow-sm">
+            <button onClick={() => void handleQuickAddAntigravity()} disabled={busy} className="px-3 py-1 rounded-lg bg-[var(--accent-solid)] hover:brightness-110 text-[var(--on-solid)] font-medium cursor-pointer transition-colors shadow-sm">
               {busy ? t("settings.aggr.adding") : t("settings.aggr.add")}
             </button>
-            <button onClick={() => setDismissedAntigravity(true)} className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer transition-colors">
+            <button onClick={() => setDismissedAntigravity(true)} className="px-2.5 py-1 rounded-lg bg-[var(--surface-3)] hover:bg-[var(--surface-hover)] text-[var(--text-1)] cursor-pointer transition-colors">
               {t("settings.aggr.later")}
             </button>
           </div>
         </div>
       )}
       {pendingRemote && (
-        <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-2 bg-amber-950/70 border-b border-amber-800/50 text-xs text-amber-200">
+        <div className="shrink-0 flex items-center justify-between gap-3 px-5 py-2 bg-[var(--warn-soft)] border-b border-[var(--warn-border)] text-xs text-[var(--warn)]">
           <span>{t("settings.remote.banner")}</span>
           <div className="flex gap-2 shrink-0">
-            <button onClick={() => { markApplied(pendingRemote); setSettings(pendingRemote); setPendingRemote(null); }} className="px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white cursor-pointer">{t("settings.remote.discard")}</button>
-            <button onClick={() => setPendingRemote(null)} className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 cursor-pointer">{t("settings.remote.keep")}</button>
+            <button onClick={() => { markApplied(pendingRemote); setSettings(pendingRemote); setPendingRemote(null); }} className="px-2.5 py-1 rounded bg-[var(--warn-solid)] hover:brightness-110 text-[var(--on-solid)] cursor-pointer">{t("settings.remote.discard")}</button>
+            <button onClick={() => setPendingRemote(null)} className="px-2.5 py-1 rounded bg-[var(--surface-3)] hover:bg-[var(--surface-hover)] text-[var(--text-1)] cursor-pointer">{t("settings.remote.keep")}</button>
           </div>
         </div>
       )}
 
-      <header className="h-14 shrink-0 flex justify-between items-center px-5 border-b border-white/5 bg-zinc-950/80 backdrop-blur-md">
+      <header className="h-14 shrink-0 flex justify-between items-center px-5 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur-md">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center shadow-lg shadow-emerald-950/50">
             <svg className="w-4 h-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg>
           </div>
           <div>
-            <div className="flex items-center gap-2"><h1 className="text-sm font-bold text-white tracking-wide">Pulse</h1><span className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-mono border border-zinc-700/50">v{__APP_VERSION__}</span>{isPortable && <span className="text-[10px] bg-emerald-950 text-emerald-400 px-1.5 py-0.5 rounded font-mono border border-emerald-800/50">{t("settings.header.portable")}</span>}</div>
-            <p className="text-[11px] text-zinc-400">{t("settings.header.tagline")}</p>
+            <div className="flex items-center gap-2"><h1 className="text-sm font-bold text-[var(--text-1)] tracking-wide">Pulse</h1><span className="text-[10px] bg-[var(--surface-3)] text-[var(--text-2)] px-1.5 py-0.5 rounded font-mono border border-[var(--border-strong)]">v{__APP_VERSION__}</span>{isPortable && <span className="text-[10px] bg-[var(--ok-soft)] text-[var(--ok)] px-1.5 py-0.5 rounded font-mono border border-[var(--ok-border)]">{t("settings.header.portable")}</span>}</div>
+            <p className="text-[11px] text-[var(--text-2)]">{t("settings.header.tagline")}</p>
           </div>
         </div>
         <div className="flex items-center gap-2.5">
           {dirtyHere && view.kind === "account" && (
             <>
-              <span className="text-[11px] text-amber-300 flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />{t("settings.header.dirty")}</span>
+              <span className="text-[11px] text-[var(--warn)] flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[var(--warn)] animate-pulse" />{t("settings.header.dirty")}</span>
               <button className={btnGhost} disabled={locked} onClick={() => discardAccount(view.id)}>{t("settings.header.discard")}</button>
               <button className={btnPrimary} disabled={locked} onClick={() => void saveAccounts()}>{busy ? t("settings.common.saving") : t("settings.common.save")}</button>
             </>
           )}
-          <button onClick={() => void handleUserClose()} className={`${btnGhost} flex items-center gap-1.5`} title={t("settings.header.close_title")}><span>✕</span><span>{t("settings.header.close")}</span><kbd className="text-[10px] text-zinc-500 border border-zinc-700 rounded px-1">Esc</kbd></button>
+          <button onClick={() => void handleUserClose()} className={`${btnGhost} flex items-center gap-1.5`} title={t("settings.header.close_title")}><span>✕</span><span>{t("settings.header.close")}</span><kbd className="text-[10px] text-[var(--text-3)] border border-[var(--border-strong)] rounded px-1">Esc</kbd></button>
         </div>
       </header>
 
       <div className="flex flex-1 min-h-0">
-        <nav className="w-60 shrink-0 border-r border-white/5 bg-zinc-950/40 flex flex-col">
+        <nav className="w-60 shrink-0 border-r border-[var(--border)] bg-[var(--surface)] flex flex-col">
           <div className="p-3">
             <input value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { const v = firstMatch(); if (v) { setView(v); setSearch(""); } } if (e.key === "Escape") setSearch(""); }}
               placeholder={t("settings.nav.search_ph")} aria-label={t("settings.nav.search_ph")} className={inputCls} />
@@ -681,33 +681,33 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
           <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-4">
             {(!q || matchedPages.some(p => p.group === "pulse")) && (
               <div className="space-y-0.5">
-                <div className="px-3 text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Pulse</div>
+                <div className="px-3 text-[10px] uppercase tracking-wider text-[var(--text-3)] mb-1">Pulse</div>
                 {matchedPages.filter(p => p.group === "pulse").map(p => navItem(view.kind === p.kind, () => setView({ kind: p.kind }), <><span>{p.icon}</span><span>{t(p.title)}</span></>, p.kind))}
               </div>
             )}
             {(!q || matchedAccounts.length > 0) && (
               <div className="space-y-0.5">
-                <div className="px-3 text-[10px] uppercase tracking-wider text-zinc-500 mb-1 flex justify-between"><span>{t("settings.nav.accounts")}</span><span>{railOrder.length}</span></div>
+                <div className="px-3 text-[10px] uppercase tracking-wider text-[var(--text-3)] mb-1 flex justify-between"><span>{t("settings.nav.accounts")}</span><span>{railOrder.length}</span></div>
                 {!q && navItem(view.kind === "accounts", () => setView({ kind: "accounts" }), <><span>☰</span><span>{t("settings.nav.overview")}</span></>)}
                 {matchedAccounts.map(id => { const c = settings.providers[id]; const u = usages.find(x => x.account_id === id); return navItem(view.kind === "account" && view.id === id, () => setView({ kind: "account", id }), <>
-                  <span className="w-6 h-6 rounded-lg bg-zinc-800/90 border border-zinc-700/50 flex items-center justify-center text-zinc-200 shrink-0"><ProviderIcon id={c.provider_id} size={13} /></span>
-                  <span className="min-w-0 flex-1"><span className="block truncate">{c.label || providerName(c.provider_id, t)}</span>{c.label && c.label !== providerName(c.provider_id, t) && <span className="block text-[10px] text-zinc-500 truncate">{providerName(c.provider_id, t)}</span>}</span>
+                  <span className="w-6 h-6 rounded-lg bg-[var(--surface-3)] border border-[var(--border-strong)] flex items-center justify-center text-[var(--text-1)] shrink-0"><ProviderIcon id={c.provider_id} size={13} /></span>
+                  <span className="min-w-0 flex-1"><span className="block truncate">{c.label || providerName(c.provider_id, t)}</span>{c.label && c.label !== providerName(c.provider_id, t) && <span className="block text-[10px] text-[var(--text-3)] truncate">{providerName(c.provider_id, t)}</span>}</span>
                   {quotaCapsule(u, c.enabled)}
                   {stateDot(u, c.enabled)}
                 </>, id); })}
-                {!q && <button onClick={() => setPickerOpen(true)} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left text-xs text-emerald-400 hover:bg-emerald-950/40 cursor-pointer"><span className="font-bold">+</span><span>{t("settings.nav.add")}</span></button>}
+                {!q && <button onClick={() => setPickerOpen(true)} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left text-xs text-[var(--ok)] hover:bg-[var(--ok-soft)] cursor-pointer"><span className="font-bold">+</span><span>{t("settings.nav.add")}</span></button>}
               </div>
             )}
             {(!q || matchedPages.some(p => p.group === "app")) && (
               <div className="space-y-0.5">
-                <div className="px-3 text-[10px] uppercase tracking-wider text-zinc-500 mb-1">{t("settings.nav.app_group")}</div>
+                <div className="px-3 text-[10px] uppercase tracking-wider text-[var(--text-3)] mb-1">{t("settings.nav.app_group")}</div>
                 {matchedPages.filter(p => p.group === "app").map(p => navItem(view.kind === p.kind, () => setView({ kind: p.kind }), <><span>{p.icon}</span><span>{t(p.title)}</span></>, p.kind))}
               </div>
             )}
-            {q && matchedPages.length === 0 && matchedAccounts.length === 0 && <p className="px-3 text-xs text-zinc-500">{t("settings.nav.no_match", { query: search })}</p>}
+            {q && matchedPages.length === 0 && matchedAccounts.length === 0 && <p className="px-3 text-xs text-[var(--text-3)]">{t("settings.nav.no_match", { query: search })}</p>}
           </div>
-          <div className="p-3 border-t border-white/5 text-[11px] text-zinc-500">
-            <div className="flex items-center gap-1.5 text-emerald-400"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />{t("settings.nav.watching")}</div>
+          <div className="p-3 border-t border-[var(--border)] text-[11px] text-[var(--text-3)]">
+            <div className="flex items-center gap-1.5 text-[var(--ok)]"><span className="w-1.5 h-1.5 rounded-full bg-[var(--ok)] animate-pulse" />{t("settings.nav.watching")}</div>
             <div className="mt-1">{t("settings.nav.footer_hint")}</div>
           </div>
         </nav>
@@ -729,23 +729,23 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                 aside={<button className={btnGhost} disabled={locked || isDefaultOrder} onClick={() => commitOrder(defaultOrder)} title={t("settings.accounts.default_order_title")}>{t("settings.accounts.default_order")}</button>}>
                 <ul ref={listRef} className="space-y-1.5">
                   {railOrder.map((id, index) => { const c = settings.providers[id]; const u = usages.find(x => x.account_id === id); return (
-                    <li key={id} className={`flex items-center gap-3 px-3 py-2 rounded-xl border transition-colors ${drag && drag.over === index && drag.id !== id ? "border-emerald-500/70 bg-emerald-950/30" : "border-white/5 bg-zinc-950/40 hover:border-white/15"} ${drag?.id === id ? "opacity-40" : ""} ${!c.enabled ? "opacity-60" : ""}`}>
-                      <span onPointerDown={e => startDrag(e, id, index)} className={`text-zinc-500 select-none touch-none text-base leading-none px-1 ${locked ? "" : "cursor-grab active:cursor-grabbing"}`} title={t("settings.accounts.drag")} aria-hidden>☰</span>
-                      <span className="w-5 text-[11px] font-mono text-zinc-500 text-right">{index + 1}</span>
-                      <span className="w-6 h-6 rounded-lg bg-zinc-800/90 border border-zinc-700/50 flex items-center justify-center text-zinc-200 shrink-0"><ProviderIcon id={c.provider_id} size={14} /></span>
-                      <button className="text-xs text-zinc-200 truncate hover:underline cursor-pointer text-left font-medium" onClick={() => setView({ kind: "account", id })}>{c.label}</button>
-                      <span className="text-[11px] text-zinc-500 truncate">{providerName(c.provider_id, t)}</span>
+                    <li key={id} className={`flex items-center gap-3 px-3 py-2 rounded-xl border transition-colors ${drag && drag.over === index && drag.id !== id ? "border-[var(--ok-border)] bg-[var(--ok-soft)]" : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--border-strong)]"} ${drag?.id === id ? "opacity-40" : ""} ${!c.enabled ? "opacity-60" : ""}`}>
+                      <span onPointerDown={e => startDrag(e, id, index)} className={`text-[var(--text-3)] select-none touch-none text-base leading-none px-1 ${locked ? "" : "cursor-grab active:cursor-grabbing"}`} title={t("settings.accounts.drag")} aria-hidden>☰</span>
+                      <span className="w-5 text-[11px] font-mono text-[var(--text-3)] text-right">{index + 1}</span>
+                      <span className="w-6 h-6 rounded-lg bg-[var(--surface-3)] border border-[var(--border-strong)] flex items-center justify-center text-[var(--text-1)] shrink-0"><ProviderIcon id={c.provider_id} size={14} /></span>
+                      <button className="text-xs text-[var(--text-1)] truncate hover:underline cursor-pointer text-left font-medium" onClick={() => setView({ kind: "account", id })}>{c.label}</button>
+                      <span className="text-[11px] text-[var(--text-3)] truncate">{providerName(c.provider_id, t)}</span>
                       <div className="ml-auto flex items-center gap-2 shrink-0">
                         {quotaCapsule(u, c.enabled)}
                         {stateDot(u, c.enabled)}
-                        {!c.enabled && <span className="text-[10px] px-1.5 py-[2px] bg-zinc-800 text-zinc-400 rounded border border-zinc-700/60 shrink-0">{t("settings.accounts.not_on_rail")}</span>}
+                        {!c.enabled && <span className="text-[10px] px-1.5 py-[2px] bg-[var(--surface-3)] text-[var(--text-2)] rounded border border-[var(--border-strong)] shrink-0">{t("settings.accounts.not_on_rail")}</span>}
                         <div className="flex items-center gap-1 shrink-0 ml-1">
-                          <button disabled={locked || index === 0} onClick={() => moveAccount(index, index - 1)} className="w-6 h-6 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-30 cursor-pointer text-xs" aria-label={t("settings.accounts.move_up", { label: c.label })}>▲</button>
-                          <button disabled={locked || index === railOrder.length - 1} onClick={() => moveAccount(index, index + 1)} className="w-6 h-6 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-30 cursor-pointer text-xs" aria-label={t("settings.accounts.move_down", { label: c.label })}>▼</button>
+                          <button disabled={locked || index === 0} onClick={() => moveAccount(index, index - 1)} className="w-6 h-6 rounded-md text-[var(--text-2)] hover:text-[var(--text-1)] hover:bg-[var(--surface-hover)] disabled:opacity-30 cursor-pointer text-xs" aria-label={t("settings.accounts.move_up", { label: c.label })}>▲</button>
+                          <button disabled={locked || index === railOrder.length - 1} onClick={() => moveAccount(index, index + 1)} className="w-6 h-6 rounded-md text-[var(--text-2)] hover:text-[var(--text-1)] hover:bg-[var(--surface-hover)] disabled:opacity-30 cursor-pointer text-xs" aria-label={t("settings.accounts.move_down", { label: c.label })}>▼</button>
                         </div>
                       </div>
                     </li>); })}
-                  {railOrder.length === 0 && <p className="text-xs text-zinc-500">{t("settings.accounts.empty")}</p>}
+                  {railOrder.length === 0 && <p className="text-xs text-[var(--text-3)]">{t("settings.accounts.empty")}</p>}
                 </ul>
               </Section>
             </div>
@@ -759,22 +759,22 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
             const isDuplicateInner = !!(c.secondary_window && effectivePrimaryWindow && c.secondary_window === effectivePrimaryWindow);
             return (
               <div className="space-y-5 max-w-3xl">
-                <section className="p-5 rounded-2xl bg-zinc-900/40 border border-white/10 flex items-center justify-between gap-4">
+                <section className="p-5 rounded-2xl bg-[var(--surface-2)] border border-[var(--border)] flex items-center justify-between gap-4">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-11 h-11 rounded-xl bg-zinc-800/90 border border-zinc-700/50 flex items-center justify-center text-zinc-200" style={c.ring_color ? { color: c.ring_color } : undefined}><ProviderIcon id={c.provider_id} size={22} /></div>
+                    <div className="w-11 h-11 rounded-xl bg-[var(--surface-3)] border border-[var(--border-strong)] flex items-center justify-center text-[var(--text-1)]" style={c.ring_color ? { color: c.ring_color } : undefined}><ProviderIcon id={c.provider_id} size={22} /></div>
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2"><strong className="text-base font-semibold text-white truncate">{c.label || providerName(c.provider_id, t)}</strong><span className="text-xs text-zinc-500">{providerName(c.provider_id, t)}</span></div>
+                      <div className="flex items-center gap-2"><strong className="text-base font-semibold text-[var(--text-1)] truncate">{c.label || providerName(c.provider_id, t)}</strong><span className="text-xs text-[var(--text-3)]">{providerName(c.provider_id, t)}</span></div>
                       <div className="flex items-center gap-2 mt-1 text-[11px]">
                         {stateDot(reading, c.enabled)}
-                        <span className={!c.enabled ? "text-zinc-500" : reading?.state === "live" ? "text-emerald-400" : reading?.state === "stale" ? "text-amber-400" : reading?.error_message ? "text-red-400" : "text-zinc-500"}>
+                        <span className={!c.enabled ? "text-[var(--text-3)]" : reading?.state === "live" ? "text-[var(--ok)]" : reading?.state === "stale" ? "text-[var(--warn)]" : reading?.error_message ? "text-[var(--danger)]" : "text-[var(--text-3)]"}>
                           {!c.enabled ? t("settings.acct.disabled_line") : reading?.state === "live" ? t("settings.acct.live_line", { ago: ageText(reading.checked_at, t) }) : reading?.state === "stale" ? t("settings.acct.stale_line", { ago: ageText(reading.last_success_at, t) }) : reading?.error_message ?? t("settings.acct.no_reading")}
                         </span>
                       </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-4 shrink-0">
-                    <label className="flex items-center gap-2 text-xs text-zinc-400"><span>{t("settings.acct.show_on_rail")}</span><Switch checked={c.enabled} onChange={v => patch(id, { enabled: v })} label={t("settings.acct.show_on_rail")} /></label>
-                    <button className={confirmArmed === `del:${id}` ? "text-red-300 bg-red-950/50 p-1.5 rounded-lg transition-colors cursor-pointer" : "text-zinc-500 hover:text-red-400 hover:bg-red-950/30 p-1.5 rounded-lg transition-colors cursor-pointer"} onClick={() => remove(id)} title={confirmArmed === `del:${id}` ? t("settings.acct.delete_armed") : t("settings.acct.delete")} aria-label={t("settings.acct.delete")}>
+                    <label className="flex items-center gap-2 text-xs text-[var(--text-2)]"><span>{t("settings.acct.show_on_rail")}</span><Switch checked={c.enabled} onChange={v => patch(id, { enabled: v })} label={t("settings.acct.show_on_rail")} /></label>
+                    <button className={confirmArmed === `del:${id}` ? "text-[var(--danger)] bg-[var(--danger-soft)] p-1.5 rounded-lg transition-colors cursor-pointer" : "text-[var(--text-3)] hover:text-[var(--danger)] hover:bg-[var(--danger-soft)] p-1.5 rounded-lg transition-colors cursor-pointer"} onClick={() => remove(id)} title={confirmArmed === `del:${id}` ? t("settings.acct.delete_armed") : t("settings.acct.delete")} aria-label={t("settings.acct.delete")}>
                       <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                     </button>
                   </div>
@@ -783,7 +783,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                 <Section title={t("settings.acct.section")} icon="👤">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <div className="md:col-span-2"><Field label={t("settings.acct.label")}><input className={inputCls} value={c.label} onChange={e => patch(id, { label: e.target.value })} /></Field></div>
-                    <Field label={t("settings.acct.position")}><div className={`${inputCls} text-zinc-300`}>{t("settings.acct.position_value", { pos: position })} <button className="text-emerald-400 hover:underline cursor-pointer" onClick={() => setView({ kind: "accounts" })}>{t("settings.acct.go_order")}</button></div></Field>
+                    <Field label={t("settings.acct.position")}><div className={`${inputCls} text-[var(--text-1)]`}>{t("settings.acct.position_value", { pos: position })} <button className="text-[var(--ok)] hover:underline cursor-pointer" onClick={() => setView({ kind: "accounts" })}>{t("settings.acct.go_order")}</button></div></Field>
                   </div>
                 </Section>
 
@@ -794,24 +794,24 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                   ].filter(Boolean) as string[];
                   return parts.length ? t("settings.acct.conn_avail", { routes: parts.join(t("settings.common.list_sep")) }) : t("settings.acct.conn_auto");
                 })()}
-                  aside={<button disabled={locked || !c.enabled} onClick={() => void test(id)} className={`${btnGhost} flex items-center gap-1.5`}>{isTesting ? <span className="w-3.5 h-3.5 border-2 border-zinc-400 border-t-white rounded-full animate-spin" /> : <span>⟳</span>}<span>{isTesting ? t("settings.acct.testing") : t("settings.acct.save_test")}</span></button>}>
+                  aside={<button disabled={locked || !c.enabled} onClick={() => void test(id)} className={`${btnGhost} flex items-center gap-1.5`}>{isTesting ? <span className="w-3.5 h-3.5 border-2 border-[var(--text-3)] border-t-[var(--text-1)] rounded-full animate-spin" /> : <span>⟳</span>}<span>{isTesting ? t("settings.acct.testing") : t("settings.acct.save_test")}</span></button>}>
                   {routes.local && (
                     <Row title={t("settings.acct.use_local")} subtitle={t(routes.local)}><Switch checked={c.use_local} onChange={v => patch(id, { use_local: v })} label={t("settings.acct.use_local_switch")} /></Row>
                   )}
                   {routes.manual && (
                     c.provider_id === "stepfun" ? (
-                      <div className="p-3.5 bg-zinc-950/60 rounded-xl border border-white/5 space-y-3">
+                      <div className="p-3.5 bg-[var(--surface)] rounded-xl border border-[var(--border)] space-y-3">
                         <div className="flex justify-between items-center text-xs">
-                          <span className={c.credential_configured ? "text-emerald-400 font-medium" : "text-zinc-400"}>
+                          <span className={c.credential_configured ? "text-[var(--ok)] font-medium" : "text-[var(--text-2)]"}>
                             {c.credential_configured ? t("settings.acct.cred_saved_win") : t("settings.acct.stepfun_cred_none")}
                           </span>
-                          <span className="text-[11px] text-zinc-500">{t("settings.acct.dual_cred")}</span>
+                          <span className="text-[11px] text-[var(--text-3)]">{t("settings.acct.dual_cred")}</span>
                         </div>
                         <div className="space-y-2.5">
                           <div>
-                            <div className="flex justify-between text-xs text-zinc-300 mb-1">
+                            <div className="flex justify-between text-xs text-[var(--text-1)] mb-1">
                               <span>{t("settings.acct.apikey_label")}</span>
-                              <span className="text-[11px] text-zinc-500">{t("settings.common.optional")}</span>
+                              <span className="text-[11px] text-[var(--text-3)]">{t("settings.common.optional")}</span>
                             </div>
                             <div className="relative">
                               <input
@@ -827,7 +827,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                               <button
                                 type="button"
                                 onClick={() => setShowStepfunApiKey(s => ({ ...s, [id]: !s[id] }))}
-                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 text-xs cursor-pointer"
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-3)] hover:text-[var(--text-1)] text-xs cursor-pointer"
                               >
                                 {showStepfunApiKey[id] ? t("settings.common.hide") : t("settings.common.show")}
                               </button>
@@ -835,14 +835,14 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                           </div>
 
                           <div>
-                            <div className="flex justify-between items-center text-xs text-zinc-300 mb-1">
+                            <div className="flex justify-between items-center text-xs text-[var(--text-1)] mb-1">
                               <span>{t("settings.acct.oasis_label")}</span>
                               <div className="flex items-center gap-2">
                                 <button
                                   type="button"
                                   onClick={() => void handleStepfunWebLogin(id)}
                                   disabled={locked || webLoginLoading[id]}
-                                  className="text-[11px] text-emerald-400 hover:text-emerald-300 hover:underline cursor-pointer flex items-center gap-1 font-medium disabled:opacity-40"
+                                  className="text-[11px] text-[var(--ok)] hover:text-[var(--accent-strong)] hover:underline cursor-pointer flex items-center gap-1 font-medium disabled:opacity-40"
                                   title={t("settings.acct.weblogin_title")}
                                 >
                                   <span>{webLoginLoading[id] ? t("settings.acct.waiting_login") : t("settings.acct.weblogin")}</span>
@@ -850,7 +850,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                                 <button
                                   type="button"
                                   onClick={() => setShowStepfunHelp(v => !v)}
-                                  className="text-[11px] text-zinc-400 hover:text-zinc-200 hover:underline cursor-pointer flex items-center gap-1"
+                                  className="text-[11px] text-[var(--text-2)] hover:text-[var(--text-1)] hover:underline cursor-pointer flex items-center gap-1"
                                 >
                                   <span>💡 {t("settings.acct.manual_get")}</span>
                                 </button>
@@ -870,7 +870,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                               <button
                                 type="button"
                                 onClick={() => setShowStepfunOasisToken(s => ({ ...s, [id]: !s[id] }))}
-                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 text-xs cursor-pointer"
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-3)] hover:text-[var(--text-1)] text-xs cursor-pointer"
                               >
                                 {showStepfunOasisToken[id] ? t("settings.common.hide") : t("settings.common.show")}
                               </button>
@@ -878,13 +878,13 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                           </div>
 
                           {showStepfunHelp && (
-                            <div className="p-2.5 rounded-xl bg-zinc-900 border border-zinc-700/60 text-xs text-zinc-300 space-y-1.5 leading-relaxed">
-                              <div className="font-semibold text-zinc-200">{t("settings.acct.help_title")}</div>
-                              <ol className="list-decimal list-inside space-y-1 text-zinc-400 text-[11px]">
-                                <li>{t("settings.acct.help_1_pre")} <span className="text-zinc-200 font-mono">platform.stepfun.com</span>{t("settings.acct.help_1_post")}</li>
-                                <li>{t("settings.acct.help_2_pre")} <kbd className="px-1 py-0.5 bg-zinc-800 rounded border border-zinc-700 font-mono">F12</kbd>{t("settings.acct.help_2_mid")} <span className="text-zinc-200">Console</span>{t("settings.acct.help_2_post")}</li>
-                                <li>{t("settings.acct.help_3_pre")} <code className="text-emerald-400 font-mono">document.cookie</code>{t("settings.acct.help_3_post")}</li>
-                                <li>{t("settings.acct.help_4_pre")} <code className="text-zinc-200 font-mono">Oasis-Token=...</code>{t("settings.acct.help_4_post")}</li>
+                            <div className="p-2.5 rounded-xl bg-[var(--surface-2)] border border-[var(--border-strong)] text-xs text-[var(--text-1)] space-y-1.5 leading-relaxed">
+                              <div className="font-semibold text-[var(--text-1)]">{t("settings.acct.help_title")}</div>
+                              <ol className="list-decimal list-inside space-y-1 text-[var(--text-2)] text-[11px]">
+                                <li>{t("settings.acct.help_1_pre")} <span className="text-[var(--text-1)] font-mono">platform.stepfun.com</span>{t("settings.acct.help_1_post")}</li>
+                                <li>{t("settings.acct.help_2_pre")} <kbd className="px-1 py-0.5 bg-[var(--surface-3)] rounded border border-[var(--border-strong)] font-mono">F12</kbd>{t("settings.acct.help_2_mid")} <span className="text-[var(--text-1)]">Console</span>{t("settings.acct.help_2_post")}</li>
+                                <li>{t("settings.acct.help_3_pre")} <code className="text-[var(--ok)] font-mono">document.cookie</code>{t("settings.acct.help_3_post")}</li>
+                                <li>{t("settings.acct.help_4_pre")} <code className="text-[var(--text-1)] font-mono">Oasis-Token=...</code>{t("settings.acct.help_4_post")}</li>
                               </ol>
                             </div>
                           )}
@@ -901,7 +901,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                               <button
                                 disabled={locked}
                                 onClick={() => void handleDeleteCredential(id)}
-                                className={confirmArmed === `cred:${id}` ? "px-3 py-1.5 bg-red-950/50 text-red-300 border border-red-900/60 rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer" : "px-3 py-1.5 bg-zinc-900 hover:bg-red-950/40 text-red-400 border border-zinc-800 hover:border-red-900/60 rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer"}
+                                className={confirmArmed === `cred:${id}` ? "px-3 py-1.5 bg-[var(--danger-soft)] text-[var(--danger)] border border-[var(--danger-border)] rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer" : "px-3 py-1.5 bg-[var(--surface-2)] hover:bg-[var(--danger-soft)] text-[var(--danger)] border border-[var(--border)] hover:border-[var(--danger-border)] rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer"}
                               >
                                 {confirmArmed === `cred:${id}` ? t("settings.acct.remove_q") : t("settings.acct.del_cred")}
                               </button>
@@ -910,24 +910,24 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                         </div>
                       </div>
                     ) : (
-                      <div className="p-3.5 bg-zinc-950/60 rounded-xl border border-white/5 space-y-3">
+                      <div className="p-3.5 bg-[var(--surface)] rounded-xl border border-[var(--border)] space-y-3">
                         <div className="flex justify-between items-center text-xs">
-                          <span className={c.credential_configured ? "text-emerald-400 font-medium" : "text-zinc-400"}>{c.credential_configured ? t("settings.acct.cred_saved_win") : t("settings.acct.manual_cred_none")}</span>
-                          <span className="text-[11px] text-zinc-500">{routes.manual ? t(routes.manual) : ""}</span>
+                          <span className={c.credential_configured ? "text-[var(--ok)] font-medium" : "text-[var(--text-2)]"}>{c.credential_configured ? t("settings.acct.cred_saved_win") : t("settings.acct.manual_cred_none")}</span>
+                          <span className="text-[11px] text-[var(--text-3)]">{routes.manual ? t(routes.manual) : ""}</span>
                         </div>
                         <div className="flex gap-2">
                           <div className="relative flex-1">
                             <input type={showSecrets[id] ? "text" : "password"} className={`${inputCls} pr-9`} placeholder={c.credential_configured ? t("settings.acct.cred_ph_new") : getPlaceholder(c.provider_id, t)} value={secrets[id] || ""} onChange={e => setSecrets(s => ({ ...s, [id]: e.target.value }))} autoComplete="off" spellCheck={false} aria-label={t("settings.acct.cred_aria")} />
-                            <button type="button" onClick={() => setShowSecrets(s => ({ ...s, [id]: !s[id] }))} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 text-xs cursor-pointer" aria-label={showSecrets[id] ? t("settings.acct.hide_cred") : t("settings.acct.show_cred")}>{showSecrets[id] ? t("settings.common.hide") : t("settings.common.show")}</button>
+                            <button type="button" onClick={() => setShowSecrets(s => ({ ...s, [id]: !s[id] }))} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-3)] hover:text-[var(--text-1)] text-xs cursor-pointer" aria-label={showSecrets[id] ? t("settings.acct.hide_cred") : t("settings.acct.show_cred")}>{showSecrets[id] ? t("settings.common.hide") : t("settings.common.show")}</button>
                           </div>
                           <button disabled={locked || !secrets[id]} onClick={() => void handleSaveCredential(id)} className={btnPrimary}>{t("settings.acct.save_cred")}</button>
-                          {c.credential_configured && <button disabled={locked} onClick={() => void handleDeleteCredential(id)} className={confirmArmed === `cred:${id}` ? "px-3 py-1.5 bg-red-950/50 text-red-300 border border-red-900/60 rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer" : "px-3 py-1.5 bg-zinc-900 hover:bg-red-950/40 text-red-400 border border-zinc-800 hover:border-red-900/60 rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer"}>{confirmArmed === `cred:${id}` ? t("settings.acct.remove_q") : t("settings.acct.del_cred")}</button>}
+                          {c.credential_configured && <button disabled={locked} onClick={() => void handleDeleteCredential(id)} className={confirmArmed === `cred:${id}` ? "px-3 py-1.5 bg-[var(--danger-soft)] text-[var(--danger)] border border-[var(--danger-border)] rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer" : "px-3 py-1.5 bg-[var(--surface-2)] hover:bg-[var(--danger-soft)] text-[var(--danger)] border border-[var(--border)] hover:border-[var(--danger-border)] rounded-xl text-xs font-medium transition-all disabled:opacity-40 cursor-pointer"}>{confirmArmed === `cred:${id}` ? t("settings.acct.remove_q") : t("settings.acct.del_cred")}</button>}
                         </div>
                       </div>
                     )
                   )}
                   {/* reading.source / error_message 来自后端，原样展示。TODO(EN-backend) */}
-                  <p className="text-[11px] text-zinc-500">{t("settings.acct.source", { source: reading?.source || t("settings.acct.no_reading_yet") })}</p>
+                  <p className="text-[11px] text-[var(--text-3)]">{t("settings.acct.source", { source: reading?.source || t("settings.acct.no_reading_yet") })}</p>
                 </Section>
 
                 <Section title={t("settings.acct.rail_section")} icon="◎" subtitle={t("settings.acct.rail_sub")}>
@@ -965,12 +965,12 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                       source: t("settings.preview.source"),
                     };
                     return (
-                      <div className="p-3 bg-zinc-950/50 rounded-xl border border-white/5 flex items-center justify-between gap-4">
+                      <div className="p-3 bg-[var(--surface)] rounded-xl border border-[var(--border)] flex items-center justify-between gap-4">
                         <div className="space-y-0.5 min-w-0">
-                          <div className="text-xs font-semibold text-zinc-300">{t("settings.preview.title")}</div>
-                          <p className="text-[11px] text-zinc-500">{t("settings.preview.sub")}</p>
+                          <div className="text-xs font-semibold text-[var(--text-1)]">{t("settings.preview.title")}</div>
+                          <p className="text-[11px] text-[var(--text-3)]">{t("settings.preview.sub")}</p>
                         </div>
-                        <div className="p-1.5 bg-zinc-900/90 rounded-xl border border-zinc-800 shrink-0 flex items-center justify-center">
+                        <div className="p-1.5 bg-[var(--surface-2)] rounded-xl border border-[var(--border)] shrink-0 flex items-center justify-center">
                           <UsageRing
                             usage={previewUsage}
                             settings={previewSettings}
@@ -1002,7 +1002,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                     <select className={selectCls} value={c.elapsed_period_days==null?'auto':'custom'} onChange={e=>patch(id,{elapsed_period_days:e.target.value==='auto'?null:30})}>
                       <option value="auto">{t("settings.acct.period_auto")}</option><option value="custom">{t("settings.acct.period_custom")}</option>
                     </select>
-                    {c.elapsed_period_days!=null&&<label className="block text-xs text-zinc-400 mt-2">{t("settings.acct.period_days_label")}
+                    {c.elapsed_period_days!=null&&<label className="block text-xs text-[var(--text-2)] mt-2">{t("settings.acct.period_days_label")}
                       <input aria-label={t("settings.acct.period_days_aria")} type="number" min={1/24} max={366} step="any" className={selectCls} value={c.elapsed_period_days} onChange={e=>{const n=e.target.valueAsNumber;if(Number.isFinite(n))patch(id,{elapsed_period_days:n})}}/>
                       <span>{t("settings.acct.period_days_note")}</span>
                     </label>}
@@ -1028,15 +1028,15 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                   </Field>
 
                   {!settings.show_elapsed && (
-                    <div className="p-2.5 rounded-xl bg-zinc-900/90 border border-zinc-700/60 text-xs text-zinc-300 flex items-center justify-between gap-3">
+                    <div className="p-2.5 rounded-xl bg-[var(--surface-2)] border border-[var(--border-strong)] text-xs text-[var(--text-1)] flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
-                        <span className="text-amber-400">ℹ️</span>
+                        <span className="text-[var(--warn)]">ℹ️</span>
                         <span>{t("settings.acct.elapsed_off_note")}</span>
                       </div>
                       <button
                         type="button"
                         onClick={() => update({ show_elapsed: true }, t("settings.toast.elapsed_enabled"))}
-                        className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-medium cursor-pointer shrink-0"
+                        className="px-2.5 py-1 rounded bg-[var(--accent-solid)] hover:brightness-110 text-[var(--on-solid)] text-[11px] font-medium cursor-pointer shrink-0"
                       >
                         {t("settings.acct.enable_elapsed")}
                       </button>
@@ -1046,7 +1046,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                   <Row title={t("settings.acct.ring_color")} subtitle={t("settings.acct.ring_color_sub")}>
                     <div className="flex items-center gap-2">
                       <select className={selectCls} value={c.ring_color ? "custom" : "auto"} onChange={e => patch(id, { ring_color: e.target.value === "custom" ? (c.ring_color ?? (c.provider_id === "kimi" ? "#7AA5FF" : "#10b981")) : null })} aria-label={t("settings.acct.ring_color_mode_aria")}><option value="auto">{t("settings.acct.color_auto")}</option><option value="custom">{t("settings.common.custom")}</option></select>
-                      {c.ring_color && <input type="color" value={c.ring_color} onChange={e => patch(id, { ring_color: e.target.value })} className="w-9 h-8 rounded-lg bg-transparent border border-zinc-700 cursor-pointer" aria-label={t("settings.acct.pick_color")} />}
+                      {c.ring_color && <input type="color" value={c.ring_color} onChange={e => patch(id, { ring_color: e.target.value })} className="w-9 h-8 rounded-lg bg-transparent border border-[var(--border-strong)] cursor-pointer" aria-label={t("settings.acct.pick_color")} />}
                     </div>
                   </Row>
                   <Row title={t("settings.acct.bot")} subtitle={t("settings.acct.bot_sub")}>
@@ -1058,7 +1058,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                       <Field label={t("settings.acct.shape")}><select className={selectCls} value={c.bot_shape ?? ""} onChange={e => patch(id, { bot_shape: e.target.value || null })}><option value="">{t("settings.bot.shape.auto")}</option>{BOT_SHAPES.map(p => <option key={p} value={p}>{t(`settings.bot.shape.${p}`)}</option>)}</select></Field>
                       <Field label={t("settings.acct.color")}><div className="flex items-center gap-2">
                         <select className={selectCls} value={c.bot_color ? "custom" : "auto"} onChange={e => patch(id, { bot_color: e.target.value === "custom" ? (c.bot_color ?? (c.provider_id === "kimi" ? "#7AA5FF" : "#10b981")) : null })} aria-label={t("settings.acct.bot_color_mode_aria")}><option value="auto">{t("settings.acct.follow_theme")}</option><option value="custom">{t("settings.common.custom")}</option></select>
-                        {c.bot_color && <input type="color" value={c.bot_color} onChange={e => patch(id, { bot_color: e.target.value })} className="w-9 h-8 rounded-lg bg-transparent border border-zinc-700 cursor-pointer" aria-label={t("settings.acct.pick_bot_color")} />}
+                        {c.bot_color && <input type="color" value={c.bot_color} onChange={e => patch(id, { bot_color: e.target.value })} className="w-9 h-8 rounded-lg bg-transparent border border-[var(--border-strong)] cursor-pointer" aria-label={t("settings.acct.pick_bot_color")} />}
                       </div></Field>
                     </div>
                   )}
@@ -1096,12 +1096,12 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                   </Field>
 
                   {isDuplicateInner && (
-                    <div className="p-2.5 rounded-xl bg-amber-950/60 border border-amber-800/60 text-xs text-amber-200 space-y-1.5">
+                    <div className="p-2.5 rounded-xl bg-[var(--warn-soft)] border border-[var(--warn-border)] text-xs text-[var(--warn)] space-y-1.5">
                       <div className="flex items-center gap-2 font-medium">
                         <span>⚠️</span>
                         <span>{t("settings.acct.dup_warn")}</span>
                       </div>
-                      <p className="text-[11px] text-amber-300/80">
+                      <p className="text-[11px] text-[var(--warn)]">
                         {t("settings.acct.dup_note")}
                       </p>
                       {c.provider_id === "antigravity" && (
@@ -1116,14 +1116,14 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                                 : "0-0";
                               patch(id, { secondary_window: alt });
                             }}
-                            className="px-2.5 py-1 rounded bg-amber-800/80 hover:bg-amber-700 text-amber-100 text-[11px] cursor-pointer"
+                            className="px-2.5 py-1 rounded bg-[var(--warn-solid)] hover:brightness-110 text-[var(--on-solid)] text-[11px] cursor-pointer"
                           >
                             {t("settings.acct.switch_alt")}
                           </button>
                           <button
                             type="button"
                             onClick={() => patch(id, { secondary_window: null })}
-                            className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[11px] cursor-pointer"
+                            className="px-2 py-1 rounded bg-[var(--surface-3)] hover:bg-[var(--surface-hover)] text-[var(--text-1)] text-[11px] cursor-pointer"
                           >
                             {t("settings.acct.close_secondary")}
                           </button>
@@ -1151,7 +1151,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                 {reading && (reading.windows.length > 0 || reading.balances.length > 0) && (
                   <Section title={t("settings.acct.usage")} icon="📈">
                     {/* reading.error_message 来自后端，原样展示。TODO(EN-backend) */}
-                    {reading.error_message && <p className="text-xs text-amber-400 mb-2">{reading.error_message}</p>}
+                    {reading.error_message && <p className="text-xs text-[var(--warn)] mb-2">{reading.error_message}</p>}
                     <div className="space-y-2.5">
                       {reading.windows.map(w => {
                         const isPrimary = c.primary_window === w.id || (!c.primary_window && w.used_percent === reading.primary_percent);
@@ -1159,18 +1159,18 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                         return (
                           <div key={w.id} className="space-y-1">
                             <div className="flex justify-between items-center text-xs">
-                              <span className="flex items-center gap-1.5 text-zinc-300">{w.name}
-                                {isPrimary && <span className="text-[10px] bg-emerald-950/80 text-emerald-400 px-1.5 py-[2px] rounded border border-emerald-800/40">{t("settings.acct.primary_badge")}</span>}
-                                {isTimed && settings.show_elapsed && <span className="text-[10px] bg-zinc-800 text-zinc-300 px-1.5 py-[2px] rounded border border-zinc-600/60">{t("settings.acct.timed_badge")}</span>}
+                              <span className="flex items-center gap-1.5 text-[var(--text-1)]">{w.name}
+                                {isPrimary && <span className="text-[10px] bg-[var(--ok-soft)] text-[var(--ok)] px-1.5 py-[2px] rounded border border-[var(--ok-border)]">{t("settings.acct.primary_badge")}</span>}
+                                {isTimed && settings.show_elapsed && <span className="text-[10px] bg-[var(--surface-3)] text-[var(--text-1)] px-1.5 py-[2px] rounded border border-[var(--border-strong)]">{t("settings.acct.timed_badge")}</span>}
                               </span>
-                              <span className="font-mono text-zinc-200">{t("settings.acct.used_badge", { pct: Number(w.used_percent.toFixed(2)) })}</span>
+                              <span className="font-mono text-[var(--text-1)]">{t("settings.acct.used_badge", { pct: Number(w.used_percent.toFixed(2)) })}</span>
                             </div>
-                            <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden"><div className={`h-full rounded-full transition-all duration-500 ${w.exhausted || w.used_percent >= settings.warning_threshold ? "bg-red-500" : w.used_percent >= settings.warning_threshold - 15 ? "bg-amber-400" : "bg-emerald-500"}`} style={{ width: `${Math.min(100, Math.max(0, w.used_percent))}%` }} /></div>
-                            <div className="text-[11px] text-zinc-500">{resetText(w.resets_at, Date.now(), lang)}</div>
+                            <div className="h-1.5 bg-[var(--surface-3)] rounded-full overflow-hidden"><div className={`h-full rounded-full transition-all duration-500 ${w.exhausted || w.used_percent >= settings.warning_threshold ? "bg-[var(--danger)]" : w.used_percent >= settings.warning_threshold - 15 ? "bg-[var(--warn)]" : "bg-[var(--accent)]"}`} style={{ width: `${Math.min(100, Math.max(0, w.used_percent))}%` }} /></div>
+                            <div className="text-[11px] text-[var(--text-3)]">{resetText(w.resets_at, Date.now(), lang)}</div>
                           </div>
                         );
                       })}
-                      {reading.balances.map(b => <div key={b.currency} className="flex justify-between text-xs"><span className="text-zinc-300">{balanceLabel(c.provider_id,b.currency,lang)}</span><span className="font-mono text-zinc-200">{balanceText(b.currency,b.amount,lang)}</span></div>)}
+                      {reading.balances.map(b => <div key={b.currency} className="flex justify-between text-xs"><span className="text-[var(--text-1)]">{balanceLabel(c.provider_id,b.currency,lang)}</span><span className="font-mono text-[var(--text-1)]">{balanceText(b.currency,b.amount,lang)}</span></div>)}
                     </div>
                   </Section>
                 )}
@@ -1208,30 +1208,30 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                   </div>}>
                   {reading ? (
                     <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5 text-xs">
-                      {accountRows(reading, c, t).map(([k, v]) => <div key={k} className="contents"><dt className="text-zinc-500">{k}</dt><dd className="text-zinc-200 break-all">{v}</dd></div>)}
+                      {accountRows(reading, c, t).map(([k, v]) => <div key={k} className="contents"><dt className="text-[var(--text-3)]">{k}</dt><dd className="text-[var(--text-1)] break-all">{v}</dd></div>)}
                     </dl>
-                  ) : <p className="text-xs text-zinc-500">{c.enabled ? t("settings.acct.diag_none") : t("settings.acct.diag_disabled")}</p>}
+                  ) : <p className="text-xs text-[var(--text-3)]">{c.enabled ? t("settings.acct.diag_none") : t("settings.acct.diag_disabled")}</p>}
                   {/* error_message 为后端原文。TODO(EN-backend) */}
-                  {reading?.error_code === "auth" && <p className="text-[11px] text-amber-300">{t("settings.next.auth")}</p>}
-                  {reading?.error_code === "forbidden" && <p className="text-[11px] text-amber-300">{t("settings.next.forbidden")}</p>}
-                  {reading?.error_code === "proxy" && <p className="text-[11px] text-amber-300">{t("settings.next.proxy")}</p>}
-                  {reading?.error_code === "dns" && <p className="text-[11px] text-amber-300">{t("settings.next.dns")}</p>}
-                  {reading?.error_code === "tls" && <p className="text-[11px] text-amber-300">{t("settings.next.tls")}</p>}
-                  {reading?.error_code === "timeout" && <p className="text-[11px] text-amber-300">{t("settings.next.timeout")}</p>}
-                  {reading?.error_code === "missing_credentials" && <p className="text-[11px] text-amber-300">{t("settings.next.missing_credentials")}</p>}
+                  {reading?.error_code === "auth" && <p className="text-[11px] text-[var(--warn)]">{t("settings.next.auth")}</p>}
+                  {reading?.error_code === "forbidden" && <p className="text-[11px] text-[var(--warn)]">{t("settings.next.forbidden")}</p>}
+                  {reading?.error_code === "proxy" && <p className="text-[11px] text-[var(--warn)]">{t("settings.next.proxy")}</p>}
+                  {reading?.error_code === "dns" && <p className="text-[11px] text-[var(--warn)]">{t("settings.next.dns")}</p>}
+                  {reading?.error_code === "tls" && <p className="text-[11px] text-[var(--warn)]">{t("settings.next.tls")}</p>}
+                  {reading?.error_code === "timeout" && <p className="text-[11px] text-[var(--warn)]">{t("settings.next.timeout")}</p>}
+                  {reading?.error_code === "missing_credentials" && <p className="text-[11px] text-[var(--warn)]">{t("settings.next.missing_credentials")}</p>}
                 </Section>
               </div>
             );
           })()}
-          {view.kind === "account" && !current && <p className="text-xs text-zinc-500">{t("settings.acct.gone")}</p>}
+          {view.kind === "account" && !current && <p className="text-xs text-[var(--text-3)]">{t("settings.acct.gone")}</p>}
         </div>
       </div>
       {pickerOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-8" onClick={() => { setPickerOpen(false); setPickerQuery(""); }}>
-          <div className="w-[26rem] max-h-[32rem] bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
-            <div className="p-4 border-b border-white/5 space-y-3">
-              <div className="flex justify-between items-center"><h3 className="text-sm font-semibold text-white">{t("settings.picker.title")}</h3>
-                <button className="text-zinc-400 hover:text-white cursor-pointer" onClick={() => { setPickerOpen(false); setPickerQuery(""); }} aria-label={t("settings.common.cancel")}>✕</button></div>
+          <div className="w-[26rem] max-h-[32rem] bg-[var(--surface-2)] border border-[var(--border)] rounded-2xl shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="p-4 border-b border-[var(--border)] space-y-3">
+              <div className="flex justify-between items-center"><h3 className="text-sm font-semibold text-[var(--text-1)]">{t("settings.picker.title")}</h3>
+                <button className="text-[var(--text-2)] hover:text-[var(--text-1)] cursor-pointer" onClick={() => { setPickerOpen(false); setPickerQuery(""); }} aria-label={t("settings.common.cancel")}>✕</button></div>
               <input autoFocus value={pickerQuery} onChange={e => setPickerQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") { setPickerOpen(false); setPickerQuery(""); } }} placeholder={t("settings.picker.search_ph")} aria-label={t("settings.picker.search_ph")} className={inputCls} />
             </div>
             <ul className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -1240,62 +1240,62 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
                 const addable = !!ROUTES[pid]?.manual;
                 return (
                   <li key={pid}>
-                    <button disabled={!addable} onClick={() => handleAddAccount(pid)} className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left text-xs cursor-pointer ${addable ? "hover:bg-zinc-800 text-zinc-200" : "opacity-40 cursor-not-allowed"}`}>
-                      <span className="w-7 h-7 rounded-lg bg-zinc-800/90 border border-zinc-700/50 flex items-center justify-center text-zinc-200 shrink-0"><ProviderIcon id={pid} size={15} /></span>
+                    <button disabled={!addable} onClick={() => handleAddAccount(pid)} className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left text-xs cursor-pointer ${addable ? "hover:bg-[var(--surface-hover)] text-[var(--text-1)]" : "opacity-40 cursor-not-allowed"}`}>
+                      <span className="w-7 h-7 rounded-lg bg-[var(--surface-3)] border border-[var(--border-strong)] flex items-center justify-center text-[var(--text-1)] shrink-0"><ProviderIcon id={pid} size={15} /></span>
                       <span className="flex-1 min-w-0"><span className="block truncate">{t(`settings.provider.${pid}`)}</span>
-                        <span className="block text-[11px] text-zinc-500">{existing > 0 ? t("settings.picker.exists", { count: existing }) : ROUTES[pid]?.local ? t("settings.picker.local_manual") : t("settings.picker.manual")}</span>
+                        <span className="block text-[11px] text-[var(--text-3)]">{existing > 0 ? t("settings.picker.exists", { count: existing }) : ROUTES[pid]?.local ? t("settings.picker.local_manual") : t("settings.picker.manual")}</span>
                       </span>
-                      {!addable && <span className="text-[10px] text-zinc-500 shrink-0">{t("settings.picker.unique")}</span>}
+                      {!addable && <span className="text-[10px] text-[var(--text-3)] shrink-0">{t("settings.picker.unique")}</span>}
                     </button>
                   </li>
                 );
               })}
             </ul>
-            <p className="px-4 py-2 border-t border-white/5 text-[11px] text-zinc-500">{t("settings.picker.footer")}</p>
+            <p className="px-4 py-2 border-t border-[var(--border)] text-[11px] text-[var(--text-3)]">{t("settings.picker.footer")}</p>
           </div>
         </div>
       )}
       {!settings.monitoring_setup_completed && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-6">
-          <div className="w-[28rem] max-h-[34rem] bg-zinc-900 border border-zinc-700/80 rounded-2xl shadow-2xl p-6 flex flex-col space-y-4">
+          <div className="w-[28rem] max-h-[34rem] bg-[var(--surface-2)] border border-[var(--border-strong)] rounded-2xl shadow-2xl p-6 flex flex-col space-y-4">
             <div className="flex items-center gap-3">
               <span className="text-2xl">🛡️</span>
               <div>
-                <h3 className="text-base font-semibold text-zinc-100">{t("settings.wizard.title")}</h3>
-                <p className="text-xs text-zinc-400">{t("settings.wizard.sub")}</p>
+                <h3 className="text-base font-semibold text-[var(--text-1)]">{t("settings.wizard.title")}</h3>
+                <p className="text-xs text-[var(--text-2)]">{t("settings.wizard.sub")}</p>
               </div>
             </div>
-            <div className="text-xs text-zinc-300/90 leading-relaxed bg-zinc-950/60 p-3 rounded-xl border border-white/5">
+            <div className="text-xs text-[var(--text-1)]/90 leading-relaxed bg-[var(--surface)] p-3 rounded-xl border border-[var(--border)]">
               {t("settings.wizard.body_pre")}<b>{t("settings.wizard.body_bold")}</b>{t("settings.wizard.body_post")}
             </div>
             <div className="flex-1 flex flex-col min-h-0 space-y-2">
               <div className="flex items-center justify-between text-xs">
-                <span className="text-zinc-400">{t("settings.wizard.selected", { n: wizardSelected.length, total: PROVIDERS.length })}</span>
+                <span className="text-[var(--text-2)]">{t("settings.wizard.selected", { n: wizardSelected.length, total: PROVIDERS.length })}</span>
                 <div className="flex gap-2">
-                  <button className="text-emerald-400 hover:text-emerald-300 cursor-pointer" onClick={() => setWizardSelected(PROVIDERS.map(p => p[0]))}>{t("settings.wizard.all")}</button>
-                  <span className="text-zinc-600">·</span>
-                  <button className="text-emerald-400 hover:text-emerald-300 cursor-pointer" onClick={() => setWizardSelected(["claude", "codex", "antigravity", "kimi"])}>{t("settings.wizard.common")}</button>
-                  <span className="text-zinc-600">·</span>
-                  <button className="text-zinc-400 hover:text-zinc-300 cursor-pointer" onClick={() => setWizardSelected([])}>{t("settings.wizard.none")}</button>
+                  <button className="text-[var(--ok)] hover:text-[var(--accent-strong)] cursor-pointer" onClick={() => setWizardSelected(PROVIDERS.map(p => p[0]))}>{t("settings.wizard.all")}</button>
+                  <span className="text-[var(--text-3)]">·</span>
+                  <button className="text-[var(--ok)] hover:text-[var(--accent-strong)] cursor-pointer" onClick={() => setWizardSelected(["claude", "codex", "antigravity", "kimi"])}>{t("settings.wizard.common")}</button>
+                  <span className="text-[var(--text-3)]">·</span>
+                  <button className="text-[var(--text-2)] hover:text-[var(--text-1)] cursor-pointer" onClick={() => setWizardSelected([])}>{t("settings.wizard.none")}</button>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-2 overflow-y-auto p-2 bg-zinc-950/50 rounded-xl border border-white/5 flex-1">
+              <div className="grid grid-cols-2 gap-2 overflow-y-auto p-2 bg-[var(--surface)] rounded-xl border border-[var(--border)] flex-1">
                 {PROVIDERS.map(([pid]) => (
-                  <label key={pid} className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer hover:bg-white/5 p-1.5 rounded-lg">
+                  <label key={pid} className="flex items-center gap-2 text-xs text-[var(--text-1)] cursor-pointer hover:bg-[var(--hover)] p-1.5 rounded-lg">
                     <input
                       type="checkbox"
                       checked={wizardSelected.includes(pid)}
                       onChange={e => {
                         setWizardSelected(prev => e.target.checked ? [...prev, pid] : prev.filter(x => x !== pid));
                       }}
-                      className="accent-emerald-500 rounded"
+                      className="accent-[var(--accent)] rounded"
                     />
                     <span className="truncate">{t(`settings.provider.${pid}`)}</span>
                   </label>
                 ))}
               </div>
             </div>
-            <div className="pt-2 flex justify-end gap-3 border-t border-white/5">
+            <div className="pt-2 flex justify-end gap-3 border-t border-[var(--border)]">
               <button
                 className={btnPrimary}
                 onClick={async () => {

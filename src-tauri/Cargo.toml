@@ -31,6 +31,9 @@ uuid = { version = "1", features = ["v4"] }
 semver = { version = "1", default-features = false }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 fs2 = "0.4"
+# Round5d 项目二：Discord Rich Presence（opt-in 默认关）。维护中的 IPC 客户端 crate
+# （github.com/vionya/discord-rich-presence，1.1.0 于 2026-01 发布）；锁定精确版本。
+discord-rich-presence = "=1.1.0"
 
 [dev-dependencies]
 tempfile = "3"

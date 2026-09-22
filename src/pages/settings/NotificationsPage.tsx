@@ -144,20 +144,20 @@ export function NotificationsPage({ settings, update, toast }: {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           {/* 1. 应用通知身份 */}
           <div className={`p-3 rounded-xl border text-xs space-y-1 ${
-            isRegistered ? "bg-emerald-950/30 border-emerald-800/40 text-emerald-200" :
-            isMoved ? "bg-amber-950/40 border-amber-800/50 text-amber-200" :
-            "bg-red-950/40 border-red-800/50 text-red-200"
+            isRegistered ? "bg-[var(--ok-soft)] border-[var(--ok-border)] text-[var(--ok)]" :
+            isMoved ? "bg-[var(--warn-soft)] border-[var(--warn-border)] text-[var(--warn)]" :
+            "bg-[var(--danger-soft)] border-[var(--danger-border)] text-[var(--danger)]"
           }`}>
             <div className="flex items-center justify-between">
               <span className="font-semibold flex items-center gap-1.5">
                 <span>{isRegistered ? "✓" : isMoved ? "⚠️" : "✕"}</span>
                 <span>{t("settings.notif.identity_title")}</span>
               </span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-black/30">
+              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-[var(--surface)]">
                 {isRegistered ? t("settings.notif.id_registered") : isMoved ? t("settings.notif.id_moved") : t("settings.notif.id_unregistered")}
               </span>
             </div>
-            <p className="text-[11px] text-zinc-400">
+            <p className="text-[11px] text-[var(--text-2)]">
               {isRegistered ? t("settings.notif.id_ready") :
                isMoved ? t("settings.notif.id_stale_shortcut") :
                t("settings.notif.id_missing")}
@@ -166,42 +166,42 @@ export function NotificationsPage({ settings, update, toast }: {
 
           {/* 2. Windows 全局通知 */}
           <div className={`p-3 rounded-xl border text-xs space-y-1 ${
-            isGlobalBlocked ? "bg-red-950/40 border-red-800/50 text-red-200" :
-            status?.windows_toasts_enabled ? "bg-emerald-950/30 border-emerald-800/40 text-emerald-200" :
-            "bg-zinc-900/60 border-zinc-700/50 text-zinc-300"
+            isGlobalBlocked ? "bg-[var(--danger-soft)] border-[var(--danger-border)] text-[var(--danger)]" :
+            status?.windows_toasts_enabled ? "bg-[var(--ok-soft)] border-[var(--ok-border)] text-[var(--ok)]" :
+            "bg-[var(--surface-2)] border-[var(--border-strong)] text-[var(--text-1)]"
           }`}>
             <div className="flex items-center justify-between">
               <span className="font-semibold flex items-center gap-1.5">
                 <span>{isGlobalBlocked ? "✕" : "✓"}</span>
                 <span>{t("settings.notif.global_title")}</span>
               </span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-black/30">
+              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-[var(--surface)]">
                 {isGlobalBlocked ? t("settings.common.off") : status?.windows_toasts_enabled ? t("settings.notif.allowed") : t("settings.notif.unconfigured_default_on")}
               </span>
             </div>
-            <p className="text-[11px] text-zinc-400">
+            <p className="text-[11px] text-[var(--text-2)]">
               {isGlobalBlocked ? t("settings.notif.global_blocked") : t("settings.notif.global_ok")}
             </p>
           </div>
 
           {/* 3. Pulse 应用授权 */}
           <div className={`p-3 rounded-xl border text-xs space-y-1 ${
-            isAppBlocked ? "bg-red-950/40 border-red-800/50 text-red-200" :
-            status?.app_notification_setting === "enabled" ? "bg-emerald-950/30 border-emerald-800/40 text-emerald-200" :
-            "bg-zinc-900/60 border-zinc-700/50 text-zinc-300"
+            isAppBlocked ? "bg-[var(--danger-soft)] border-[var(--danger-border)] text-[var(--danger)]" :
+            status?.app_notification_setting === "enabled" ? "bg-[var(--ok-soft)] border-[var(--ok-border)] text-[var(--ok)]" :
+            "bg-[var(--surface-2)] border-[var(--border-strong)] text-[var(--text-1)]"
           }`}>
             <div className="flex items-center justify-between">
               <span className="font-semibold flex items-center gap-1.5">
                 <span>{isAppBlocked ? "✕" : "ℹ"}</span>
                 <span>{t("settings.notif.app_title")}</span>
               </span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-black/30">
+              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-[var(--surface)]">
                 {status?.app_notification_setting === "enabled" ? t("settings.notif.allowed") :
                  isAppBlocked ? t("settings.notif.app_disabled") :
                  status?.app_notification_setting === "disabled_by_manifest" ? t("settings.notif.identity_unrecognized") : t("settings.common.unknown")}
               </span>
             </div>
-            <p className="text-[11px] text-zinc-400">
+            <p className="text-[11px] text-[var(--text-2)]">
               {isAppBlocked ? t("settings.notif.app_blocked_note") :
                status?.app_notification_setting === "enabled" ? t("settings.notif.app_allowed_note") :
                t("settings.notif.app_pending_note")}
@@ -210,20 +210,20 @@ export function NotificationsPage({ settings, update, toast }: {
 
           {/* 4. 最近测试交付 */}
           <div className={`p-3 rounded-xl border text-xs space-y-1 ${
-            lastTest?.success ? "bg-emerald-950/30 border-emerald-800/40 text-emerald-200" :
-            lastTest ? "bg-red-950/40 border-red-800/50 text-red-200" :
-            "bg-zinc-900/60 border-zinc-700/50 text-zinc-300"
+            lastTest?.success ? "bg-[var(--ok-soft)] border-[var(--ok-border)] text-[var(--ok)]" :
+            lastTest ? "bg-[var(--danger-soft)] border-[var(--danger-border)] text-[var(--danger)]" :
+            "bg-[var(--surface-2)] border-[var(--border-strong)] text-[var(--text-1)]"
           }`}>
             <div className="flex items-center justify-between">
               <span className="font-semibold flex items-center gap-1.5">
                 <span>{lastTest?.success ? "✓" : lastTest ? "✕" : "⏱"}</span>
                 <span>{t("settings.notif.last_test_title")}</span>
               </span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-black/30">
+              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-[var(--surface)]">
                 {lastTest?.success ? t("settings.notif.test_delivered") : lastTest ? t("settings.notif.test_delivery_failed") : t("settings.notif.not_tested")}
               </span>
             </div>
-            <p className="text-[11px] text-zinc-400">
+            <p className="text-[11px] text-[var(--text-2)]">
               {lastTest?.success ? t("settings.notif.last_test_ok", { id: lastTest.test_id }) :
                lastTest?.error ? lastTest.error :
                t("settings.notif.last_test_hint")}
@@ -232,12 +232,12 @@ export function NotificationsPage({ settings, update, toast }: {
         </div>
 
         {/* 注册管理与快捷操作栏 */}
-        <div className="p-3 bg-zinc-950/60 rounded-xl border border-white/5 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="p-3 bg-[var(--surface)] rounded-xl border border-[var(--border)] flex flex-wrap items-center justify-between gap-3 text-xs">
           <div className="space-y-0.5 min-w-0">
-            <div className="font-medium text-zinc-200">
+            <div className="font-medium text-[var(--text-1)]">
               {isRegistered ? t("settings.notif.linked_ok") : isMoved ? t("settings.notif.moved_title") : t("settings.notif.not_initialized")}
             </div>
-            <p className="text-[11px] text-zinc-500 truncate">
+            <p className="text-[11px] text-[var(--text-3)] truncate">
               {isRegistered ? t("settings.notif.shortcut_line", { path: status?.shortcut_path || "Pulse.lnk" }) :
                isMoved ? t("settings.notif.moved_line", { old: status?.shortcut_target || t("settings.common.unknown"), neu: status?.current_exe || "" }) :
                t("settings.notif.init_note")}
@@ -248,7 +248,7 @@ export function NotificationsPage({ settings, update, toast }: {
               <button
                 disabled={loading}
                 onClick={() => void handleRegister()}
-                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium cursor-pointer transition-colors shadow-sm"
+                className="px-3 py-1.5 rounded-lg bg-[var(--accent-solid)] hover:brightness-110 text-[var(--on-solid)] font-medium cursor-pointer transition-colors shadow-sm"
               >
                 {isMoved ? t("settings.notif.fix_path") : t("settings.notif.enable_toasts")}
               </button>
@@ -256,7 +256,7 @@ export function NotificationsPage({ settings, update, toast }: {
               <button
                 disabled={loading}
                 onClick={() => void handleUnregister()}
-                className="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-red-950/40 hover:text-red-300 text-zinc-400 border border-zinc-700/60 cursor-pointer transition-colors"
+                className="px-2.5 py-1.5 rounded-lg bg-[var(--surface-3)] hover:bg-[var(--danger-soft)] hover:text-[var(--danger)] text-[var(--text-2)] border border-[var(--border-strong)] cursor-pointer transition-colors"
                 title={t("settings.notif.remove_title")}
               >
                 {t("settings.notif.remove_registration")}
@@ -268,24 +268,24 @@ export function NotificationsPage({ settings, update, toast }: {
         {/* 测试反馈与排查引导卡片 */}
         {lastTest && (
           <div className={`p-4 rounded-xl border space-y-3 ${
-            lastTest.success ? "bg-zinc-900/90 border-emerald-800/40" : "bg-red-950/40 border-red-800/60"
+            lastTest.success ? "bg-[var(--surface-2)] border-[var(--ok-border)]" : "bg-[var(--danger-soft)] border-[var(--danger-border)]"
           }`}>
             <div className="flex items-start justify-between gap-3">
               <div className="space-y-1">
                 <div className="text-xs font-semibold flex items-center gap-2">
                   <span>{lastTest.success ? "📢" : "❌"}</span>
-                  <span className={lastTest.success ? "text-emerald-300" : "text-red-300"}>
+                  <span className={lastTest.success ? "text-[var(--ok)]" : "text-[var(--danger)]"}>
                     {lastTest.success ? t("settings.notif.result_ok", { id: lastTest.test_id }) : t("settings.notif.result_fail")}
                   </span>
                 </div>
-                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                <p className="text-[11px] text-[var(--text-2)] leading-relaxed">
                   {lastTest.success
                     ? t("settings.notif.result_ok_note")
                     : lastTest.error || t("settings.notif.result_fail_note")}
                 </p>
                 {/* lastTest.hint 来自 Rust 测试链路，原样展示。TODO(EN-backend) */}
                 {lastTest.hint && (
-                  <p className="text-[11px] text-amber-300/90 font-medium">
+                  <p className="text-[11px] text-[var(--warn)] font-medium">
                     {lastTest.hint}
                   </p>
                 )}
@@ -293,8 +293,8 @@ export function NotificationsPage({ settings, update, toast }: {
             </div>
 
             {lastTest.success && (
-              <div className="pt-2 border-t border-white/5 flex flex-wrap items-center justify-between gap-2">
-                <span className="text-[11px] text-zinc-400">{t("settings.notif.saw_banner_q")}</span>
+              <div className="pt-2 border-t border-[var(--border)] flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[11px] text-[var(--text-2)]">{t("settings.notif.saw_banner_q")}</span>
                 <div className="flex gap-2">
                   <button
                     onClick={() => {
@@ -304,8 +304,8 @@ export function NotificationsPage({ settings, update, toast }: {
                     }}
                     className={`px-3 py-1 rounded-lg text-xs font-medium cursor-pointer transition-colors ${
                       userFeedback === "seen"
-                        ? "bg-emerald-600 text-white"
-                        : "bg-zinc-800 hover:bg-emerald-900/50 hover:text-emerald-200 text-zinc-300 border border-zinc-700/60"
+                        ? "bg-[var(--accent-solid)] text-[var(--on-solid)]"
+                        : "bg-[var(--surface-3)] hover:bg-[var(--ok-soft)] hover:text-[var(--ok)] text-[var(--text-1)] border border-[var(--border-strong)]"
                     }`}
                   >
                     ✓ {t("settings.notif.saw_banner")}
@@ -317,8 +317,8 @@ export function NotificationsPage({ settings, update, toast }: {
                     }}
                     className={`px-3 py-1 rounded-lg text-xs font-medium cursor-pointer transition-colors ${
                       userFeedback === "not_seen"
-                        ? "bg-amber-700 text-white"
-                        : "bg-zinc-800 hover:bg-amber-950/50 hover:text-amber-200 text-zinc-300 border border-zinc-700/60"
+                        ? "bg-[var(--warn-solid)] text-[var(--on-solid)]"
+                        : "bg-[var(--surface-3)] hover:bg-[var(--warn-soft)] hover:text-[var(--warn)] text-[var(--text-1)] border border-[var(--border-strong)]"
                     }`}
                   >
                     ✕ {t("settings.notif.not_seen")}
@@ -329,33 +329,33 @@ export function NotificationsPage({ settings, update, toast }: {
 
             {/* 展开的排查引导 */}
             {showTroubleshoot && (
-              <div className="pt-3 border-t border-white/10 space-y-2.5 text-xs text-zinc-300 animate-in fade-in duration-150">
-                <div className="font-semibold text-amber-300 flex items-center gap-1.5">
+              <div className="pt-3 border-t border-[var(--border)] space-y-2.5 text-xs text-[var(--text-1)] animate-in fade-in duration-150">
+                <div className="font-semibold text-[var(--warn)] flex items-center gap-1.5">
                   <span>🛠️</span>
                   <span>{t("settings.notif.troubleshoot_title")}</span>
                 </div>
-                <ol className="space-y-2 text-[11px] list-decimal list-inside text-zinc-400 pl-1 leading-relaxed">
+                <ol className="space-y-2 text-[11px] list-decimal list-inside text-[var(--text-2)] pl-1 leading-relaxed">
                   <li>
-                    <strong className="text-zinc-200">{t("settings.notif.step1_title")}</strong>
-                    {t("settings.notif.step1_body_pre")} <kbd className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-zinc-300">Win</kbd> + <kbd className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-zinc-300">N</kbd>{t("settings.notif.step1_body_post")}
+                    <strong className="text-[var(--text-1)]">{t("settings.notif.step1_title")}</strong>
+                    {t("settings.notif.step1_body_pre")} <kbd className="px-1.5 py-0.5 bg-[var(--surface-3)] border border-[var(--border-strong)] rounded text-[var(--text-1)]">Win</kbd> + <kbd className="px-1.5 py-0.5 bg-[var(--surface-3)] border border-[var(--border-strong)] rounded text-[var(--text-1)]">N</kbd>{t("settings.notif.step1_body_post")}
                   </li>
                   <li>
-                    <strong className="text-zinc-200">{t("settings.notif.step2_title")}</strong>
+                    <strong className="text-[var(--text-1)]">{t("settings.notif.step2_title")}</strong>
                     {t("settings.notif.step2_body")}
                   </li>
                   <li>
-                    <strong className="text-zinc-200">{t("settings.notif.step3_title")}</strong>
+                    <strong className="text-[var(--text-1)]">{t("settings.notif.step3_title")}</strong>
                     {t("settings.notif.step3_body")}
                   </li>
                   <li>
-                    <strong className="text-zinc-200">{t("settings.notif.step4_title")}</strong>
+                    <strong className="text-[var(--text-1)]">{t("settings.notif.step4_title")}</strong>
                     {t("settings.notif.step4_body")}
                   </li>
                 </ol>
                 <div className="pt-2 flex justify-end gap-2">
                   <button
                     onClick={handleCopyDiagnostics}
-                    className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[11px] cursor-pointer"
+                    className="px-2.5 py-1 rounded bg-[var(--surface-3)] hover:bg-[var(--surface-hover)] text-[var(--text-1)] text-[11px] cursor-pointer"
                   >
                     {t("settings.notif.copy_summary_btn")}
                   </button>
@@ -384,7 +384,7 @@ export function NotificationsPage({ settings, update, toast }: {
       </Section>
 
       <Section title={t("settings.notif.balance_section")} icon="💰" subtitle={t("settings.notif.balance_section_sub")}>
-        <p className="text-[11px] text-zinc-500">{t("settings.notif.balance_note")}</p>
+        <p className="text-[11px] text-[var(--text-3)]">{t("settings.notif.balance_note")}</p>
       </Section>
     </div>
   );

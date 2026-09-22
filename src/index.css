@@ -1,5 +1,115 @@
 @import "tailwindcss";
 
+/* ============================================================
+   Round5d 项目一：语义色彩令牌（浅色模式重构）
+   ------------------------------------------------------------
+   全部组件不再写死 zinc/emerald 等内联色，改引用这里的语义变量
+   （Tailwind arbitrary values，如 bg-[var(--surface)]）。
+   :root 为深色（默认主题）；[data-theme="light"] 为浅色映射，
+   由 src/lib/theme.ts 按既有设置通道（settings.theme）同步到
+   document.documentElement.dataset.theme。
+   例外（白名单，见 docs/ROUND5D_PLAN.md 复核 ask）：
+   - 供应商品牌色（#7AA5FF 等）与渐变 Logo 不随主题；
+   - 配额压力阶梯（黄/橙→红）与 K 线涨跌、热力图档位为数据可视化色；
+   - 装饰性彩虹循环与黑色遮罩（scrim）为主题中性色。
+   ============================================================ */
+:root {
+  color-scheme: dark;
+
+  /* 表面：窗口底 → 卡片/面板 → 控件（输入框/按钮/胶囊） */
+  --surface: #0f0f12;
+  --surface-2: #15151a;
+  --surface-3: #26262b;
+  --surface-hover: #32323a;
+
+  /* 描边：发丝线 / 控件与胶囊的实边 */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.22);
+
+  /* 文字：主 / 次 / 弱 */
+  --text-1: #e4e4e7;
+  --text-2: #a1a1aa;
+  --text-3: #71717a;
+
+  /* 强调与状态 */
+  --accent: #10b981;
+  --accent-strong: #34d399;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --danger: #f87171;
+  --ok-soft: rgba(52, 211, 153, 0.14);
+  --warn-soft: rgba(251, 191, 36, 0.14);
+  --danger-soft: rgba(248, 113, 113, 0.14);
+  --accent-soft: rgba(52, 211, 153, 0.14);
+
+  /* 白字实底按钮专用底色：深色下 --accent/--warn 是为「作文字」选的亮档，直接垫白字
+     不达 AA（白 vs #10b981/#fbbf24 = 2.54/1.67）。实底按浅色侧同一「白字 ≥4.5:1」原则
+     选深档（#047857=5.48、#b45309=5.02；hover:brightness-110 后 4.69/4.28 仍 ≥3:1）。
+     --on-solid 为实底上的前景色（白字），与 solid 底成对使用。 */
+  --accent-solid: #047857;
+  --warn-solid: #b45309;
+  --on-solid: #ffffff;
+
+  /* 状态描边：与 -soft 底配套的彩色发丝线（原组件内硬编码 emerald-800/60 等
+     深档透明描边收敛于此，随主题取值，浅色下自动换 -600/-700 档）。 */
+  --ok-border: rgba(6, 95, 70, 0.55);
+  --warn-border: rgba(146, 64, 14, 0.55);
+  --danger-border: rgba(153, 27, 27, 0.55);
+  --info-border: rgba(55, 48, 163, 0.55);
+
+  /* 中性填充与图形轨道 */
+  --hover: rgba(255, 255, 255, 0.06);
+  --ring-track: rgba(255, 255, 255, 0.12);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --surface: #ececee;
+  --surface-2: #ffffff;
+  --surface-3: #ececef;
+  --surface-hover: #dededf;
+
+  --border: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(0, 0, 0, 0.24);
+
+  --text-1: #1b1b1f;
+  --text-2: #52525b;
+  --text-3: #71717a;
+
+  /* 浅色下取 Tailwind -700/-800 档：白字按钮 ≥4.5:1（AA），彩色文字在 -soft 底上同样可读。 */
+  --accent: #047857;
+  --accent-strong: #065f46;
+  --ok: #047857;
+  --warn: #92400e;
+  --danger: #b91c1c;
+  --ok-soft: rgba(5, 150, 105, 0.12);
+  --warn-soft: rgba(180, 83, 9, 0.12);
+  --danger-soft: rgba(220, 38, 38, 0.1);
+  --accent-soft: rgba(5, 150, 105, 0.12);
+
+  /* 白字实底按钮专用底色（与深色侧同选档原则）：#047857=5.48、#92400e=7.09。 */
+  --accent-solid: #047857;
+  --warn-solid: #92400e;
+  --on-solid: #ffffff;
+
+  --ok-border: rgba(4, 120, 87, 0.45);
+  --warn-border: rgba(180, 83, 9, 0.5);
+  --danger-border: rgba(185, 28, 28, 0.45);
+  --info-border: rgba(79, 70, 229, 0.45);
+
+  --hover: rgba(0, 0, 0, 0.05);
+  --ring-track: rgba(0, 0, 0, 0.1);
+}
+
+/* 跨年热力图 5 档（TrendDashboard）：空档用控件面，1~4 档用强调色向卡片面混色。
+   用 color-mix 从 --accent 派生，浅色主题自动得到浅→深的绿色阶梯。 */
+.heat-0 { background: var(--surface-3); }
+.heat-1 { background: color-mix(in srgb, var(--accent) 25%, var(--surface-2)); }
+.heat-2 { background: color-mix(in srgb, var(--accent) 50%, var(--surface-2)); }
+.heat-3 { background: color-mix(in srgb, var(--accent) 75%, var(--surface-2)); }
+.heat-4 { background: var(--accent-strong); }
+
 @layer base {
   * {
     user-select: none;
@@ -34,29 +144,19 @@
   height: 0 !important;
 }
 
-/* Crisp high-contrast styling without outer blurry shadow to eliminate WebView2 grey fringes */
-.glass-obsidian {
-  background: #121216;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+/* Crisp high-contrast styling without outer blurry shadow to eliminate WebView2 grey fringes.
+   Round5d 项目一：深浅两套旧类（obsidian/translucent）收敛为同一组语义令牌，
+   由 data-theme 切换变量取值；组件统一用 .glass-panel / .card-panel。 */
+.glass-panel {
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  box-shadow: inset 0 0 0 1px var(--hover);
 }
 
-.glass-translucent {
-  background: #ffffff;
-  border: 1px solid rgba(0, 0, 0, 0.16);
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.04);
-}
-
-.card-obsidian {
-  background: #151519;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
-}
-
-.card-translucent {
-  background: #ffffff;
-  border: 1px solid rgba(0, 0, 0, 0.16);
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.04);
+.card-panel {
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  box-shadow: inset 0 0 0 1px var(--hover);
 }
 
 @keyframes cardEnterRight {
@@ -89,35 +189,35 @@
   animation: cardEnterLeft 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
-/* Custom glowing edge sliver */
+/* Custom glowing edge sliver（状态语义：ok/warn/danger 随令牌取色） */
 .sliver-glow {
-  box-shadow: 0 0 10px rgba(52, 211, 153, 0.6);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--ok) 60%, transparent);
 }
 
 .sliver-glow-warn {
-  box-shadow: 0 0 10px rgba(245, 158, 11, 0.7);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--warn) 70%, transparent);
 }
 
 .sliver-glow-danger {
-  box-shadow: 0 0 12px rgba(239, 68, 68, 0.85);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--danger) 85%, transparent);
 }
 
 /* Intense multi-layer neon glows for collapsed bar */
 .rail-glow-emerald {
-  background-color: #10b981;
-  box-shadow: 0 0 4px #10b981, 0 0 12px rgba(16, 185, 129, 0.85), 0 0 24px rgba(16, 185, 129, 0.45);
+  background-color: var(--ok);
+  box-shadow: 0 0 4px var(--ok), 0 0 12px color-mix(in srgb, var(--ok) 85%, transparent), 0 0 24px color-mix(in srgb, var(--ok) 45%, transparent);
 }
 .rail-glow-amber {
-  background-color: #f59e0b;
-  box-shadow: 0 0 4px #f59e0b, 0 0 12px rgba(245, 158, 11, 0.85), 0 0 24px rgba(245, 158, 11, 0.45);
+  background-color: var(--warn);
+  box-shadow: 0 0 4px var(--warn), 0 0 12px color-mix(in srgb, var(--warn) 85%, transparent), 0 0 24px color-mix(in srgb, var(--warn) 45%, transparent);
 }
 .rail-glow-red {
-  background-color: #ef4444;
-  box-shadow: 0 0 4px #ef4444, 0 0 12px rgba(239, 68, 68, 0.9), 0 0 24px rgba(239, 68, 68, 0.5);
+  background-color: var(--danger);
+  box-shadow: 0 0 4px var(--danger), 0 0 12px color-mix(in srgb, var(--danger) 90%, transparent), 0 0 24px color-mix(in srgb, var(--danger) 50%, transparent);
 }
 .rail-glow-zinc {
-  background-color: #71717a;
-  box-shadow: 0 0 4px #71717a, 0 0 12px rgba(113, 113, 122, 0.7), 0 0 20px rgba(113, 113, 122, 0.35);
+  background-color: var(--text-3);
+  box-shadow: 0 0 4px var(--text-3), 0 0 12px color-mix(in srgb, var(--text-3) 70%, transparent), 0 0 20px color-mix(in srgb, var(--text-3) 35%, transparent);
 }
 
 /* Continuous breathing pulse for collapsed bar */

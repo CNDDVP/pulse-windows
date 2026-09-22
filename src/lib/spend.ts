@@ -17,7 +17,7 @@ export type SpendGroup = "day" | "hour" | "model";
 export const SPEND_SOURCES: [string, string][] = [
   ["claude", "Claude Code"], ["codex", "Codex"], ["gemini", "Gemini CLI"], ["cline", "Cline"],
   ["roocode", "Roo Code"], ["kilocode", "Kilo Code"], ["openclaw", "OpenClaw"], ["zcode", "ZCode"],
-  ["qwen", "Qwen CLI"], ["opencode", "OpenCode"],
+  ["qwen", "Qwen CLI"], ["opencode", "OpenCode"], ["kiro", "Kiro CLI"], ["cherrystudio", "Cherry Studio"],
 ];
 
 export function emptyCounts(): SpendCounts {

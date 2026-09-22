@@ -12,13 +12,13 @@ function Thresholds({yellow,red,money,label,onPreview,onSave}:{yellow:number;red
   useEffect(()=>setValues([String(yellow),String(red)]),[yellow,red]);
   const parsed=values.map(Number),valid=values.every(v=>v.trim()!==''&&Number.isFinite(Number(v))) &&
     (money?0<=parsed[1]&&parsed[1]<parsed[0]:0<parsed[0]&&parsed[0]<parsed[1]&&parsed[1]<=100);
-  return <div className="space-y-2"><div className="grid grid-cols-2 gap-2">{[t('settings.railwarn.yellow'),t('settings.railwarn.red')].map((name,i)=><label key={name} className="text-xs text-zinc-400">{name}：{money?t('settings.railwarn.money_prefix'):t('settings.railwarn.pct_prefix')}
+  return <div className="space-y-2"><div className="grid grid-cols-2 gap-2">{[t('settings.railwarn.yellow'),t('settings.railwarn.red')].map((name,i)=><label key={name} className="text-xs text-[var(--text-2)]">{name}：{money?t('settings.railwarn.money_prefix'):t('settings.railwarn.pct_prefix')}
     <div className="flex items-center gap-1 mt-0.5"><input className={inputCls} type="number" step={money?'0.01':'1'} min="0" max={money?undefined:100} aria-label={t('settings.railwarn.threshold_aria',{label,name})} value={values[i]} aria-invalid={!valid}
       onChange={e=>{const next=values.map((v,j)=>j===i?e.target.value:v);setValues(next);const [y,r]=next.map(Number);
         if(next.every(v=>v.trim()!==''&&Number.isFinite(Number(v)))&&(money?0<=r&&r<y:0<y&&y<r&&r<=100))onPreview(y,r);}}
       onBlur={()=>{if(valid)onSave(parsed[0],parsed[1])}}/>{!money&&<span>%</span>}</div></label>)}</div>
-    {!valid&&<p role="alert" className="text-amber-400 text-xs">{money?t('settings.railwarn.invalid_money'):t('settings.railwarn.invalid_pct')}</p>}
-    <p className="text-xs text-zinc-500">{t('settings.railwarn.preview_then_save')}</p></div>;
+    {!valid&&<p role="alert" className="text-[var(--warn)] text-xs">{money?t('settings.railwarn.invalid_money'):t('settings.railwarn.invalid_pct')}</p>}
+    <p className="text-xs text-[var(--text-3)]">{t('settings.railwarn.preview_then_save')}</p></div>;
 }
 
 export function RailWarningSettings({settings,usages,update,busy,onRefreshAll}:{settings:AppSettings;usages:ProviderUsage[];update:(p:Partial<AppSettings>)=>void;busy:boolean;onRefreshAll:()=>Promise<void>}) {
@@ -46,10 +46,10 @@ export function RailWarningSettings({settings,usages,update,busy,onRefreshAll}:{
     {mode==='custom'&&<Field label={t('settings.railwarn.fixed_color')}><div className="flex gap-2 items-center flex-wrap">
       <input aria-label={t('settings.railwarn.fixed_color_aria')} type="color" value={settings.collapsed_bar_color||'#7AA5FF'} disabled={busy} onChange={e=>update({collapsed_bar_color:e.target.value})}/>
       <input aria-label={t('settings.railwarn.hex_aria')} className={`${inputCls} max-w-32`} maxLength={7} value={colorDraft} onChange={e=>setColorDraft(e.target.value)} onBlur={()=>{if(validColor)update({collapsed_bar_color:colorDraft})}} aria-invalid={!validColor}/>
-      {['#7AA5FF','#10B981','#8B5CF6','#EC4899','#F97316','#38BDF8'].map(color=><button key={color} aria-label={t('settings.railwarn.pick_color_aria',{color})} title={color} disabled={busy} className="w-6 h-6 rounded-full border border-white/20" style={{background:color}} onClick={()=>update({collapsed_bar_color:color})}/>)}
-      {!validColor&&<p role="alert" className="text-amber-400 text-xs">{t('settings.railwarn.invalid_color')}</p>}
+      {['#7AA5FF','#10B981','#8B5CF6','#EC4899','#F97316','#38BDF8'].map(color=><button key={color} aria-label={t('settings.railwarn.pick_color_aria',{color})} title={color} disabled={busy} className="w-6 h-6 rounded-full border border-[var(--border-strong)]" style={{background:color}} onClick={()=>update({collapsed_bar_color:color})}/>)}
+      {!validColor&&<p role="alert" className="text-[var(--warn)] text-xs">{t('settings.railwarn.invalid_color')}</p>}
     </div></Field>}
-    <div className="p-4 rounded-xl bg-black/20 border border-white/10 space-y-3" aria-label={t('settings.railwarn.preview_aria')}>
+    <div className="p-4 rounded-xl bg-[var(--surface)] border border-[var(--border)] space-y-3" aria-label={t('settings.railwarn.preview_aria')}>
       <div className="flex items-center gap-3">
         <div className={`w-2 h-10 rounded-full transition-all duration-300 ${
           mode === 'rainbow' && !settings.reduce_motion ? 'rail-rainbow' : ''
@@ -73,35 +73,35 @@ export function RailWarningSettings({settings,usages,update,busy,onRefreshAll}:{
             }}>
               {mode === 'auto' ? levelName[result.level] : mode === 'custom' ? t('settings.railwarn.mode_custom') : t('settings.railwarn.mode_rainbow')}
             </span>
-            {mode !== 'auto' && <span className="text-xs text-zinc-500 font-normal">{t('settings.railwarn.not_risk')}</span>}
+            {mode !== 'auto' && <span className="text-xs text-[var(--text-3)] font-normal">{t('settings.railwarn.not_risk')}</span>}
           </div>
           {mode === 'auto' && (
-            <p className="text-xs text-zinc-400 mt-0.5 truncate">{result.shortReason}</p>
+            <p className="text-xs text-[var(--text-2)] mt-0.5 truncate">{result.shortReason}</p>
           )}
         </div>
       </div>
 
       {mode === 'auto' && (
-        <div className="border-t border-white/5 pt-2.5 space-y-2 text-xs">
+        <div className="border-t border-[var(--border)] pt-2.5 space-y-2 text-xs">
           {(result.level === 'yellow' || result.level === 'red') && (
-            <div className="bg-white/5 rounded-lg p-2.5 space-y-1">
-              <div className="font-medium text-zinc-300 mb-1">{t('settings.railwarn.trigger_detail')}</div>
+            <div className="bg-[var(--hover)] rounded-lg p-2.5 space-y-1">
+              <div className="font-medium text-[var(--text-1)] mb-1">{t('settings.railwarn.trigger_detail')}</div>
               {result.sources.filter(s => s.level === result.level).map((s, i) => (
-                <div key={i} className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-zinc-400">
-                  <div>{t('settings.railwarn.trigger_account')}<span className="text-zinc-200">{s.name}</span></div>
+                <div key={i} className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[var(--text-2)]">
+                  <div>{t('settings.railwarn.trigger_account')}<span className="text-[var(--text-1)]">{s.name}</span></div>
                   <div>
                     {s.type === 'balance' ? t('settings.railwarn.currency_label') : t('settings.railwarn.window_label')}
-                    <span className="text-zinc-200">{s.type === 'balance' ? s.currency : s.windowName || t('settings.railwarn.default_window')}</span>
+                    <span className="text-[var(--text-1)]">{s.type === 'balance' ? s.currency : s.windowName || t('settings.railwarn.default_window')}</span>
                   </div>
                   <div>
                     {s.type === 'balance' ? t('settings.railwarn.current_balance') : t('settings.railwarn.used_label')}
-                    <span className="text-zinc-200">{s.type === 'balance' ? `${s.currency} ${s.amount?.toFixed(2)}` : `${Number(s.usedPercent?.toFixed(1))}%`}</span>
+                    <span className="text-[var(--text-1)]">{s.type === 'balance' ? `${s.currency} ${s.amount?.toFixed(2)}` : `${Number(s.usedPercent?.toFixed(1))}%`}</span>
                   </div>
                   <div>
                     {t('settings.railwarn.level_threshold',{level:levelName[result.level]})}
-                    <span className="text-zinc-200">{s.type === 'balance' ? `≤ ${result.level === 'red' ? s.redThreshold : s.yellowThreshold}` : `${result.level === 'red' ? s.redThreshold : s.yellowThreshold}%`}</span>
+                    <span className="text-[var(--text-1)]">{s.type === 'balance' ? `≤ ${result.level === 'red' ? s.redThreshold : s.yellowThreshold}` : `${result.level === 'red' ? s.redThreshold : s.yellowThreshold}%`}</span>
                   </div>
-                  <div className="col-span-2 text-zinc-500">
+                  <div className="col-span-2 text-[var(--text-3)]">
                     {t('settings.railwarn.updated_at')}<span>{formatTimeAgo(s.updated, now)}</span>
                   </div>
                 </div>
@@ -109,24 +109,24 @@ export function RailWarningSettings({settings,usages,update,busy,onRefreshAll}:{
             </div>
           )}
 
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-zinc-400">
-            <span>{t('settings.railwarn.rated_prefix')}<strong className="text-zinc-200">{new Set(result.sources.filter(s => s.level !== 'unknown').map(s => s.account)).size}</strong>{t('settings.railwarn.rated_suffix')}</span>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[var(--text-2)]">
+            <span>{t('settings.railwarn.rated_prefix')}<strong className="text-[var(--text-1)]">{new Set(result.sources.filter(s => s.level !== 'unknown').map(s => s.account)).size}</strong>{t('settings.railwarn.rated_suffix')}</span>
             {result.excluded.length > 0 && (
               <span>{t('settings.railwarn.excluded_line',{n:result.excluded.length})}</span>
             )}
             {result.sources.some(s => s.level === 'unknown') && (
-              <span className="text-amber-400/90">{t('settings.railwarn.unknown_line',{n:new Set(result.sources.filter(s => s.level === 'unknown').map(s => s.account)).size})}</span>
+              <span className="text-[var(--warn)]">{t('settings.railwarn.unknown_line',{n:new Set(result.sources.filter(s => s.level === 'unknown').map(s => s.account)).size})}</span>
             )}
           </div>
 
           {result.excluded.length > 0 && (
-            <div className="text-zinc-500 space-y-0.5">
+            <div className="text-[var(--text-3)] space-y-0.5">
               {result.excluded.map(x => <div key={x}>• {x}</div>)}
             </div>
           )}
 
           {result.sources.filter(s => s.level === 'unknown').length > 0 && (
-            <div className="text-amber-400/80 space-y-0.5">
+            <div className="text-[var(--warn)] space-y-0.5">
               {result.sources.filter(s => s.level === 'unknown').map((s, i) => (
                 <div key={i}>• {s.name}：{s.reason}</div>
               ))}
@@ -134,12 +134,12 @@ export function RailWarningSettings({settings,usages,update,busy,onRefreshAll}:{
           )}
 
           {actual && (
-            <div className="border-t border-white/5 pt-1.5 text-zinc-400 flex items-center justify-between">
+            <div className="border-t border-[var(--border)] pt-1.5 text-[var(--text-2)] flex items-center justify-between">
               <span>{t('settings.railwarn.actual_rail')}<span style={{ color: levelColor[actual.level] }}>{levelName[actual.level]}</span> · {actual.shortReason || actual.reason}</span>
             </div>
           )}
 
-          <p className="text-[11px] text-zinc-500">
+          <p className="text-[11px] text-[var(--text-3)]">
             {t('settings.railwarn.hysteresis_note')}
           </p>
         </div>
@@ -151,7 +151,7 @@ export function RailWarningSettings({settings,usages,update,busy,onRefreshAll}:{
       <Field label={t('settings.railwarn.pct_threshold_label')}><select aria-label={t('settings.railwarn.pct_threshold_aria')} className={selectCls} disabled={busy} value={draft.custom_thresholds?'custom':'default'} onChange={e=>commit({...draft,custom_thresholds:e.target.value==='custom'})}>
         <option value="default">{t('settings.railwarn.pct_default')}</option><option value="custom">{t('settings.railwarn.pct_custom')}</option></select></Field>
       {draft.custom_thresholds&&<Thresholds label={t('settings.railwarn.pct_label')} yellow={draft.yellow} red={draft.red} onPreview={(yellow,red)=>setDraft({...draft,yellow,red})} onSave={(yellow,red)=>commit({...draft,yellow,red})}/>}
-      <p className="text-xs text-zinc-500">{t('settings.railwarn.aggregate_note')}</p>
+      <p className="text-xs text-[var(--text-3)]">{t('settings.railwarn.aggregate_note')}</p>
       {ids.map(id=>{
         const account=settings.providers[id],rule=draft.accounts[id]??defaultAccountRule(),usage=usages.find(u=>u.account_id===id);
         const selected=draft.scope==='all'?!!account?.enabled:draft.account_ids.includes(id);
@@ -159,13 +159,13 @@ export function RailWarningSettings({settings,usages,update,busy,onRefreshAll}:{
         const nonCurrencyBalances=(usage?.balances??[]).filter(b=>!/^[A-Z]{3}$/.test(b.currency));
         const detectedCurrencies=[...new Set([...standardBalances.map(b=>b.currency),...Object.keys(rule.balances)])];
         const hasWindows=(usage?.windows?.length??0)>0;
-        return <div key={id} className="p-3 rounded-xl border border-white/10 space-y-3">
+        return <div key={id} className="p-3 rounded-xl border border-[var(--border)] space-y-3">
           <div className="flex items-center justify-between">
             <label className="flex gap-2 items-center"><input type="checkbox" checked={selected} disabled={busy||draft.scope==='all'} onChange={e=>commit({...draft,account_ids:e.target.checked?[...draft.account_ids,id]:draft.account_ids.filter(x=>x!==id)})}/>
               <span className="font-medium">{account?.label||id}</span>
-              {!account?<span className="text-xs text-red-400">{t('settings.railwarn.deleted_note')}</span>:!account.enabled?<span className="text-xs text-zinc-500">{t('settings.railwarn.disabled_note')}</span>:null}
+              {!account?<span className="text-xs text-[var(--danger)]">{t('settings.railwarn.deleted_note')}</span>:!account.enabled?<span className="text-xs text-[var(--text-3)]">{t('settings.railwarn.disabled_note')}</span>:null}
             </label>
-            {!hasWindows&&usage?.balances?.length?<span className="text-xs px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">{t('settings.railwarn.balance_badge')}</span>:null}
+            {!hasWindows&&usage?.balances?.length?<span className="text-xs px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-[var(--text-2)] border border-[var(--border-strong)]">{t('settings.railwarn.balance_badge')}</span>:null}
           </div>
           {selected&&<>{hasWindows?(
             <>
@@ -180,16 +180,16 @@ export function RailWarningSettings({settings,usages,update,busy,onRefreshAll}:{
           ):null}
 
             {/* 余额预警配置 */}
-            <div className="space-y-2 border-t border-white/5 pt-2">
-              <div className="text-xs font-medium text-zinc-400">{t('settings.railwarn.balance_section')}</div>
+            <div className="space-y-2 border-t border-[var(--border)] pt-2">
+              <div className="text-xs font-medium text-[var(--text-2)]">{t('settings.railwarn.balance_section')}</div>
               {detectedCurrencies.map(code=>{
                 const balanceObj=usage?.balances?.find(b=>b.currency===code);
                 const isConfigured=!!rule.balances[code];
-                return <div key={code} className="p-2.5 rounded-lg bg-white/5 space-y-2">
+                return <div key={code} className="p-2.5 rounded-lg bg-[var(--hover)] space-y-2">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="font-medium text-zinc-300">
+                    <span className="font-medium text-[var(--text-1)]">
                       {t('settings.railwarn.balance_line',{code,amount:balanceObj?balanceObj.amount.toFixed(2):'--'})}
-                      {!isConfigured&&<span className="text-zinc-500 ml-1.5 font-normal">{t('settings.railwarn.not_in_color')}</span>}
+                      {!isConfigured&&<span className="text-[var(--text-3)] ml-1.5 font-normal">{t('settings.railwarn.not_in_color')}</span>}
                     </span>
                     {isConfigured?(
                       <button className={btnGhost} disabled={busy} onClick={()=>{const balances={...rule.balances};delete balances[code];changeRule(id,{balances})}}>{t('settings.railwarn.disable_alert')}</button>
@@ -205,9 +205,9 @@ export function RailWarningSettings({settings,usages,update,busy,onRefreshAll}:{
 
               {/* 非标准货币（积分/Token等）提示 */}
               {nonCurrencyBalances.map(b=>(
-                <div key={b.currency} className="p-2 rounded bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 flex items-center justify-between">
+                <div key={b.currency} className="p-2 rounded bg-[var(--warn-soft)] border border-[var(--warn-border)] text-xs text-[var(--warn)] flex items-center justify-between">
                   <span>{b.currency}：{b.amount}</span>
-                  <span className="text-[11px] text-amber-400/80">{t('settings.railwarn.unsupported_unit')}</span>
+                  <span className="text-[11px] text-[var(--warn)]">{t('settings.railwarn.unsupported_unit')}</span>
                 </div>
               ))}
 
@@ -223,6 +223,6 @@ export function RailWarningSettings({settings,usages,update,busy,onRefreshAll}:{
     </>}
     <div className="flex gap-2"><button className={btnGhost} disabled={busy} onClick={()=>void onRefreshAll()}>{t('settings.railwarn.refresh_readings')}</button>
       <button className={btnGhost} disabled={busy} onClick={()=>{const next=defaultRailWarnings();setDraft(next);update({rail_warnings:next,collapsed_bar_color_mode:'auto',collapsed_bar_color:null})}}>{t('settings.railwarn.reset_defaults')}</button></div>
-    <p className="text-xs text-zinc-500">{t('settings.railwarn.footer_note')}</p>
+    <p className="text-xs text-[var(--text-3)]">{t('settings.railwarn.footer_note')}</p>
   </Section>;
 }

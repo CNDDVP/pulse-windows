@@ -69,16 +69,16 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
           </Field>
         </div>
         {settings.dock_side === "free" && (
-          <div className="pt-2 border-t border-white/5 grid grid-cols-2 gap-4">
+          <div className="pt-2 border-t border-[var(--border)] grid grid-cols-2 gap-4">
             {(["free_x", "free_y"] as const).map(k => (
               <label key={k} className="block space-y-1">
-                <div className="flex justify-between text-xs text-zinc-400"><span>{t(k === "free_x" ? "settings.general.pos_x" : "settings.general.pos_y")}</span><span className="font-mono">{Math.round(settings[k] * 100)}%</span></div>
-                <input type="range" min={0} max={1} step={0.01} value={settings[k]} aria-label={t(k === "free_x" ? "settings.general.pos_x" : "settings.general.pos_y")} onChange={e => update({ [k]: Number(e.target.value) } as Partial<AppSettings>)} className="w-full accent-emerald-500" />
+                <div className="flex justify-between text-xs text-[var(--text-2)]"><span>{t(k === "free_x" ? "settings.general.pos_x" : "settings.general.pos_y")}</span><span className="font-mono">{Math.round(settings[k] * 100)}%</span></div>
+                <input type="range" min={0} max={1} step={0.01} value={settings[k]} aria-label={t(k === "free_x" ? "settings.general.pos_x" : "settings.general.pos_y")} onChange={e => update({ [k]: Number(e.target.value) } as Partial<AppSettings>)} className="w-full accent-[var(--accent)]" />
               </label>
             ))}
           </div>
         )}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-white/5">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-[var(--border)]">
           <Field label={t("settings.general.auto_collapse")} hint={settings.dock_side === "free" ? t("settings.general.auto_collapse_free") : t("settings.general.auto_collapse_hint")}>
             <select disabled={settings.dock_side === "free"} className={selectCls} value={settings.auto_collapse_seconds} onChange={e => update({ auto_collapse_seconds: Number(e.target.value) })}>
               <option value={0}>{t("settings.general.collapse_off")}</option><option value={1}>{t("settings.general.collapse_1s")}</option><option value={2}>{t("settings.general.collapse_2s")}</option><option value={3}>{t("settings.general.collapse_3s")}</option><option value={5}>{t("settings.general.collapse_5s")}</option><option value={10}>{t("settings.general.collapse_10s")}</option>
@@ -94,8 +94,12 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
 
       <Section title={t("settings.general.appearance_section")} icon="🎨">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label={t("settings.general.theme")}>
-            <select className={selectCls} value={settings.theme} onChange={e => update({ theme: e.target.value as AppSettings["theme"] })}>
+          {/* Round5d 项目一：主题（深色/浅色）走既有设置通道（settings.theme 持久化，
+              后端枚举 "obsidian" | "translucent" 不变）；保存后经 settings-updated 回流，
+              App 把值同步到 documentElement data-theme，index.css 语义令牌随之切换——
+              悬浮栏/详情卡/设置窗全部即时生效。托盘菜单为系统原生 UI，跟随系统主题。 */}
+          <Field label={t("settings.general.theme")} hint={t("settings.general.theme_hint")}>
+            <select className={selectCls} value={settings.theme} aria-label={t("settings.general.theme")} onChange={e => update({ theme: e.target.value as AppSettings["theme"] })}>
               <option value="obsidian">{t("settings.general.theme_obsidian")}</option><option value="translucent">{t("settings.general.theme_translucent")}</option>
             </select>
           </Field>
@@ -124,7 +128,7 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
             </select>
           </Field>
         </div>
-        <div className="pt-2 border-t border-white/5 space-y-3">
+        <div className="pt-2 border-t border-[var(--border)] space-y-3">
           <Row title={t("settings.general.show_elapsed")} subtitle={t("settings.general.show_elapsed_sub")}>
             <Switch checked={settings.show_elapsed} onChange={v => update({ show_elapsed: v })} label={t("settings.general.show_elapsed")} />
           </Row>
@@ -163,7 +167,7 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
             />
           </Field>
         </div>
-        <p className="text-[11px] text-zinc-500">{t("settings.general.cost_note")}</p>
+        <p className="text-[11px] text-[var(--text-3)]">{t("settings.general.cost_note")}</p>
       </Section>
 
       <Section title={t("settings.general.refresh_section")} icon="⚡" aside={<button className={btnGhost} disabled={busy} onClick={() => void onRefreshAll().catch(e => toast("error", t("settings.general.refresh_fail", { err: String(e) })))}>{t("settings.general.refresh_now")}</button>}>
@@ -187,37 +191,42 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
         <Row title={t("settings.general.wsl_usage")} subtitle={t("settings.general.wsl_usage_sub")}>
           <Switch checked={settings.token_spend_wsl ?? false} disabled={!settings.token_spend_enabled} onChange={v => update({ token_spend_wsl: v })} label={t("settings.general.wsl_usage_short")} />
         </Row>
-        <div className="pt-2 border-t border-white/5 space-y-3">
+        {/* Round5d 项目二：Discord 状态广播（opt-in 默认关）。说明文案披露通信范围与
+            隐私边界（只广播聚合数字，不含账号名/供应商明细）；连接失败静默。 */}
+        <Row title={t("settings.general.discord_presence")} subtitle={t("settings.general.discord_presence_sub")}>
+          <Switch checked={settings.discord_presence_enabled ?? false} onChange={v => update({ discord_presence_enabled: v })} label={t("settings.general.discord_presence")} />
+        </Row>
+        <div className="pt-2 border-t border-[var(--border)] space-y-3">
           <div className="flex items-center justify-between">
-            <div className="text-xs text-zinc-300 font-medium">{t("settings.general.authorized_count", { n: settings.authorized_providers?.length || 0, total: PROVIDERS.length })}</div>
+            <div className="text-xs text-[var(--text-1)] font-medium">{t("settings.general.authorized_count", { n: settings.authorized_providers?.length || 0, total: PROVIDERS.length })}</div>
             <div className="flex items-center gap-2">
               <button
-                className="text-[11px] text-emerald-400 hover:text-emerald-300 cursor-pointer"
+                className="text-[11px] text-[var(--ok)] hover:text-[var(--accent-strong)] cursor-pointer"
                 onClick={() => update({ authorized_providers: PROVIDERS.map(p => p[0]) })}
               >
                 {t("settings.general.select_all")}
               </button>
-              <span className="text-zinc-600">·</span>
+              <span className="text-[var(--text-3)]">·</span>
               <button
-                className="text-[11px] text-emerald-400 hover:text-emerald-300 cursor-pointer"
+                className="text-[11px] text-[var(--ok)] hover:text-[var(--accent-strong)] cursor-pointer"
                 onClick={() => update({ authorized_providers: ["claude", "codex", "antigravity", "kimi"] })}
               >
                 {t("settings.general.select_common")}
               </button>
-              <span className="text-zinc-600">·</span>
+              <span className="text-[var(--text-3)]">·</span>
               <button
-                className="text-[11px] text-zinc-400 hover:text-zinc-300 cursor-pointer"
+                className="text-[11px] text-[var(--text-2)] hover:text-[var(--text-1)] cursor-pointer"
                 onClick={() => update({ authorized_providers: [] })}
               >
                 {t("settings.general.select_none")}
               </button>
             </div>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto p-1 bg-zinc-950/40 rounded-xl border border-white/5">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto p-1 bg-[var(--surface)] rounded-xl border border-[var(--border)]">
             {PROVIDERS.map(([pid]) => {
               const checked = settings.authorized_providers?.includes(pid) ?? false;
               return (
-                <label key={pid} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/5 cursor-pointer text-xs text-zinc-300">
+                <label key={pid} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-[var(--hover)] cursor-pointer text-xs text-[var(--text-1)]">
                   <input
                     type="checkbox"
                     checked={checked}
@@ -227,7 +236,7 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
                       else cur.delete(pid);
                       update({ authorized_providers: Array.from(cur) });
                     }}
-                    className="accent-emerald-500 rounded"
+                    className="accent-[var(--accent)] rounded"
                   />
                   <span className="truncate">{providerName(pid, t)}</span>
                 </label>
@@ -255,7 +264,7 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
           </select>
         </Row>
         {settings.network_proxy?.mode !== "auto" && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-white/5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-[var(--border)]">
             <div className="sm:col-span-2">
               <Field label={t("settings.general.proxy_host")}>
                 <input
@@ -292,12 +301,12 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
             </div>
           </div>
         )}
-        <div className="pt-2 border-t border-white/5 space-y-2">
-          <div className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-950/60 border border-white/5 text-xs">
+        <div className="pt-2 border-t border-[var(--border)] space-y-2">
+          <div className="flex items-center justify-between p-2.5 rounded-xl bg-[var(--surface)] border border-[var(--border)] text-xs">
             <div className="space-y-0.5">
-              <span className="text-zinc-400">{t("settings.general.detect_result")}</span>
+              <span className="text-[var(--text-2)]">{t("settings.general.detect_result")}</span>
               {/* proxyInfo.detail 为 Rust 探测输出，原样展示。TODO(EN-backend) */}
-              <span className="text-zinc-200 font-mono font-medium ml-1">{proxyInfo?.detail || t("settings.general.detecting")}</span>
+              <span className="text-[var(--text-1)] font-mono font-medium ml-1">{proxyInfo?.detail || t("settings.general.detecting")}</span>
             </div>
             <div className="flex gap-2 shrink-0">
               <button className={btnGhost} onClick={fetchProxyInfo}>{t("settings.general.redetect")}</button>
@@ -307,7 +316,7 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
             </div>
           </div>
           {testResult && (
-            <div className={`p-2.5 rounded-xl border text-xs font-mono ${testResult.ok ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-300" : "bg-red-950/30 border-red-500/40 text-red-300"}`}>
+            <div className={`p-2.5 rounded-xl border text-xs font-mono ${testResult.ok ? "bg-[var(--ok-soft)] border-[var(--ok-border)] text-[var(--ok)]" : "bg-[var(--danger-soft)] border-[var(--danger-border)] text-[var(--danger)]"}`}>
               {testResult.ok ? t("settings.general.test_ok_line", { ms: testResult.duration_ms, target: testResult.target }) : t("settings.general.test_fail_line", { err: testResult.error || t("settings.general.unknown_error") })}
             </div>
           )}

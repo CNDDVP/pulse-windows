@@ -60,6 +60,28 @@ fn parse(source:&str,v:&Value,state:&mut State,offset:u64)->Option<Event>{
         if anomaly{state.anomalies+=1}
         return Some(Event{id,ts,model:m["model"].as_str().unwrap_or("unknown").into(),counts,partial:anomaly});
     }
+    // CherryStudio（Round5d 项目三）：app-data 下 Claude 同构转录（字段形状与上一分支相同：
+    // type=assistant + message.usage 四分项同名），复用同构形状；差异在事件身份——Cherry 流式
+    // 落盘时同一次 API 调用会追加 3~4 份快照行，requestId / message.id / usage 相同而 uuid 每行
+    // 全新，按行计数会把每次调用乘以份数。身份链 requestId → message.requestId → message.id →
+    // uuid：同身份的多份快照经入库层 ON CONFLICT MAX 按字段级最大值折叠为一次调用（正是增长
+    // 快照需要的合并语义）；身份全缺的行独立成事件（仅数值相似不等于同一次调用），落 offset
+    // 路径命名空间。事件 id 由入库层再加相对 projects 根的路径命名空间（put_event），V2 与
+    // legacy 两根的同名会话因此在统计中折叠。本机无 CherryStudio 目录，格式按上游 Pulse
+    // CherryStudioReader（commit 442a9c5）同构实现——【未经真实数据验证】。
+    if source=="cherrystudio"{
+        if v["type"]!="assistant"{return None}let m=&v["message"];let u=m.get("usage")?;
+        // 时间戳可在行上或 message 上（absent is not newer evidence；两者皆缺不虚构，跳过）。
+        let ts=timestamp(&v["timestamp"]).or_else(||timestamp(&m["timestamp"]))?;
+        let counts=[count(&u["input_tokens"]),count(&u["output_tokens"]),count(&u["cache_read_input_tokens"]),count(&u["cache_creation_input_tokens"])];
+        if counts.iter().all(|c|*c==0){return None}
+        let non_blank=|x:&Value|x.as_str().map(str::trim).filter(|s|!s.is_empty()).map(str::to_string);
+        let identity=non_blank(&v["requestId"]).or_else(||non_blank(&m["requestId"])).or_else(||non_blank(&m["id"])).or_else(||non_blank(&v["uuid"]));
+        // 分项守卫：身份全缺（无法去重、流式副本会重复计数）或分项缺失/为负 → 异常 + partial。
+        let anomaly=identity.is_none()||u["input_tokens"].is_null()||u["output_tokens"].is_null()||["input_tokens","output_tokens","cache_read_input_tokens","cache_creation_input_tokens"].iter().any(|k|negative(&u[k]));
+        if anomaly{state.anomalies+=1}
+        return Some(Event{id:identity.unwrap_or_else(||format!("offset-{offset}")),ts,model:m["model"].as_str().unwrap_or("unknown").into(),counts,partial:anomaly});
+    }
     if ["cline","roocode","kilocode"].contains(&source){
         if v["say"]!="api_req_started"{return None}let text:Value=serde_json::from_str(v["text"].as_str()?).ok()?;
         let ts=timestamp(&v["ts"])?;if text["tokensIn"].is_null()&&text["tokensOut"].is_null(){return None}
@@ -100,6 +122,125 @@ fn parse(source:&str,v:&Value,state:&mut State,offset:u64)->Option<Event>{
     }
     None
 }
+/// Kiro 计数器读取：上游 clampedCount 以 Double 读入（计数器可能是浮点），取整截断；
+/// 负值交由 negative() 守卫标记异常后钳 0，不得静默归零掩盖。
+fn count_f(v:&Value)->u64{
+    if let Some(u)=v.as_u64(){u}
+    else if let Some(f)=v.as_f64(){if f<0.0{0}else{f as u64}}
+    else{0}
+}
+/// Kiro CLI 会话头 → 每用户回合一个事件（Round5d 项目三）。
+///
+/// `~/.kiro/sessions/cli/` 每会话 = 同 stem 的 `.json` 头 + `.jsonl` 会话侧车；头文件的
+/// `session_state.conversation_metadata.user_turn_metadatas[].input/output_token_count` 是
+/// Kiro 格式里唯一实测计数器。上下文窗口×百分比、字符数÷4、IDE session.json 树与 kiro-cli
+/// SQLite 库只含估计值、不是上报计数器——一律不读、不折算，防编造（缺失不造假，与上游
+/// Pulse KiroReader 同结论）。Kiro 无任何缓存/推理分项，cache 两桶恒 0。
+/// 时间戳：回合 `message_ids` 在侧车 Prompt 行中的最早时间；缺失退回 `end_timestamp`
+/// （秒或毫秒自适应）；两者皆缺 → 该回合没有时间证据，跳过（不得虚构时间）。
+/// 双零计数不算事件（零不是测量值）。事件 id：有 `session_id`（UUID 空间）→ `{session}:{index}`
+/// 裸存，会话复制件在 (source,event_id) 折叠；缺失 → `offset-{index}` 落路径命名空间，
+/// 不与无法识别身份的其它文件合并。本机无 `~/.kiro` 目录，格式按上游 KiroReader
+/// （commit 442a9c5）同构实现——【未经真实数据验证】。
+fn kiro_header_events(header:&Value,state:&mut State,prompts:&BTreeMap<String,i64>)->Vec<Event>{
+    let mut out=vec![];
+    let Some(turns)=header.pointer("/session_state/conversation_metadata/user_turn_metadatas").and_then(Value::as_array)else{return out};
+    let model=header.pointer("/session_state/rts_model_state/model_info/model_id").and_then(Value::as_str).map(str::trim).filter(|m|!m.is_empty()).unwrap_or("auto");
+    let session=header["session_id"].as_str().map(str::trim).filter(|s|!s.is_empty()).map(str::to_string);
+    for (i,turn) in turns.iter().enumerate(){
+        let counts=[count_f(&turn["input_token_count"]),count_f(&turn["output_token_count"]),0,0];
+        // 分项守卫：负计数（count_f 语义会静默归零）→ 计入异常；上游同样钳 0。
+        let anomaly=["input_token_count","output_token_count"].iter().any(|k|negative(&turn[k]));
+        if anomaly{state.anomalies+=1}
+        // 双零：Kiro 唯一的实测计数器说这里没有被测量，什么都不发（零不是测量值）。
+        if counts.iter().all(|c|*c==0){continue}
+        let ts=turn["message_ids"].as_array()
+            .and_then(|ids|ids.iter().filter_map(|id|id.as_str().and_then(|s|prompts.get(s)).copied()).min())
+            .or_else(||timestamp(&turn["end_timestamp"]));
+        let Some(ts)=ts else{continue};
+        let id=match &session{Some(s)=>format!("{s}:{i}"),None=>format!("offset-{i}")};
+        out.push(Event{id,ts,model:model.into(),counts,partial:anomaly});
+    }
+    out
+}
+/// Kiro 会话侧车（与头文件同 stem 的 `.jsonl`）中 Prompt 行的时间戳表（message_id → epoch 秒）。
+/// 只读、按行流式解析；单行 2MB 上限（超长行跳过，不中断后续行）；总量 KIRO_SIDECAR_MAX_BYTES
+/// 上限——侧车时间戳只是回合时间精化，超限/坏行退回头文件 end_timestamp，不影响计数。
+/// 侧车解析失败不进 bad_lines（它不是被统计的转录文件）。
+pub const KIRO_SIDECAR_MAX_BYTES:u64=64*1024*1024;
+fn kiro_prompt_times(header:&Path)->BTreeMap<String,i64>{
+    let mut out=BTreeMap::new();
+    let Ok(file)=File::open(header.with_extension("jsonl"))else{return out};
+    let mut reader=BufReader::new(file);let mut total=0u64;
+    loop{
+        let mut line=vec![];let read=reader.by_ref().take(2*1024*1024+1).read_until(b'\n',&mut line).unwrap_or(0);
+        if read==0{break}
+        total+=read as u64;
+        if total>KIRO_SIDECAR_MAX_BYTES{break}
+        if read>2*1024*1024{continue}
+        if let Ok(v)=serde_json::from_slice::<Value>(&line){
+            if v["kind"]=="Prompt"{
+                if let (Some(id),Some(ts))=(v.pointer("/data/message_id").and_then(Value::as_str),v.pointer("/data/meta/timestamp").and_then(timestamp)){out.insert(id.to_string(),ts);}
+            }
+        }
+        if !line.ends_with(b"\n"){break} // 未写完的尾行，留待下次
+    }
+    out
+}
+/// CherryStudio 事件 id 的会话命名空间：相对「首个 projects 祖先目录」的路径。V2
+/// （Data/Agents/.claude/projects）与 legacy（.claude/projects）两根的同名会话 → 同一相对
+/// 路径 → 同一事件 id → 统计按 (source,event_id) 折叠、不双计；跨目录复制件同理。
+/// 落在任何 projects 目录之外（异常的自定义目录）→ 全路径命名空间，不参与折叠（宁缺勿错并）。
+fn cherry_rel(path:&Path)->String{
+    let comps:Vec<_>=path.components().collect();
+    if let Some(pos)=comps.iter().position(|c|c.as_os_str()=="projects"){
+        let rel=comps[pos+1..].iter().map(|c|c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+        if rel.is_empty(){path.file_name().map(|n|n.to_string_lossy().to_string()).unwrap_or(rel)}else{rel}
+    }else{path.to_string_lossy().to_string()}
+}
+/// CherryStudio 两根发现（app-data 目录参数化，测试可直接驱动）：V2 在前、legacy 在后；
+/// 同一相对路径的会话只保留 V2 的（与上游 seenRelative「first root wins」一致——两根并存时
+/// legacy 是旧布局/旧副本，不得与新会话叠加双计）。
+fn collect_cherry_roots<F>(app:&Path,out:&mut Vec<(String,PathBuf)>,truncated:&mut bool,is_cancelled:&F)->Result<(),String>
+where F:Fn()->bool{
+    let v2_root=app.join("CherryStudio").join("Data").join("Agents").join(".claude").join("projects");
+    let legacy_root=app.join("CherryStudio").join(".claude").join("projects");
+    collect(&v2_root,"cherrystudio",out,truncated,is_cancelled)?;
+    let v2_rels:BTreeSet<String>=out.iter().filter(|(s,_)|s.as_str()=="cherrystudio").map(|(_,p)|cherry_rel(p)).collect();
+    let before=out.len();
+    collect(&legacy_root,"cherrystudio",out,truncated,is_cancelled)?;
+    let legacy:Vec<_>=out.drain(before..).filter(|(_,p)|!v2_rels.contains(&cherry_rel(p))).collect();
+    out.extend(legacy);
+    Ok(())
+}
+/// 事件入库的 id 命名空间规则（既有行为收敛成函数 + Round5d 两个新来源）：
+/// offset- 兜底 id 与 cline 系（id 恒带路径命名空间）按 path_key 前缀隔离，复制件按路径各计；
+/// cherrystudio 以相对 projects 根的路径命名空间（V2/legacy 同名会话与复制件按事件 id 折叠）；
+/// 其余来源存裸 id，跨路径副本由 (source,event_id) 折叠。
+/// 已知边界（自 claude 路径继承的启发式）：以「id 字符串以 offset- 开头」识别兜底 id，
+/// 真实上游 id 恰以 "offset-" 开头时会被误判进路径命名空间（复制件不折叠、各计一次）；
+/// 现知来源的真实 id 形态（Kiro/CherryStudio 为 UUID 空间、claude 为 msg_*、codex 为
+/// 时间戳+哈希）均不以 "offset-" 开头，触发概率趋近于零，故不为可读性牺牲该前缀约定。
+fn event_db_id(source:&str,path:&Path,path_key:&str,id:&str)->String{
+    if id.starts_with("offset-")||["cline","roocode","kilocode"].contains(&source){format!("{path_key}/{id}")}
+    else if source=="cherrystudio"{format!("cherry:{}:{}",cherry_rel(path),id)}
+    else{id.to_string()}
+}
+/// 单事件写入（scan 主循环与 kiro 头文件分支共用）；四分项冲突按 MAX 合并——流式快照
+/// （CherryStudio 同身份多行）与重扫幂等性都依赖该语义。
+fn put_event(tx:&rusqlite::Transaction,source:&str,path:&Path,path_key:&str,event:&Event)->Result<(),String>{
+    let id=event_db_id(source,path,path_key,&event.id);
+    tx.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path,event_id) DO UPDATE SET input=MAX(input,excluded.input),output=MAX(output,excluded.output),cache_read=MAX(cache_read,excluded.cache_read),cache_write=MAX(cache_write,excluded.cache_write),partial=MAX(partial,excluded.partial)",params![path_key,source,id,event.ts,event.model,event.counts[0],event.counts[1],event.counts[2],event.counts[3],event.partial as u8]).map(|_|()).map_err(|_|"record".to_string())
+}
+/// 单条记录解析 + 入库（原 insert 闭包收敛成函数：kiro 头文件分支不经过逐行 insert，
+/// 直接发多条事件，函数化后两条路径共用同一入库语义）。
+fn insert_value(tx:&rusqlite::Transaction,source:&str,path:&Path,path_key:&str,v:&Value,offset:u64,state:&mut State,file_events_count:&mut usize)->Result<(),String>{
+    if let Some(event)=parse(source,v,state,offset){
+        *file_events_count+=1;
+        put_event(tx,source,path,path_key,&event)?;
+    }
+    Ok(())
+}
 fn discover<F>(root:&Path,source:&str,out:&mut Vec<(String,PathBuf)>,depth:usize,truncated:&mut bool,is_cancelled:&F)->Result<(),String>
 where F: Fn() -> bool {
     if is_cancelled() { return Err("已取消".into()); }
@@ -119,7 +260,10 @@ where F: Fn() -> bool {
             let name=path.file_name().and_then(|s|s.to_str()).unwrap_or("");
             if ["cline","roocode","kilocode"].contains(&source) && name!="ui_messages.json"{continue}
             if source=="gemini" && !name.starts_with("session-"){continue}
-            if ["claude","codex","openclaw","zcode","qwen"].contains(&source)&&path.extension().is_none_or(|e|e!="jsonl"){continue}
+            // Kiro（Round5d 项目三）：只收集 .json 会话头（唯一实测计数器所在）；同名 .jsonl
+            // 会话侧车没有计数器、不作为转录收集，仅在解析头文件时按需读取 prompt 时间戳。
+            if source=="kiro"&&path.extension().is_none_or(|e|e!="json"){continue}
+            if ["claude","codex","openclaw","zcode","qwen","cherrystudio"].contains(&source)&&path.extension().is_none_or(|e|e!="jsonl"){continue}
             out.push((source.into(),path));
         }
     }
@@ -174,6 +318,20 @@ where F: Fn() -> bool {
     // Qwen CLI（Round5A 项目三）：Claude Code 同构布局 ~/.qwen/projects（QWEN_CONFIG_DIR 可覆盖），
     // 复用 claude 解析分支；本机无该目录，格式未经真实数据验证（见 parse 注释）。
     if let Some(root)=crate::providers::credentials::home_path("QWEN_CONFIG_DIR",".qwen"){collect(&root.join("projects"),"qwen",&mut out,&mut truncated,is_cancelled)?;}
+    // Kiro CLI（Round5d 项目三）：~/.kiro/sessions/cli 会话树（KIRO_CONFIG_DIR 覆盖 ~/.kiro 根）。
+    // 每会话 = 同 stem 的 .json 头（唯一实测计数器所在）+ .jsonl 会话侧车（仅提供 prompt 时间戳，
+    // 无计数器，不作为转录收集，见 kiro_prompt_times）。VS Code globalStorage（Kiro IDE）与
+    // kiro-cli SQLite 库只含估计值（上下文窗口×百分比 / 字符数÷4），不是上报计数器——不读、
+    // 不折算，防编造（缺失不造假，与上游 KiroReader 同结论；计划中「SQLite 次之」按此不实现）。
+    // 本机无 ~/.kiro 目录，格式按上游 KiroReader 同构实现——【未经真实数据验证】。
+    if let Some(root)=crate::providers::credentials::home_path("KIRO_CONFIG_DIR",".kiro"){collect(&root.join("sessions").join("cli"),"kiro",&mut out,&mut truncated,is_cancelled)?;}
+    // CherryStudio（Round5d 项目三）：app-data（dirs::data_dir() 平台规则，Windows=%APPDATA%）
+    // 下的 Claude 同构转录两根——V2 `CherryStudio/Data/Agents/.claude/projects` 在前、legacy
+    // `CherryStudio/.claude/projects` 在后。V2 优先：同名相对会话只读 V2 的（与上游一致）；
+    // 事件 id 另带相对路径命名空间（cherry_rel → event_db_id），跨根/跨目录复制件在统计按
+    // (source,event_id) 折叠。本机无该目录，格式按上游 CherryStudioReader 同构实现——
+    // 【未经真实数据验证】。
+    if let Some(app)=dirs::data_dir(){collect_cherry_roots(&app,&mut out,&mut truncated,is_cancelled)?;}
     // OpenCode（Round5A 项目二）：XDG_DATA_HOME 可覆盖 ~/.local/share；storage/message（现行文档布局）
     // 与 storage/session/message（上游 v1.0.0 迁移代码证实存在的旧布局）两个形状都收，缺失目录静默跳过。
     // 本机无 opencode 数据目录，schema 未经真实数据验证（见 parse 注释）。
@@ -263,15 +421,6 @@ where F: Fn() -> bool + Send + Sync {
             let tx=db.transaction().map_err(|_|"lock")?;
             if !append{tx.execute("DELETE FROM events WHERE path=?",[&path_key]).map_err(|_|"db")?;}
             let mut file_events_count=0;
-            let mut insert=|v:&Value,offset:u64,state:&mut State|->Result<(),String>{
-                if let Some(event)=parse(&source,v,state,offset){
-                    file_events_count+=1;
-                    // Codex ids are timestamp+content hashes and survive a move into
-                    // archived_sessions; only offset-derived ids need the path namespace.
-                    let id=if event.id.starts_with("offset-")||["cline","roocode","kilocode"].contains(&source.as_str()){format!("{path_key}/{}",event.id)}else{event.id};
-                    tx.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path,event_id) DO UPDATE SET input=MAX(input,excluded.input),output=MAX(output,excluded.output),cache_read=MAX(cache_read,excluded.cache_read),cache_write=MAX(cache_write,excluded.cache_write),partial=MAX(partial,excluded.partial)",params![path_key,source,id,event.ts,event.model,event.counts[0],event.counts[1],event.counts[2],event.counts[3],event.partial as u8]).map_err(|_|"record")?;
-                }Ok(())
-            };
             file.seek(SeekFrom::Start(offset)).map_err(|_|"seek")?;
             if jsonl {
                 let mut reader=BufReader::new(file);
@@ -282,21 +431,36 @@ where F: Fn() -> bool + Send + Sync {
                     let mut line=vec![];let read=reader.by_ref().take(2*1024*1024+1).read_until(b'\n',&mut line).map_err(|_|"line")?;
                     if read==0{break}if read>2*1024*1024{return Err("oversized line".into())}
                     if !line.ends_with(b"\n"){break} // incomplete trailing record retried after append
-                    match serde_json::from_slice::<Value>(&line){Ok(v)=>insert(&v,offset,&mut state)?,Err(_)=>{skipped+=1;state.bad_lines+=1;}}
+                    match serde_json::from_slice::<Value>(&line){Ok(v)=>insert_value(&tx,&source,&path,&path_key,&v,offset,&mut state,&mut file_events_count)?,Err(_)=>{skipped+=1;state.bad_lines+=1;}}
                     offset+=read as u64;
                 }
+            }else if source=="kiro"{
+                // Kiro CLI 会话头（Round5d 项目三）：单对象多回合，事件不经过逐行 parse——
+                // kiro_header_events 直接产出每回合事件（侧车 prompt 时间戳 → end_timestamp 兜底）。
+                if metadata.len()>16*1024*1024{return Err("large json".into())}
+                let v:Value=serde_json::from_reader(file).map_err(|_|"json")?;
+                // 非会话头的 .json（误入该来源的其它文件）按 format 错误跳过（skipped++/partial），
+                // 与其它来源未知 JSON 的处理同口径。
+                if v.get("session_state").is_none(){return Err("format".into())}
+                let prompts=kiro_prompt_times(&path);
+                for event in kiro_header_events(&v,&mut state,&prompts){
+                    if is_cancelled(){return Err("已取消".into());}
+                    file_events_count+=1;
+                    put_event(&tx,&source,&path,&path_key,&event)?;
+                }
+                offset=metadata.len();
             }else{
                 if metadata.len()>16*1024*1024{return Err("large json".into())}
                 let v:Value=serde_json::from_reader(file).map_err(|_|"json")?;
                 // 单对象消息文件（OpenCode storage/message 的 <messageID>.json，Round5A 项目二）：
                 // 带 role 的对象直接按单条记录解析，不再要求数组形状。
                 let single=v.get("role").is_some();
-                if single{insert(&v,0,&mut state)?;}
+                if single{insert_value(&tx,&source,&path,&path_key,&v,0,&mut state,&mut file_events_count)?;}
                 let array=v.as_array().or_else(||v["messages"].as_array());
                 match array{
                     Some(a)=>for (i,line) in a.iter().enumerate(){
                         if i % 100 == 0 && is_cancelled() { return Err("已取消".into()); }
-                        insert(line,i as u64,&mut state)?;
+                        insert_value(&tx,&source,&path,&path_key,line,i as u64,&mut state,&mut file_events_count)?;
                     },
                     None=>if !single{return Err("format".into())},
                 }
@@ -388,7 +552,7 @@ where F: Fn() -> bool + Send + Sync {
         } else {
             "费用暂不可用；不把未知模型价格当作零。".into()
         },
-        "Gemini/OpenClaw/编辑器记录为部分格式覆盖；OpenCode、Qwen 本机无真实数据目录，解析未经真实数据验证；Copilot、导出来源及其他目录尚未支持。".into()
+        "Gemini/OpenClaw/编辑器记录为部分格式覆盖；OpenCode、Qwen、Kiro、CherryStudio 本机无真实数据目录，格式按上游实现/同构假设，未经真实数据验证（Kiro 的 IDE/globalStorage 与 SQLite 库只含估计值，不读取）；Copilot、导出来源及其他目录尚未支持。".into()
     ];
     if coverage_gap{
         notes.push("目录扫描达到上限或受限，已保留既有历史记录，统计可能存在缺口。".into());
@@ -1435,6 +1599,165 @@ pub fn session_detail(db_path:&Path,path:&str)->Result<SessionDetail,String>{
         collect(&d.path().join("projects"),"qwen",&mut out,&mut truncated,&||false).unwrap();
         assert_eq!(out.len(),1,"only .jsonl transcripts are collected for qwen");
         assert_eq!(out[0].0,"qwen");assert!(out[0].1.ends_with("sess.jsonl"));
+    }
+
+    // ---------- Round5d 项目三：Kiro / CherryStudio 来源（合成 fixture；两目录本机均不存在，
+    // 格式按上游 Pulse KiroReader / CherryStudioReader（commit 442a9c5）同构实现，未经真实数据验证） ----------
+
+    #[test]
+    fn cherrystudio_streaming_snapshots_fold_to_one_call_per_identity(){
+        // 上游 CherryStudioReaderTests.streamingSnapshotsMerge 的同构 fixture：同一次调用流式
+        // 落盘多份快照（同 requestId、计数增长），按身份在入库层 MAX 折叠为一次调用；恰好同
+        // 计数的另一次调用不并入；身份全缺的行独立成事件（partial + 异常）；非 assistant 行忽略。
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let t0=chrono::Utc::now().timestamp()-6*3_600;
+        let hour_of=|ts:i64|chrono::DateTime::from_timestamp(ts,0).unwrap().with_timezone(&chrono::Local).format("%H:00").to_string();
+        let line=|req:Option<&str>,uuid:Option<&str>,i:i64,o:i64,cr:i64,cw:i64,ts:i64|json!({
+            "type":"assistant","timestamp":chrono::DateTime::from_timestamp(ts,0).unwrap().to_rfc3339(),
+            "message":{"model":"claude-sonnet","usage":{"input_tokens":i,"output_tokens":o,"cache_read_input_tokens":cr,"cache_creation_input_tokens":cw}},
+            "requestId":req,"uuid":uuid});
+        let f=d.path().join("session-a.jsonl");
+        fs::write(&f,format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n",
+            line(Some("req-1"),Some("u1"),10,1,0,0,t0),
+            line(Some("req-1"),Some("u2"),100,5,30,20,t0+1),
+            line(Some("req-1"),Some("u3"),100,40,30,20,t0+2),
+            line(Some("req-2"),Some("u4"),100,40,30,20,t0+5*3_600),
+            line(None,None,5,6,0,0,t0+9*3_600),
+            json!({"type":"user","message":{"usage":{"input_tokens":999}}})
+        )).unwrap();
+        let s=scan_paths(7,&db,vec![("cherrystudio".into(),f)],false).unwrap();
+        assert_eq!(s.rows.len(),3,"3 次调用 = 3 个 day/hour 桶；流式快照与 user 行不另计");
+        let fold=&s.rows.iter().find(|r|r.hour==hour_of(t0)).unwrap();
+        assert_eq!((fold.input,fold.output,fold.cache_read,fold.cache_write),(100,40,30,20),"同身份快照按字段级最大值折叠为一次调用");
+        assert!(!fold.partial);
+        let r2=&s.rows.iter().find(|r|r.hour==hour_of(t0+5*3_600)).unwrap();
+        assert_eq!((r2.input,r2.output),(100,40),"恰好同计数 != 同一次调用");
+        let anon=&s.rows.iter().find(|r|r.hour==hour_of(t0+9*3_600)).unwrap();
+        assert_eq!((anon.input,anon.output),(5,6));
+        assert!(anon.partial,"身份全缺：无法去重，必须降级");
+        assert_eq!(s.anomalies,1);
+    }
+
+    #[test]
+    fn cherrystudio_session_copies_fold_by_event_id_not_double_counted(){
+        // 同一会话文件出现在两个根（V2/legacy 结构或跨目录复制件）：事件 id 带相对 projects
+        // 根的路径命名空间，统计按 (source,event_id) 折叠为一次调用；会话视图同样折叠为一行。
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let line=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"requestId":"req-x","uuid":"u1","message":{"id":"m1","model":"claude-sonnet","usage":{"input_tokens":100,"output_tokens":5}}}).to_string();
+        let a=d.path().join("a").join("projects").join("proj").join("s1.jsonl");
+        let b=d.path().join("b").join("projects").join("proj").join("s1.jsonl");
+        fs::create_dir_all(a.parent().unwrap()).unwrap();fs::create_dir_all(b.parent().unwrap()).unwrap();
+        fs::write(&a,format!("{line}\n")).unwrap();fs::write(&b,format!("{line}\n")).unwrap();
+        let s=scan_paths(7,&db,vec![("cherrystudio".into(),a),("cherrystudio".into(),b)],false).unwrap();
+        assert_eq!(s.rows.len(),1);
+        assert_eq!(s.rows[0].input,100,"两份复制件必须按 (source,event_id) 折叠，不得双计");
+        let rows=sessions(&db,None,0,SESSION_PAGE_SIZE).unwrap();
+        assert_eq!(rows.len(),1);assert_eq!(rows[0].input,100);assert_eq!(rows[0].title,"s1.jsonl");
+    }
+
+    #[test]
+    fn cherrystudio_v2_root_wins_same_relative_session(){
+        // V2 相对路径优先（上游 seenRelative「first root wins」）：两根同名会话只收 V2 的；
+        // legacy 独有会话照常收集。
+        let d=tempfile::tempdir().unwrap();
+        let v2=d.path().join("CherryStudio").join("Data").join("Agents").join(".claude").join("projects").join("pulse").join("session-a.jsonl");
+        let lg1=d.path().join("CherryStudio").join(".claude").join("projects").join("pulse").join("session-a.jsonl");
+        let lg2=d.path().join("CherryStudio").join(".claude").join("projects").join("pulse").join("session-b.jsonl");
+        for p in [&v2,&lg1,&lg2]{fs::create_dir_all(p.parent().unwrap()).unwrap();fs::write(p,"{}\n").unwrap();}
+        let mut truncated=false;let mut out=vec![];
+        collect_cherry_roots(&d.path(),&mut out,&mut truncated,&||false).unwrap();
+        assert_eq!(out.len(),2,"同名相对会话只保留 V2 的；legacy 独有会话保留");
+        assert!(out[0].1.starts_with(&d.path().join("CherryStudio").join("Data")),"保留的 session-a 必须来自 V2 根");
+        assert!(out[1].1.ends_with("session-b.jsonl"));
+    }
+
+    #[test]
+    fn kiro_session_header_parses_turns_with_sidecar_prompt_timestamps(){
+        // 头文件是唯一实测计数器；事件时间取侧车 Prompt 行的最早时间，缺失退 end_timestamp
+        // （秒/毫秒自适应）；双零回合不算事件；负计数计入异常并钳 0、降级 partial；
+        // 模型缺失回退 "auto"；无 session_id → offset id 落路径命名空间；无时间证据不虚构。
+        fn turn(i:i64,o:i64,ids:Value,end:i64)->Value{json!({"input_token_count":i,"output_token_count":o,"message_ids":ids,"end_timestamp":end})}
+        let mut s=State::default();
+        let header=json!({
+            "session_id":"sess-k1","cwd":"D:/proj",
+            "session_state":{
+                "rts_model_state":{"model_info":{"model_id":"claude-sonnet"}},
+                "conversation_metadata":{"user_turn_metadatas":[
+                    turn(10,5,json!(["m-b","m-a"]),1_000),
+                    turn(0,0,json!(["m-zero"]),1_001),
+                    turn(3,1,json!([]),1_787_509_531_012),
+                    turn(-8,4,json!(["m-neg"]),1_002),
+                ]}
+            }});
+        let prompts=BTreeMap::from([("m-a".to_string(),1_787_509_531_020i64),("m-b".to_string(),1_787_509_531_010i64)]);
+        let ev=kiro_header_events(&header,&mut s,&prompts);
+        assert_eq!(ev.len(),3,"双零回合不发事件（零不是测量值）");
+        assert_eq!(ev[0].id,"sess-k1:0");
+        assert_eq!(ev[0].ts,1_787_509_531_010,"回合时间取 message_ids 在侧车中的最早时间");
+        assert_eq!(ev[0].counts,[10,5,0,0]);assert_eq!(ev[0].model,"claude-sonnet");assert!(!ev[0].partial);
+        assert_eq!(ev[1].counts,[3,1,0,0]);
+        assert_eq!(ev[1].ts,1_787_509_531,"毫秒 end_timestamp 自适应折秒（1_787_509_531_012ms）");
+        assert_eq!(ev[2].counts,[0,4,0,0],"负计数钳 0，不静默掩盖");
+        assert!(ev[2].partial);assert_eq!(s.anomalies,1);
+        // 模型缺失回退 "auto"（上游路由回退语义）；无 session_id → offset id。
+        let bare=json!({"session_state":{"conversation_metadata":{"user_turn_metadatas":[
+            {"input_token_count":7,"output_token_count":2,"end_timestamp":1_787_509_531_012i64}]}}});
+        let ev2=kiro_header_events(&bare,&mut State::default(),&BTreeMap::new());
+        assert_eq!(ev2[0].model,"auto");assert_eq!(ev2[0].id,"offset-0");
+        // 无任何时间证据（message_ids 无命中且无 end_timestamp）→ 不虚构时间，跳过。
+        let notime=json!({"session_state":{"conversation_metadata":{"user_turn_metadatas":[
+            {"input_token_count":7,"output_token_count":2,"message_ids":["ghost"]}]}}});
+        assert!(kiro_header_events(&notime,&mut State::default(),&BTreeMap::new()).is_empty());
+    }
+
+    #[test]
+    fn kiro_sessions_are_counted_in_scan(){
+        // 端到端：~/.kiro/sessions/cli 同构目录里的 .json 头 + 同 stem .jsonl 侧车（合成）。
+        // 事件时间取侧车 prompt 时间（早于 end_timestamp）；幂等重扫不重复计数。
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let t1=chrono::Utc::now().timestamp()-120;let t2=t1+1;
+        let header=json!({
+            "session_id":"sess-k2",
+            "session_state":{
+                "rts_model_state":{"model_info":{"model_id":"claude-sonnet"}},
+                "conversation_metadata":{"user_turn_metadatas":[
+                    {"input_token_count":1_000_000,"output_token_count":10,"message_ids":["p1"],"end_timestamp":(t1+5)*1000},
+                    {"input_token_count":7,"output_token_count":2,"message_ids":[],"end_timestamp":t2}]}}});
+        let sidecar=format!("{}\n{}\n",
+            json!({"kind":"Prompt","data":{"message_id":"p1","meta":{"timestamp":t1}}}),
+            json!({"kind":"Other","data":{"message_id":"zz","meta":{"timestamp":t1-100}}}));
+        let dir=d.path().join("sessions").join("cli");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("s1.json"),format!("{}\n",header)).unwrap();
+        fs::write(dir.join("s1.jsonl"),sidecar).unwrap();
+        let s=scan_paths(90,&db,vec![("kiro".into(),dir.join("s1.json"))],false).unwrap();
+        assert_eq!(s.changed_files,1);assert_eq!(s.skipped_files,0);assert!(!s.partial);
+        assert_eq!(s.rows.len(),1,"同模型同小时的两回合并入一个桶");
+        assert_eq!(s.rows[0].source,"kiro");assert_eq!(s.rows[0].model,"claude-sonnet");
+        assert_eq!((s.rows[0].input,s.rows[0].output),(1_000_007,12));
+        assert_eq!(s.rows[0].hour,chrono::DateTime::from_timestamp(t1,0).unwrap().with_timezone(&chrono::Local).format("%H:00").to_string(),"事件时间取侧车 prompt 时间而非 end_timestamp");
+        // 幂等重扫：头文件未变 → 不重解析，计数不翻倍。
+        let b=scan_paths(90,&db,vec![("kiro".into(),dir.join("s1.json"))],false).unwrap();
+        assert_eq!(b.changed_files,0);
+        assert_eq!(b.rows.iter().map(|r|r.input).sum::<u64>(),1_000_007);
+        // 会话视图：头文件即会话，标题=文件名尾段。
+        let rows=sessions(&db,None,0,SESSION_PAGE_SIZE).unwrap();
+        assert_eq!(rows.len(),1);assert_eq!(rows[0].title,"s1.json");assert_eq!(rows[0].events,2);
+    }
+
+    #[test]
+    fn kiro_discovery_only_takes_json_headers(){
+        // 只收 .json 会话头；同名 .jsonl 侧车不作为转录收集（无计数器，按需读取时间戳）。
+        let d=tempfile::tempdir().unwrap();
+        let cli=d.path().join("sessions").join("cli");
+        fs::create_dir_all(&cli).unwrap();
+        fs::write(cli.join("s1.json"),"{}").unwrap();
+        fs::write(cli.join("s1.jsonl"),"").unwrap();
+        let mut truncated=false;let mut out=vec![];
+        collect(&d.path(),"kiro",&mut out,&mut truncated,&||false).unwrap();
+        assert_eq!(out.len(),1,"only .json session headers are collected for kiro");
+        assert_eq!(out[0].0,"kiro");assert!(out[0].1.ends_with("s1.json"));
     }
     #[test]
     fn extra_scan_paths_collect_and_count(){

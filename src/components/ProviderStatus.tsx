@@ -39,30 +39,30 @@ export function ProviderStatus({ active = true }: { active?: boolean }) {
   const rows = entries ?? [];
   return <div className="space-y-2 pt-2">
     <div className="flex flex-wrap items-center gap-3">
-      <h3 className="text-sm font-semibold text-zinc-200">{t('spend.provider_status.title')}</h3>
-      <button disabled={loading} className="bg-zinc-800 px-3 py-1 rounded text-sm disabled:opacity-40 cursor-pointer" onClick={() => void refresh()}>
+      <h3 className="text-sm font-semibold text-[var(--text-1)]">{t('spend.provider_status.title')}</h3>
+      <button disabled={loading} className="bg-[var(--surface-3)] px-3 py-1 rounded text-sm disabled:opacity-40 cursor-pointer" onClick={() => void refresh()}>
         {loading ? t('spend.provider_status.fetching') : t('spend.provider_status.refresh')}
       </button>
-      <span className="text-xs text-zinc-500">{t('spend.provider_status.legend')}</span>
+      <span className="text-xs text-[var(--text-3)]">{t('spend.provider_status.legend')}</span>
     </div>
     {/* TODO(EN-backend)：error 为 Rust 侧消息，原样展示不翻译 */}
-    {error && <p className="text-amber-400 text-sm">{error}</p>}
+    {error && <p className="text-[var(--warn)] text-sm">{error}</p>}
     <ul className="text-sm space-y-1.5">
       {rows.map(e => (
         <li key={e.provider} className="flex flex-wrap items-center gap-x-2 gap-y-0.5" data-provider={e.provider}>
           <span aria-hidden className={`inline-block w-2.5 h-2.5 rounded-full ${indicatorColor(e.indicator)}`} />
-          <span className="text-zinc-300 font-medium">{e.display_name}</span>
-          <span className="text-zinc-400">{indicatorLabel(e.indicator, lang)}</span>
+          <span className="text-[var(--text-1)] font-medium">{e.display_name}</span>
+          <span className="text-[var(--text-2)]">{indicatorLabel(e.indicator, lang)}</span>
           {/* description 为状态页/Rust 侧返回，原样展示（TODO(EN-backend)） */}
-          {e.description && <span className="text-xs text-zinc-500">{e.description}</span>}
-          <span className="text-xs text-zinc-500">{t('spend.provider_status.updated_at', { time: formatUpdatedAt(e.updated_at) })}</span>
+          {e.description && <span className="text-xs text-[var(--text-3)]">{e.description}</span>}
+          <span className="text-xs text-[var(--text-3)]">{t('spend.provider_status.updated_at', { time: formatUpdatedAt(e.updated_at) })}</span>
         </li>
       ))}
       {NO_PUBLIC_ENDPOINT.map(([id, label]) => (
         <li key={id} className="flex flex-wrap items-center gap-x-2" data-provider={id}>
-          <span aria-hidden className="inline-block w-2.5 h-2.5 rounded-full border border-zinc-600" />
-          <span className="text-zinc-300 font-medium">{label}</span>
-          <span className="text-xs text-zinc-500">{t('spend.provider_status.no_endpoint')}</span>
+          <span aria-hidden className="inline-block w-2.5 h-2.5 rounded-full border border-[var(--border-strong)]" />
+          <span className="text-[var(--text-1)] font-medium">{label}</span>
+          <span className="text-xs text-[var(--text-3)]">{t('spend.provider_status.no_endpoint')}</span>
         </li>
       ))}
     </ul>

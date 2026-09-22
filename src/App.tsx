@@ -8,6 +8,7 @@ import {FloatingRail} from "./components/FloatingRail";
 import {UsageDetailCard} from "./components/UsageDetailCard";
 import {SettingsWindow} from "./pages/SettingsWindow";
 import {I18nProvider, normalizeLang, useLang} from "./lib/i18n";
+import {applyDocumentTheme} from "./lib/theme";
 
 function windowLabel(): string {
   try { return getCurrentWebviewWindow().label; } catch { return "main"; }
@@ -15,13 +16,14 @@ function windowLabel(): string {
 
 // Round5c 项目一：加载/致命错误提示走 i18n。二者只在 settings 为空（语言未知）时出现，
 // Provider 受控 lang 会回落 zh——文案经 useLang().t() 供词，语言可判定时自然跟随。
+// Round5d 项目一：颜色走语义令牌（浅色模式下同样可读）。
 function LoadingHint(){
   const {t}=useLang();
-  return <div className="p-3 bg-zinc-900 text-zinc-400 text-xs">{t("rail.loading")}</div>;
+  return <div className="p-3 bg-[var(--surface-2)] text-[var(--text-2)] text-xs">{t("rail.loading")}</div>;
 }
 function LoadError(){
   const {t}=useLang();
-  return <div className="p-4 bg-zinc-900 text-amber-300 text-sm">{t("rail.error.load_settings")}</div>;
+  return <div className="p-4 bg-[var(--surface-2)] text-[var(--warn)] text-sm">{t("rail.error.load_settings")}</div>;
 }
 
 /** The free-mode hover card lives in its own overlay window ("detail"); Rust tells it
@@ -64,6 +66,8 @@ function DetailOverlay() {
   // 正下/正上时水平居中对准图标。
   // B15：独立窗口同样执行减少动态设置（根元素标记只在 MainApp 挂，detail 窗口拿不到）。
   useEffect(()=>{document.documentElement.classList.toggle("reduce-motion",!!settings?.reduce_motion);},[settings?.reduce_motion]);
+  // Round5d 项目一：详情窗独立加载 settings，主题在自身根元素上同步。
+  useEffect(()=>{applyDocumentTheme(settings?.theme);},[settings?.theme]);
   const detailContentReady = !!settings && usages !== null;
   useEffect(()=>{
     if(!layout||!detailContentReady)return;
@@ -147,6 +151,10 @@ function MainApp({label}:{label:string}){
   },[]);
   // 减少动态效果：应用内开关挂到根元素，CSS 一处覆盖所有动画（A27）。
   useEffect(()=>{document.documentElement.classList.toggle("reduce-motion",!!settings?.reduce_motion);},[settings?.reduce_motion]);
+  // Round5d 项目一：主题走既有设置通道（settings.theme），同步到根元素 data-theme；
+  // index.css 的 [data-theme="light"] 据此切换语义令牌。设置保存经 settings-updated
+  // 事件回流，rail/settings/detail 三类窗口立即随主题。
+  useEffect(()=>{applyDocumentTheme(settings?.theme);},[settings?.theme]);
   useEffect(()=>{if(settings&&!error)void invoke("update_ui_ready").catch(()=>{});},[settings,error]);
   const content=error
     ?<LoadError/>

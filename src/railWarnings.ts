@@ -29,7 +29,9 @@ export interface RailResult {
   resetKey:string;
 }
 export const levelRank:Record<RailLevel,number>={unknown:-1,green:0,yellow:1,red:2};
-export const levelColor:Record<RailLevel,string>={unknown:'#71717a',green:'#10b981',yellow:'#f59e0b',red:'#ef4444'};
+// Round5d 项目一：预警四档颜色走语义令牌（内联 style 原生支持 var()），
+// 深浅主题下由 index.css 各自给出可读取值；RailWarningSettings 预览与实际档位同步变色。
+export const levelColor:Record<RailLevel,string>={unknown:'var(--text-3)',green:'var(--ok)',yellow:'var(--warn)',red:'var(--danger)'};
 // levelName 保持「按下标取词」的既有用法（RailWarningSettings 以 levelName[level] 直接索引），
 // 改为 getter：取值时机延迟到访问时，语言切换后立即生效。
 export const levelName:Record<RailLevel,string>={

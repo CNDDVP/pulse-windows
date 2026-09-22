@@ -7,7 +7,7 @@ import {
   extraPathSourceLabel, normalizedExtraPaths,
 } from '../lib/scanPaths';
 
-const inputCls = 'bg-zinc-800 p-1 rounded text-xs text-zinc-200 border border-white/10 focus:outline-none focus:border-emerald-500';
+const inputCls = 'bg-[var(--surface-3)] p-1 rounded text-xs text-[var(--text-1)] border border-[var(--border)] focus:outline-none focus:border-[var(--accent)]';
 
 /** 路径当前形态（scan_path_kind 返回；仅作逐条提示，不阻断保存）。 */
 type PathKind='missing'|'dir'|'other';
@@ -98,17 +98,17 @@ export function ScanPathsPanel({onSaved}:{onSaved?:(paths:Record<string,string[]
 
   const total = countExtraPaths(paths);
 
-  return <div className="bg-zinc-900/60 rounded-xl border border-white/5">
+  return <div className="bg-[var(--surface-2)] rounded-xl border border-[var(--border)]">
     <button type="button" aria-expanded={open} className="w-full flex items-center justify-between px-4 py-2.5 cursor-pointer text-left"
       onClick={() => setOpen(o => !o)}>
-      <span className="text-sm font-semibold text-zinc-200">{t('spend.scan_paths.title')}{total > 0 ? t('spend.scan_paths.added_count', {count: total}) : ''}</span>
-      <span className="text-xs text-zinc-400">{open ? t('spend.collapse') : t('spend.expand')}</span>
+      <span className="text-sm font-semibold text-[var(--text-1)]">{t('spend.scan_paths.title')}{total > 0 ? t('spend.scan_paths.added_count', {count: total}) : ''}</span>
+      <span className="text-xs text-[var(--text-2)]">{open ? t('spend.collapse') : t('spend.expand')}</span>
     </button>
     {open && <div className="px-4 pb-3 space-y-2">
-      <p className="text-[11px] text-zinc-500">{t('spend.scan_paths.description', {limit: EXTRA_PATHS_PER_SOURCE_LIMIT, scan: t('spend.scan')})}</p>
+      <p className="text-[11px] text-[var(--text-3)]">{t('spend.scan_paths.description', {limit: EXTRA_PATHS_PER_SOURCE_LIMIT, scan: t('spend.scan')})}</p>
       {/* 诚实口径（与 ledger.rs extra_scan_paths 注释、README 一致）：去重只按文件路径；
           嵌套不双计；稳定 id 来源的复制件按 (source,event_id) 折叠；路径命名空间 id 才会双计。 */}
-      <p className="text-[11px] text-amber-500/90">{t('spend.scan_paths.dedup_note')}</p>
+      <p className="text-[11px] text-[var(--warn)]">{t('spend.scan_paths.dedup_note')}</p>
       <div className="flex flex-wrap items-center gap-2">
         <select aria-label={t('spend.scan_paths.aria_source')} className={inputCls} value={source} onChange={e => { setSource(e.target.value); setAddErr(''); }}>
           {SPEND_SOURCES.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
@@ -116,25 +116,25 @@ export function ScanPathsPanel({onSaved}:{onSaved?:(paths:Record<string,string[]
         <input aria-label={t('spend.scan_paths.aria_dir', {label})} className={`${inputCls} flex-1 min-w-[16rem]`} placeholder={t('spend.scan_paths.placeholder', {source})}
           value={draft} onChange={e => { setDraft(e.target.value); setAddErr(''); }}
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
-        <button type="button" className="bg-zinc-800 px-3 py-1 rounded text-xs border border-white/10 cursor-pointer" onClick={add}>{t('spend.add')}</button>
-        <span className="text-[11px] text-zinc-500">{list.length}/{EXTRA_PATHS_PER_SOURCE_LIMIT}</span>
+        <button type="button" className="bg-[var(--surface-3)] px-3 py-1 rounded text-xs border border-[var(--border)] cursor-pointer" onClick={add}>{t('spend.add')}</button>
+        <span className="text-[11px] text-[var(--text-3)]">{list.length}/{EXTRA_PATHS_PER_SOURCE_LIMIT}</span>
       </div>
-      {addErr && <p className="text-xs text-amber-400">{addErr}</p>}
+      {addErr && <p className="text-xs text-[var(--warn)]">{addErr}</p>}
       {list.length > 0 && <ul className="space-y-1">
-        {list.map(dir => <li key={dir} className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-300 bg-zinc-800/40 rounded px-2 py-1">
+        {list.map(dir => <li key={dir} className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-1)] bg-[var(--surface-3)] rounded px-2 py-1">
           <span className="break-all">{dir}</span>
-          {hints[dir.trim()]==='missing' && <span className="text-[11px] text-amber-500/90">{t('spend.scan_paths.hint_missing')}</span>}
-          {hints[dir.trim()]==='other' && <span className="text-[11px] text-amber-500/90">{t('spend.scan_paths.hint_other')}</span>}
-          <button type="button" aria-label={t('spend.scan_paths.aria_delete', {dir})} className="text-zinc-500 hover:text-red-400 cursor-pointer shrink-0 ml-auto" onClick={() => remove(dir)}>{t('spend.delete')}</button>
+          {hints[dir.trim()]==='missing' && <span className="text-[11px] text-[var(--warn)]">{t('spend.scan_paths.hint_missing')}</span>}
+          {hints[dir.trim()]==='other' && <span className="text-[11px] text-[var(--warn)]">{t('spend.scan_paths.hint_other')}</span>}
+          <button type="button" aria-label={t('spend.scan_paths.aria_delete', {dir})} className="text-[var(--text-3)] hover:text-[var(--danger)] cursor-pointer shrink-0 ml-auto" onClick={() => remove(dir)}>{t('spend.delete')}</button>
         </li>)}
       </ul>}
       <div className="flex items-center gap-3">
-        <button disabled={busy} className="bg-emerald-700 px-3 py-1 rounded text-xs disabled:opacity-40 cursor-pointer" onClick={() => void save()}>{busy ? t('spend.saving') : t('spend.scan_paths.save')}</button>
-        <span className="text-[11px] text-zinc-500">{t('spend.scan_paths.save_scope')}</span>
+        <button disabled={busy} className="bg-[var(--accent-solid)] text-[var(--on-solid)] px-3 py-1 rounded text-xs disabled:opacity-40 cursor-pointer" onClick={() => void save()}>{busy ? t('spend.saving') : t('spend.scan_paths.save')}</button>
+        <span className="text-[11px] text-[var(--text-3)]">{t('spend.scan_paths.save_scope')}</span>
       </div>
-      {msg && <p className="text-xs text-emerald-400">{t(msg)}</p>}
+      {msg && <p className="text-xs text-[var(--ok)]">{t(msg)}</p>}
       {/* TODO(EN-backend)：err 为 Rust 侧消息，原样展示不翻译 */}
-      {err && <p className="text-xs text-amber-400">{err}</p>}
+      {err && <p className="text-xs text-[var(--warn)]">{err}</p>}
     </div>}
   </div>;
 }
