@@ -2,10 +2,12 @@
 import {it,expect,vi,afterEach} from 'vitest';
 import {render,fireEvent,screen,act,cleanup} from '@testing-library/react';
 import {ProviderStatus} from './ProviderStatus';
+import {I18nProvider, setLang} from '../lib/i18n';
 import {NO_PUBLIC_ENDPOINT,indicatorColor,indicatorLabel,formatUpdatedAt} from '../lib/providerStatus';
 const invoke=vi.hoisted(()=>vi.fn());
 vi.mock('@tauri-apps/api/core',()=>({invoke}));
-afterEach(()=>{cleanup();invoke.mockReset()});
+// en 抽查挂载受控 Provider 会把模块级语言置 en 且卸载不还原；每例后重置回 zh。
+afterEach(()=>{cleanup();invoke.mockReset();setLang('zh')});
 
 const callsOf=(name:string)=>invoke.mock.calls.filter((c:string[])=>c[0]===name);
 const entry=(over:Record<string,unknown>={})=>({
@@ -86,4 +88,26 @@ it('indicator helpers cover the four colors and formatUpdatedAt rejects garbage'
   expect(formatUpdatedAt(null)).toBe('—');
   expect(formatUpdatedAt('not-a-date')).toBe('—');
   expect(formatUpdatedAt('2026-09-23T05:42:11.123Z')).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+});
+
+it('indicatorLabel honours an explicit lang (en) without mutating module state',()=>{
+  // lib 纯函数直接传 lang；模块级当前语言保持 zh（末尾断言），供未迁移调用方兜底。
+  expect(indicatorLabel('operational','en')).toBe('Service operational');
+  expect(indicatorLabel('degraded','en')).toBe('Service degraded');
+  expect(indicatorLabel('outage','en')).toBe('Service outage');
+  expect(indicatorLabel('unknown','en')).toBe('Status unknown');
+  expect(indicatorLabel('operational')).toBe('服务正常');
+});
+
+it('en spot-check: heading, legend, honest endpoint note and updated-at render in English',async()=>{
+  invoke.mockImplementation((name:string)=>name==='fetch_provider_status'?Promise.resolve([entry()]):Promise.resolve());
+  render(<I18nProvider lang="en"><ProviderStatus active/></I18nProvider>);
+  await act(async()=>{});
+  expect(screen.getByText('Provider service status')).toBeTruthy();
+  expect(screen.getByText('Refresh status')).toBeTruthy();
+  expect(screen.getByText('Service operational')).toBeTruthy();
+  expect(screen.getByText(/Manual refresh, no automatic polling/)).toBeTruthy();
+  expect(screen.getByText(/green = operational \/ yellow = degraded \/ red = outage \/ gray = unknown/)).toBeTruthy();
+  expect(screen.getByText(/^Updated \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)).toBeTruthy();
+  expect(screen.getAllByText('This provider has no public status endpoint')).toHaveLength(NO_PUBLIC_ENDPOINT.length);
 });

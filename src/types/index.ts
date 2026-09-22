@@ -86,6 +86,9 @@ export interface AppSettings {
   /** Round5B 项目二：WSL 用量（opt-in 默认关）：开启后经 wsl.exe 只读读取默认发行版内的
    *  claude/qwen projects 转录并合并统计；不可用/失败静默降级并在统计说明中标注。 */
   token_spend_wsl?: boolean;
+  /** Round5c 项目一：界面语言（"zh" | "en"，默认 zh）。走既有设置通道持久化；
+   *  后端侧已登记同名默认字段（deny_unknown_fields），翻译只在前端词典内完成。 */
+  language?: "zh" | "en";
   notifications: NotificationSettings; hotkeys: HotkeySettings;
   providers: Record<string, ProviderConfig>;
 }

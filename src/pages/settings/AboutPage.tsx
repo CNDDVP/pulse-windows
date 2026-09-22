@@ -1,6 +1,7 @@
 import { UpdateCenter } from "./UpdateCenter";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useLang } from "../../lib/i18n";
 import { Section } from "./shared";
 import { btnGhost } from "./constants";
 
@@ -42,6 +43,7 @@ function sanitizePath(raw: string): string {
 }
 
 export function AboutPage({hasDraft}: {hasDraft: () => boolean}) {
+  const { t } = useLang();
   const [profile, setProfile] = useState<ProfileInfo | null>(null);
   const [profileStatus, setProfileStatus] = useState<ProfileStatus | null>(null);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
@@ -83,10 +85,10 @@ export function AboutPage({hasDraft}: {hasDraft: () => boolean}) {
     disarmConfirm();
     try {
       await invoke("clear_profile_credentials");
-      setMsg("已成功清除当前 Profile 关联的全部系统凭据。");
+      setMsg(t("settings.about.creds_cleared"));
       refreshProfile();
     } catch (e) {
-      setMsg(`清除失败: ${String(e)}`);
+      setMsg(t("settings.about.clear_fail", { err: String(e) }));
     }
   };
 
@@ -98,10 +100,10 @@ export function AboutPage({hasDraft}: {hasDraft: () => boolean}) {
     disarmConfirm();
     try {
       const newId = await invoke<string>("create_isolated_profile");
-      setMsg(`已生成新配置身份: ${newId.slice(0, 12)}...`);
+      setMsg(t("settings.about.profile_created", { id: newId.slice(0, 12) }));
       refreshProfile();
     } catch (e) {
-      setMsg(`操作失败: ${String(e)}`);
+      setMsg(t("settings.about.op_fail", { err: String(e) }));
     }
   };
 
@@ -113,10 +115,10 @@ export function AboutPage({hasDraft}: {hasDraft: () => boolean}) {
     disarmConfirm();
     try {
       const imported = await invoke<any>("import_installed_config");
-      setMsg(`已成功从安装版导入 ${Object.keys(imported.providers || {}).length} 个账号与凭据！`);
+      setMsg(t("settings.about.imported", { count: Object.keys(imported.providers || {}).length }));
       refreshProfile();
     } catch (e) {
-      setMsg(`导入失败: ${String(e)}`);
+      setMsg(t("settings.about.import_fail", { err: String(e) }));
     }
   };
 
@@ -126,43 +128,44 @@ export function AboutPage({hasDraft}: {hasDraft: () => boolean}) {
       const sanitizedExe = runtime?.exe_path ? sanitizePath(runtime.exe_path) : "[PATH]";
       const sanitizedDir = runtime?.data_dir ? sanitizePath(runtime.data_dir) : "[PATH]";
       const text = [
-        "=== Pulse 运行与诊断信息 ===",
-        `版本: v${runtime?.version || __APP_VERSION__}`,
-        `构建: ${runtime?.commit || __GIT_COMMIT__} · ${runtime?.build_time || __BUILD_TIME__}`,
-        `部署模式: ${runtime?.mode || "unknown"}`,
-        `配置身份: ${runtime?.profile_id || "unknown"}`,
-        `程序 SHA256: ${runtime?.exe_sha256 || "unknown"}`,
-        `数据目录: ${sanitizedDir}`,
-        `程序路径: ${sanitizedExe}`,
+        t("settings.about.copydiag.title"),
+        t("settings.about.copydiag.version", { v: `v${runtime?.version || __APP_VERSION__}` }),
+        t("settings.about.copydiag.build", { v: `${runtime?.commit || __GIT_COMMIT__} · ${runtime?.build_time || __BUILD_TIME__}` }),
+        t("settings.about.copydiag.mode", { v: runtime?.mode || "unknown" }),
+        t("settings.about.copydiag.profile", { v: runtime?.profile_id || "unknown" }),
+        t("settings.about.copydiag.sha", { v: runtime?.exe_sha256 || "unknown" }),
+        t("settings.about.copydiag.data_dir", { v: sanitizedDir }),
+        t("settings.about.copydiag.exe_path", { v: sanitizedExe }),
         "",
-        "=== 连接与读数诊断 ===",
+        t("settings.about.copydiag.conn_title"),
+        // rawDiag 为 Rust `diagnostics` 输出，原样拼入。TODO(EN-backend)
         rawDiag,
       ].join("\n");
       await navigator.clipboard.writeText(text);
-      setMsg("已复制脱敏诊断信息至剪贴板，可直接粘贴提交 Issue。");
+      setMsg(t("settings.about.copydiag.copied"));
     } catch (e) {
-      setMsg(`复制失败: ${String(e)}`);
+      setMsg(t("settings.about.copy_fail", { err: String(e) }));
     }
   };
 
   const rows: [string, string][] = [
-    ["版本", `v${runtime?.version || __APP_VERSION__}`],
-    ["构建", `${runtime?.commit || __GIT_COMMIT__} · ${runtime?.build_time || __BUILD_TIME__}`],
-    ["部署模式", profile?.mode === "portable" ? "便携版 (运行数据保存在 data/)" : profile?.mode === "custom_env" ? "自定义环境变量 (PULSE_DATA_DIR)" : "默认数据目录 (AppData；安装形态见更新方式)"],
-    ["配置身份", profile ? `${profile.profile_id.slice(0, 16)}...` : "正在读取..."],
-    ["程序 SHA256", runtime?.exe_sha256 ? `${runtime.exe_sha256.slice(0, 16)}...${runtime.exe_sha256.slice(-16)}` : "正在计算..."],
-    ["数据目录", runtime?.data_dir || "正在读取..."],
-    ["程序路径", runtime?.exe_path || "正在读取..."],
-    ["开源仓库", "https://github.com/CNDDVP/pulse-windows"],
-    ["技术栈", "Tauri 2 · Rust · React 19 · Tailwind CSS"],
+    [t("settings.about.row.version"), `v${runtime?.version || __APP_VERSION__}`],
+    [t("settings.about.row.build"), `${runtime?.commit || __GIT_COMMIT__} · ${runtime?.build_time || __BUILD_TIME__}`],
+    [t("settings.about.row.mode"), profile?.mode === "portable" ? t("settings.about.mode.portable") : profile?.mode === "custom_env" ? t("settings.about.mode.custom_env") : t("settings.about.mode.default")],
+    [t("settings.about.row.profile"), profile ? `${profile.profile_id.slice(0, 16)}...` : t("settings.about.reading")],
+    [t("settings.about.row.sha"), runtime?.exe_sha256 ? `${runtime.exe_sha256.slice(0, 16)}...${runtime.exe_sha256.slice(-16)}` : t("settings.about.hashing")],
+    [t("settings.about.row.data_dir"), runtime?.data_dir || t("settings.about.reading")],
+    [t("settings.about.row.exe_path"), runtime?.exe_path || t("settings.about.reading")],
+    [t("settings.about.row.repo"), "https://github.com/CNDDVP/pulse-windows"],
+    [t("settings.about.row.stack"), "Tauri 2 · Rust · React 19 · Tailwind CSS"],
   ];
 
   return (
     <div className="space-y-5 max-w-2xl">
       <Section
-        title="关于 Pulse for Windows"
+        title={t("settings.about.title")}
         icon="ℹ️"
-        aside={<button className={btnGhost} onClick={() => void handleCopyDiagnostics()}>📋 复制脱敏诊断</button>}
+        aside={<button className={btnGhost} onClick={() => void handleCopyDiagnostics()}>{t("settings.about.copy_diag_btn")}</button>}
       >
         <dl className="grid grid-cols-[6.5rem_1fr] gap-y-2 text-xs">
           {rows.map(([k, v]) => (
@@ -173,25 +176,25 @@ export function AboutPage({hasDraft}: {hasDraft: () => boolean}) {
           ))}
         </dl>
         <p className="text-[11px] text-zinc-400">
-          功能语义对齐上游 macOS 版 Pulse；凭据存储、开机启动、通知与快捷键均采用 Windows 原生实现。
+          {t("settings.about.alignment_note")}
         </p>
       </Section>
 
-      <Section title="配置与凭据隔离" icon="🛡️" subtitle="便携版与安装版凭据独立托管于系统凭据管理器。">
+      <Section title={t("settings.about.isolation_title")} icon="🛡️" subtitle={t("settings.about.isolation_sub")}>
         {profileStatus?.is_copy && (
           <div className="p-3 bg-amber-950/40 border border-amber-500/30 rounded-xl text-amber-200 text-xs flex items-start gap-2.5 mb-3">
             <span className="text-base leading-none">⚠️</span>
             <div className="flex-1 space-y-1">
-              <div className="font-medium text-amber-300">检测到便携目录已被复制（当前共享配置）</div>
+              <div className="font-medium text-amber-300">{t("settings.about.copy_detected")}</div>
               <div className="text-[11px] text-amber-200/80 leading-relaxed">
-                当前便携程序运行于新路径，但原程序路径仍存在。两份程序目前共享相同的配置身份与 Windows 凭据，可能导致数据相互覆盖。
+                {t("settings.about.copy_note")}
               </div>
               <div className="pt-1">
                 <button
                   className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 rounded-lg text-xs font-medium transition cursor-pointer"
                   onClick={() => void handleIsolateProfile()}
                 >
-                  {confirmArmed === "isolate_profile" ? "再次点击以确认分离" : "一键创建独立配置副本"}
+                  {confirmArmed === "isolate_profile" ? t("settings.about.isolate_confirm") : t("settings.about.isolate_btn")}
                 </button>
               </div>
             </div>
@@ -203,39 +206,39 @@ export function AboutPage({hasDraft}: {hasDraft: () => boolean}) {
               className={confirmArmed === "import_installed" ? "px-3 py-1.5 bg-emerald-950/50 text-emerald-300 border border-emerald-900/60 rounded-xl text-xs font-medium transition-all cursor-pointer" : btnGhost}
               onClick={() => void handleImportInstalled()}
             >
-              {confirmArmed === "import_installed" ? "再次点击以确认从安装版导入" : "从本机安装版导入配置与凭据"}
+              {confirmArmed === "import_installed" ? t("settings.about.import_confirm") : t("settings.about.import_btn")}
             </button>
           )}
           <button
             className={confirmArmed === "clear_creds" ? "px-3 py-1.5 bg-red-950/50 text-red-300 border border-red-900/60 rounded-xl text-xs font-medium transition-all cursor-pointer" : btnGhost}
             onClick={() => void handleClearCreds()}
           >
-            {confirmArmed === "clear_creds" ? "再次点击以确认清除凭据" : "清理本机关联凭据"}
+            {confirmArmed === "clear_creds" ? t("settings.about.clear_confirm") : t("settings.about.clear_btn")}
           </button>
           <button
             className={confirmArmed === "isolate_profile" ? "px-3 py-1.5 bg-amber-950/50 text-amber-300 border border-amber-900/60 rounded-xl text-xs font-medium transition-all cursor-pointer" : btnGhost}
             onClick={() => void handleIsolateProfile()}
           >
-            {confirmArmed === "isolate_profile" ? "再次点击以确认重新生成身份" : "重新生成独立配置身份"}
+            {confirmArmed === "isolate_profile" ? t("settings.about.regenerate_confirm") : t("settings.about.regenerate_btn")}
           </button>
         </div>
         {msg && <p className="text-xs text-emerald-400 mt-2">{msg}</p>}
       </Section>
 
-      <Section title="更新与开源" icon="⬆️" subtitle="本项目遵循 Apache-2.0 许可证公开开源。"
+      <Section title={t("settings.about.update_title")} icon="⬆️" subtitle={t("settings.about.license_note")}
         aside={
           <div className="flex gap-2">
-            <a className={btnGhost} href="https://github.com/CNDDVP/pulse-windows" target="_blank" rel="noreferrer" onClick={e => { e.preventDefault(); void invoke("open_external_url", { url: "https://github.com/CNDDVP/pulse-windows" }).catch(console.error); }}>GitHub 仓库</a>
-            <a className={btnGhost} href="https://github.com/qunqin24/Pulse" target="_blank" rel="noreferrer" onClick={e => { e.preventDefault(); void invoke("open_external_url", { url: "https://github.com/qunqin24/Pulse" }).catch(console.error); }}>上游项目</a>
+            <a className={btnGhost} href="https://github.com/CNDDVP/pulse-windows" target="_blank" rel="noreferrer" onClick={e => { e.preventDefault(); void invoke("open_external_url", { url: "https://github.com/CNDDVP/pulse-windows" }).catch(console.error); }}>{t("settings.about.repo_link")}</a>
+            <a className={btnGhost} href="https://github.com/qunqin24/Pulse" target="_blank" rel="noreferrer" onClick={e => { e.preventDefault(); void invoke("open_external_url", { url: "https://github.com/qunqin24/Pulse" }).catch(console.error); }}>{t("settings.about.upstream_link")}</a>
           </div>
         }>
         <UpdateCenter hasDraft={hasDraft} />
-        <div className="text-xs text-zinc-400">当前版本 v{runtime?.version || __APP_VERSION__} · 遵循零遥测、零数据回传隐私承诺</div>
+        <div className="text-xs text-zinc-400">{t("settings.about.privacy_line", { version: runtime?.version || __APP_VERSION__ })}</div>
       </Section>
 
-      <Section title="开发者集成" icon="🧩" subtitle="供脚本与状态栏读取，不含任何凭据。">
+      <Section title={t("settings.about.dev_title")} icon="🧩" subtitle={t("settings.about.dev_sub")}>
         <pre className="bg-zinc-950 border border-white/5 rounded-xl px-3 py-2 text-[11px] font-mono text-zinc-300 select-text overflow-auto">pulse-windows.exe --json</pre>
-        <p className="text-[11px] text-zinc-500">输出最近一次刷新的账号、服务商、套餐、各窗口用量与重置时间、读数来源与状态（JSON 数组）。</p>
+        <p className="text-[11px] text-zinc-500">{t("settings.about.dev_note")}</p>
       </Section>
     </div>
   );

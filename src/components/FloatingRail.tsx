@@ -6,7 +6,11 @@ import {UsageRing} from "./UsageRing";
 import {orderedIds} from "../ordering";
 import {providerName} from "../pages/settings/constants";
 import type {AppSettings,ProviderUsage} from "../types";
+import {useLang} from "../lib/i18n";
 export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:AppSettings}){
+  // t 的身份随语言切换而变（Provider 按 effective 重建），依赖它即可让含文案的
+  // useMemo 随语言重算，无需单独依赖 lang。
+  const {t}=useLang();
   // 拖动中的停靠边预览：Rust 在光标进出吸附带时已同步 resize 窗口，布局必须同时切换，
   // 否则横排内容被塞进竖排窄窗只露出一个图标。settings-updated 到达后清掉回真实值。
   const [dragSide,setDragSide]=useState<string|null>(null);
@@ -342,7 +346,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       const placeholder: ProviderUsage = {
         account_id: id,
         provider_id: cfg.provider_id,
-        display_name: cfg.label || providerName(cfg.provider_id),
+        display_name: cfg.label || providerName(cfg.provider_id, t),
         state: "loading",
         primary_percent: null,
         plan_name: null,
@@ -351,7 +355,7 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
         balances: [],
         error_code: null,
         error_message: null,
-        source: "等待查询",
+        source: t("rail.source.waiting"),
         checked_at: null,
         last_success_at: null,
         retry_after_seconds: null,
@@ -359,7 +363,8 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
       };
       return placeholder;
     });
-  }, [enabledIds, usages, settings.providers]);
+    // t 入 deps：占位读数的状态文案要随语言切换重算（t 的身份随语言变）。
+  }, [enabledIds, usages, settings.providers, t]);
 
   // Rail slots: an Antigravity account with split_model_groups renders one ring per model
   // group (same account, same refresh); everyone else is a single slot.
@@ -449,15 +454,15 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
             <button
               className="flex flex-col items-center justify-center p-2 text-center rounded-xl bg-indigo-950/70 hover:bg-indigo-900/90 border border-indigo-700/60 text-indigo-200 hover:text-white transition-all cursor-pointer group shadow-sm"
               onClick={() => void handleQuickAddAntigravity()}
-              title="检测到本地运行中的 Antigravity，点击一键接入"
+              title={t("rail.antigravity.hint")}
             >
               <span className="text-sm mb-0.5 animate-pulse">✨</span>
-              <span className="text-[10px] font-semibold leading-tight whitespace-nowrap">一键接入</span>
+              <span className="text-[10px] font-semibold leading-tight whitespace-nowrap">{t("rail.antigravity.quick_add")}</span>
               <span className="text-[9px] text-indigo-400 group-hover:text-indigo-300">Antigravity</span>
             </button>
           ) : (
             <button className="text-xs p-2 text-zinc-400 hover:text-zinc-200" onClick={() => void invoke("open_settings")}>
-              添加账号
+              {t("rail.add_account")}
             </button>
           )
         )}
@@ -468,8 +473,8 @@ export function FloatingRail({usages,settings}:{usages:ProviderUsage[];settings:
         whole window. Right-click opens rail menu; double-click expands. */}
     {!free && (
       <div
-        title={colorMode === "auto" ? (railWarning.shortReason || railWarning.reason) : colorMode === "custom" ? "固定颜色（不表示额度风险）" : "彩虹颜色（不表示额度风险）"}
-        aria-label="展开 Pulse"
+        title={colorMode === "auto" ? (railWarning.shortReason || railWarning.reason) : colorMode === "custom" ? t("rail.bar.color_custom") : t("rail.bar.color_rainbow")}
+        aria-label={t("rail.expand_aria")}
         onMouseEnter={enter}
         onDoubleClick={handleExpand}
         onContextMenu={e=>{e.preventDefault();void invoke("rail_menu_cmd").catch(()=>{})}}

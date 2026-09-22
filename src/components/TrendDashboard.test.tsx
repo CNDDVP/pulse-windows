@@ -2,9 +2,11 @@
 import {it,expect,vi,afterEach} from 'vitest';
 import {render,screen,fireEvent,act,cleanup} from '@testing-library/react';
 import {TrendDashboard} from './TrendDashboard';
+import {I18nProvider, setLang} from '../lib/i18n';
 const invoke=vi.hoisted(()=>vi.fn());
 vi.mock('@tauri-apps/api/core',()=>({invoke}));
-afterEach(()=>{cleanup();invoke.mockReset()});
+// en 抽查挂载受控 Provider 会把模块级语言置 en 且卸载不还原；每例后重置回 zh。
+afterEach(()=>{cleanup();invoke.mockReset();setLang('zh')});
 
 const payload={
   days:Array.from({length:14},(_,i)=>({day:`2026-09-${String(i+1).padStart(2,'0')}`,tokens:i===13?100:i===12?75:i+1,per_source:{}})),
@@ -92,4 +94,30 @@ it('debounces export clicks while one export is in flight',async()=>{
   await act(async()=>{resolveExport('D:\\data\\exports\\token-trend-x.json')});
   expect(screen.getByText(/已导出到 D:\\data\\exports\\token-trend-x\.json/)).toBeTruthy();
   expect((screen.getByText('导出趋势 JSON') as HTMLButtonElement).disabled).toBe(false);
+});
+
+it('en spot-check: description, metric cards with honest qualifiers, heatmap and candles render in English',async()=>{
+  invoke.mockImplementation((name:string)=>name==='trend_metrics'?Promise.resolve(payload):Promise.resolve());
+  const {container}=render(<I18nProvider lang="en"><TrendDashboard/></I18nProvider>);
+  await act(async()=>{});
+  // 描述与按钮。
+  expect(screen.getByText(/cross-year trend view/)).toBeTruthy();
+  expect(screen.getByText('Read trend')).toBeTruthy();
+  expect(screen.getByText('Export trend JSON')).toBeTruthy();
+  // 指标卡（含诚实口径限定语：「跨来源不去重」逐句对应）。
+  expect(screen.getByText('Active days')).toBeTruthy();
+  expect(screen.getByText('Active time')).toBeTruthy();
+  expect(screen.getByText('Not deduplicated across sources; parallel sessions accumulate')).toBeTruthy();
+  expect(screen.getByText('Counting back from today')).toBeTruthy();
+  expect(screen.getByText('14 days in the window')).toBeTruthy();
+  expect(container.textContent).toContain('64h 50m');
+  expect(container.textContent).toContain('14 days');
+  // 热力图与 K 线标题、图例（少/多 与色块同 div，textContent 断言）。
+  expect(screen.getByText('Daily usage heatmap')).toBeTruthy();
+  const legend = screen.getByText(/Less/);
+  expect(legend.textContent).toContain('Less');
+  expect(legend.textContent).toContain('More');
+  expect(screen.getByText('7-day bucketed candlesticks')).toBeTruthy();
+  expect(screen.getByText(/open = first day of the bucket/)).toBeTruthy();
+  expect(screen.getByText(/Peak 100 tokens\/day/)).toBeTruthy();
 });

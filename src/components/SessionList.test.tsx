@@ -2,9 +2,11 @@
 import {it,expect,vi,afterEach} from 'vitest';
 import {render,fireEvent,screen,act,cleanup} from '@testing-library/react';
 import {SessionList,SESSION_PAGE_SIZE,type SessionRow} from './SessionList';
+import {I18nProvider, setLang} from '../lib/i18n';
 const invoke=vi.hoisted(()=>vi.fn());
 vi.mock('@tauri-apps/api/core',()=>({invoke}));
-afterEach(()=>{cleanup();invoke.mockReset()});
+// en 抽查挂载受控 Provider 会把模块级语言置 en 且卸载不还原；每例后重置回 zh。
+afterEach(()=>{cleanup();invoke.mockReset();setLang('zh')});
 
 const row=(over:Record<string,unknown>={})=>({
   source:'claude',path:'k1',session:null,title:'abc123.jsonl',note:null,
@@ -133,4 +135,35 @@ it('shows the gate error when token spend statistics are disabled',async()=>{
   render(<SessionList active displayCurrency="USD" fxRate={7.2}/>);
   await act(async()=>{});
   expect(screen.getByText('Token 消耗统计未启用；请在常规设置中开启')).toBeTruthy();
+});
+
+it('en spot-check: headers, privacy note, detail truncation and filter render in English',async()=>{
+  invoke.mockImplementation((name:string)=>name==='token_spend_sessions'
+    ?Promise.resolve([row()])
+    :name==='token_spend_session_detail'
+      ?Promise.resolve({path:'k1',total:600,truncated:true,events:[
+        {ts:1_787_509_531,model:'claude-sonnet',input:100,output:20,cache_read:30,cache_write:5},
+        {ts:1_787_509_631,model:'claude-sonnet',input:1,output:1,cache_read:0,cache_write:0},
+      ]})
+      :Promise.resolve());
+  render(<I18nProvider lang="en"><SessionList active displayCurrency="USD" fxRate={7.2}/></I18nProvider>);
+  await act(async()=>{});
+  // 筛选与隐私口径说明。
+  expect(screen.getByText('All sources')).toBeTruthy();
+  expect(screen.getByText(/A session = one transcript file/)).toBeTruthy();
+  expect(screen.getByText(/transcript bodies are never read/)).toBeTruthy();
+  // 表头。
+  expect(screen.getByText('Session')).toBeTruthy();
+  expect(screen.getByText('Model')).toBeTruthy();
+  expect(screen.getByText('Events')).toBeTruthy();
+  expect(screen.getByText('Cost')).toBeTruthy();
+  // 展开明细：总数 + 截断提示（诚实口径：已达上限、仅显示最早 N 条）。
+  fireEvent.click(screen.getByText(/abc123\.jsonl/));
+  await act(async()=>{});
+  const detailLine=screen.getByText(/600 events in total/);
+  expect(detailLine.textContent).toContain('cap of 500 events has been reached');
+  expect(detailLine.textContent).toContain('only the earliest 2 are shown (truncated)');
+  expect(detailLine.textContent!.endsWith('.')).toBe(true);
+  // 明细表头复用共享列键。
+  expect(screen.getByText('Cache write')).toBeTruthy();
 });

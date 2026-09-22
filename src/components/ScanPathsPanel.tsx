@@ -1,6 +1,7 @@
 import {useEffect,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import {SPEND_SOURCES} from '../lib/spend';
+import {useLang} from '../lib/i18n';
 import {
   EXTRA_PATHS_PER_SOURCE_LIMIT, countExtraPaths, extraDirInputError,
   extraPathSourceLabel, normalizedExtraPaths,
@@ -30,6 +31,8 @@ export function ScanPathsPanel({onSaved}:{onSaved?:(paths:Record<string,string[]
   // 存在性提示（计划口径「存在性提示不阻断」）：只记录需要提示的路径（缺失 / 不是目录），
   // 查询失败静默无提示——提示是尽力而为，绝不拦保存。
   const [hints, setHints] = useState<Record<string, PathKind>>({});
+  // Round 5c：面板内全部用户可见文案走 t()（未包 Provider 时回落 zh，与旧测试一致）。
+  const {t,lang} = useLang();
 
   // 挂载即读一次（面板默认折叠，读取为纯内存查询）。
   useEffect(() => {
@@ -59,7 +62,7 @@ export function ScanPathsPanel({onSaved}:{onSaved?:(paths:Record<string,string[]
 
   const add = () => {
     setErr(''); setMsg(''); setAddErr('');
-    const e = extraDirInputError(draft, list);
+    const e = extraDirInputError(draft, list, lang);
     if (e) { setAddErr(e); return; }
     const dir = draft.trim();
     setPaths({...paths, [source]: [...list, dir]});
@@ -84,8 +87,9 @@ export function ScanPathsPanel({onSaved}:{onSaved?:(paths:Record<string,string[]
       const adopted = saved && typeof saved === 'object' ? saved : {};
       setPaths(adopted);
       onSaved?.(adopted);
-      setMsg('扫描路径已保存，下次「读取使用记录」生效');
+      setMsg('spend.scan_paths.saved');
     } catch (e) {
+      // TODO(EN-backend)：后端整表校验错误原样展示，不翻译。
       setErr(String(e));
     } finally {
       setBusy(false);
@@ -97,38 +101,39 @@ export function ScanPathsPanel({onSaved}:{onSaved?:(paths:Record<string,string[]
   return <div className="bg-zinc-900/60 rounded-xl border border-white/5">
     <button type="button" aria-expanded={open} className="w-full flex items-center justify-between px-4 py-2.5 cursor-pointer text-left"
       onClick={() => setOpen(o => !o)}>
-      <span className="text-sm font-semibold text-zinc-200">扫描路径{total > 0 ? `（已添加 ${total} 个目录）` : ''}</span>
-      <span className="text-xs text-zinc-400">{open ? '收起 ▴' : '展开 ▾'}</span>
+      <span className="text-sm font-semibold text-zinc-200">{t('spend.scan_paths.title')}{total > 0 ? t('spend.scan_paths.added_count', {count: total}) : ''}</span>
+      <span className="text-xs text-zinc-400">{open ? t('spend.collapse') : t('spend.expand')}</span>
     </button>
     {open && <div className="px-4 pb-3 space-y-2">
-      <p className="text-[11px] text-zinc-500">为各来源追加自定义扫描目录（绝对路径，每来源最多 {EXTRA_PATHS_PER_SOURCE_LIMIT} 条），保存后下次「读取使用记录」生效。目录可以不存在：缺失目录不阻断保存，扫描时按「来源未安装」静默跳过；列表逐条提示当前是否存在（不阻断）。</p>
+      <p className="text-[11px] text-zinc-500">{t('spend.scan_paths.description', {limit: EXTRA_PATHS_PER_SOURCE_LIMIT, scan: t('spend.scan')})}</p>
       {/* 诚实口径（与 ledger.rs extra_scan_paths 注释、README 一致）：去重只按文件路径；
           嵌套不双计；稳定 id 来源的复制件按 (source,event_id) 折叠；路径命名空间 id 才会双计。 */}
-      <p className="text-[11px] text-amber-500/90">注意：附加目录与默认扫描根只按文件路径去重。嵌套发现的同一文件不会重复计数；跨目录复制的文件对事件 id 稳定的来源（Claude / ZCode / Qwen / Codex / Gemini / OpenClaw / OpenCode）按 id 折叠、也不重复计数，但会重复解析并使文件计数翻倍；Cline / RooCode / KiloCode 等按路径命名空间生成事件 id 的来源，以及缺失 id 的事件，复制件会重复计入统计——为这些来源配置目录时应避免文件复制。</p>
+      <p className="text-[11px] text-amber-500/90">{t('spend.scan_paths.dedup_note')}</p>
       <div className="flex flex-wrap items-center gap-2">
-        <select aria-label="选择来源" className={inputCls} value={source} onChange={e => { setSource(e.target.value); setAddErr(''); }}>
+        <select aria-label={t('spend.scan_paths.aria_source')} className={inputCls} value={source} onChange={e => { setSource(e.target.value); setAddErr(''); }}>
           {SPEND_SOURCES.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
         </select>
-        <input aria-label={`${label} 附加目录`} className={`${inputCls} flex-1 min-w-[16rem]`} placeholder={`如 D:\\ai-logs\\${source}`}
+        <input aria-label={t('spend.scan_paths.aria_dir', {label})} className={`${inputCls} flex-1 min-w-[16rem]`} placeholder={t('spend.scan_paths.placeholder', {source})}
           value={draft} onChange={e => { setDraft(e.target.value); setAddErr(''); }}
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
-        <button type="button" className="bg-zinc-800 px-3 py-1 rounded text-xs border border-white/10 cursor-pointer" onClick={add}>添加</button>
+        <button type="button" className="bg-zinc-800 px-3 py-1 rounded text-xs border border-white/10 cursor-pointer" onClick={add}>{t('spend.add')}</button>
         <span className="text-[11px] text-zinc-500">{list.length}/{EXTRA_PATHS_PER_SOURCE_LIMIT}</span>
       </div>
       {addErr && <p className="text-xs text-amber-400">{addErr}</p>}
       {list.length > 0 && <ul className="space-y-1">
         {list.map(dir => <li key={dir} className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-300 bg-zinc-800/40 rounded px-2 py-1">
           <span className="break-all">{dir}</span>
-          {hints[dir.trim()]==='missing' && <span className="text-[11px] text-amber-500/90">目录不存在，扫描时静默跳过</span>}
-          {hints[dir.trim()]==='other' && <span className="text-[11px] text-amber-500/90">不是目录（可能是文件），扫描时跳过</span>}
-          <button type="button" aria-label={`删除 ${dir}`} className="text-zinc-500 hover:text-red-400 cursor-pointer shrink-0 ml-auto" onClick={() => remove(dir)}>删除</button>
+          {hints[dir.trim()]==='missing' && <span className="text-[11px] text-amber-500/90">{t('spend.scan_paths.hint_missing')}</span>}
+          {hints[dir.trim()]==='other' && <span className="text-[11px] text-amber-500/90">{t('spend.scan_paths.hint_other')}</span>}
+          <button type="button" aria-label={t('spend.scan_paths.aria_delete', {dir})} className="text-zinc-500 hover:text-red-400 cursor-pointer shrink-0 ml-auto" onClick={() => remove(dir)}>{t('spend.delete')}</button>
         </li>)}
       </ul>}
       <div className="flex items-center gap-3">
-        <button disabled={busy} className="bg-emerald-700 px-3 py-1 rounded text-xs disabled:opacity-40 cursor-pointer" onClick={() => void save()}>{busy ? '正在保存…' : '保存扫描路径'}</button>
-        <span className="text-[11px] text-zinc-500">保存对本面板内全部来源的改动整体生效。</span>
+        <button disabled={busy} className="bg-emerald-700 px-3 py-1 rounded text-xs disabled:opacity-40 cursor-pointer" onClick={() => void save()}>{busy ? t('spend.saving') : t('spend.scan_paths.save')}</button>
+        <span className="text-[11px] text-zinc-500">{t('spend.scan_paths.save_scope')}</span>
       </div>
-      {msg && <p className="text-xs text-emerald-400">{msg}</p>}
+      {msg && <p className="text-xs text-emerald-400">{t(msg)}</p>}
+      {/* TODO(EN-backend)：err 为 Rust 侧消息，原样展示不翻译 */}
       {err && <p className="text-xs text-amber-400">{err}</p>}
     </div>}
   </div>;

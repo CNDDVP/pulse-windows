@@ -4,9 +4,11 @@ import {BotMark} from "./BotMark";
 import {percentText,elapsed,pickElapsedWindow,timingWindows} from "../presentation";
 import type {AppSettings,ProviderUsage} from "../types";
 import {detectEvent} from "./botEvents";
+import {useLang} from "../lib/i18n";
 
 export function UsageRing({usage,settings,onHover,refreshing,onClick,onDoubleClick,lookX=0,dataKey}:
   {usage:ProviderUsage;settings:AppSettings;onHover:()=>void;refreshing?:boolean;onClick?:()=>void;onDoubleClick?:()=>void;lookX?:number;dataKey?:string}){
+  const {t,lang}=useLang();
   const [systemReduced,setSystemReduced]=useState(()=>window.matchMedia?.('(prefers-reduced-motion: reduce)').matches??false);
   useEffect(()=>{const media=window.matchMedia?.('(prefers-reduced-motion: reduce)');if(!media)return;const update=()=>setSystemReduced(media.matches);update();media.addEventListener('change',update);return()=>media.removeEventListener('change',update)},[]);
   const reduced=settings.reduce_motion||systemReduced;
@@ -56,12 +58,13 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,onDoubleCli
   const secPct=sec?(settings.display_mode==="remaining"?Math.max(0,100-sec.used_percent):sec.used_percent):0;
   const secColor=sec?(sec.exhausted||sec.used_percent>=red?"#ef4444":sec.used_percent>=amber?"#f97316":"#10b981"):"#71717a";
   const isErr=!["live","stale"].includes(usage.state);
+  // TODO(EN-backend)：usage.error_message 是 Rust 侧消息，原样嵌入标题不做翻译映射。
   const ringTitle=isErr
-    ?`${usage.display_name}（${usage.error_message||"连接异常"} · 点击重新测试连接）`
-    : `${usage.display_name} ${percentText(effectiveUsage,settings.display_mode)}`;
+    ?t("rail.ring.error_title",{name:usage.display_name,detail:usage.error_message||t("rail.ring.error_fallback")})
+    : `${usage.display_name} ${percentText(effectiveUsage,settings.display_mode,lang)}`;
   return <button ref={ref} data-account={dataKey??usage.account_id}
     onClick={()=>{if(useBot)setPokeCount(c=>c+1);onClick?.();}} onDoubleClick={onDoubleClick}
-    onMouseEnter={()=>{setHovered(true);onHover();}} onMouseLeave={()=>setHovered(false)} onFocus={onHover} title={`${ringTitle}${clock!==null?` · ${timingWindows(usage,cfg).find(w=>w.id===timed?.id)?.period_note??""}`:""}`}
+    onMouseEnter={()=>{setHovered(true);onHover();}} onMouseLeave={()=>setHovered(false)} onFocus={onHover} title={`${ringTitle}${clock!==null?` · ${timingWindows(usage,cfg,lang).find(w=>w.id===timed?.id)?.period_note??""}`:""}`}
     className={`shrink-0 flex flex-col items-center p-1 text-xs rounded-lg focus:outline-none ${reduced?"":"hover:scale-105 transition-transform duration-150"}`}>
     <div className="relative w-11 h-11 flex items-center justify-center">
       <svg viewBox="0 0 44 44" className="w-11 h-11 -rotate-90">
@@ -87,6 +90,6 @@ export function UsageRing({usage,settings,onHover,refreshing,onClick,onDoubleCli
         </div>
       )}
     </div>
-    <span className={`text-[11px] font-medium mt-0.5 ${dark ? "text-zinc-300" : "text-zinc-700"}`}>{percentText(effectiveUsage,settings.display_mode)}</span>
+    <span className={`text-[11px] font-medium mt-0.5 ${dark ? "text-zinc-300" : "text-zinc-700"}`}>{percentText(effectiveUsage,settings.display_mode,lang)}</span>
   </button>;
 }

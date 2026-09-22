@@ -2,14 +2,16 @@ import {RailWarningSettings} from "./RailWarningSettings";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, MonitorOption, ProviderUsage, ProxyDetection, NetworkTestResult } from "../../types";
+import { normalizeLang, useLang } from "../../lib/i18n";
 import { Section, Row, Field, Switch } from "./shared";
-import { selectCls, btnGhost, timeText, PROVIDERS } from "./constants";
+import { selectCls, btnGhost, timeText, PROVIDERS, providerName } from "./constants";
 
 export function GeneralPage({ settings, update, screens, usages, busy, onRefreshAll, toast }: {
   settings: AppSettings; update: (patch: Partial<AppSettings>) => void; screens: MonitorOption[];
   usages: ProviderUsage[]; busy: boolean; onRefreshAll: () => Promise<void>;
   toast: (type: "success" | "info" | "error", text: string) => void;
 }) {
+  const { t } = useLang();
   const [startup, setStartup] = useState<boolean | null>(null);
   const [isPortable, setIsPortable] = useState(false);
   const [proxyInfo, setProxyInfo] = useState<ProxyDetection | null>(null);
@@ -28,12 +30,12 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
       const res = await invoke<NetworkTestResult>("test_network_connection", { target: null });
       setTestResult(res);
       if (res.ok) {
-        toast("success", `连接成功 (${res.duration_ms}ms)`);
+        toast("success", t("settings.general.conn_ok", { ms: res.duration_ms }));
       } else {
-        toast("error", `连接测试失败: ${res.error || "未知错误"}`);
+        toast("error", t("settings.general.conn_test_fail", { err: res.error || t("settings.general.unknown_error") }));
       }
     } catch (e) {
-      toast("error", `测试失败: ${String(e)}`);
+      toast("error", t("settings.general.test_fail", { err: String(e) }));
     } finally {
       setTestingProxy(false);
     }
@@ -45,24 +47,24 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
 
   return (
     <div className="space-y-5 max-w-2xl">
-      <Section title="悬浮栏" icon="🖥️" subtitle="修改即保存，立即生效。">
-        <Row title="显示悬浮栏" subtitle="关闭后 Pulse 仍在托盘运行并继续刷新。">
-          <Switch checked={settings.show_rail} onChange={v => update({ show_rail: v })} label="显示悬浮栏" />
+      <Section title={t("settings.general.rail_section")} icon="🖥️" subtitle={t("settings.general.rail_section_sub")}>
+        <Row title={t("settings.general.show_rail")} subtitle={t("settings.general.show_rail_sub")}>
+          <Switch checked={settings.show_rail} onChange={v => update({ show_rail: v })} label={t("settings.general.show_rail")} />
         </Row>
-        <Row title="跟随当前活动显示器" subtitle="鼠标在哪块屏，悬浮栏就贴到哪块屏。">
-          <Switch checked={settings.follow_active_display} onChange={v => update({ follow_active_display: v, ...(v ? { monitor_name: null } : {}) })} label="跟随当前活动显示器" />
+        <Row title={t("settings.general.follow_display")} subtitle={t("settings.general.follow_display_sub")}>
+          <Switch checked={settings.follow_active_display} onChange={v => update({ follow_active_display: v, ...(v ? { monitor_name: null } : {}) })} label={t("settings.general.follow_display")} />
         </Row>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label="固定显示器" hint={settings.follow_active_display ? "已跟随活动显示器，此项不生效" : undefined}>
+          <Field label={t("settings.general.fixed_monitor")} hint={settings.follow_active_display ? t("settings.general.fixed_monitor_following") : undefined}>
             <select className={selectCls} disabled={settings.follow_active_display} value={settings.monitor_name || ""} onChange={e => update({ monitor_name: e.target.value || null })}>
-              <option value="">自动（当前显示器）</option>
+              <option value="">{t("settings.general.monitor_auto")}</option>
               {screens.map(m => <option key={m.name} value={m.name}>{m.label}</option>)}
-              {settings.monitor_name && !screens.some(m => m.name === settings.monitor_name) && <option value={settings.monitor_name}>{settings.monitor_name}（当前未连接）</option>}
+              {settings.monitor_name && !screens.some(m => m.name === settings.monitor_name) && <option value={settings.monitor_name}>{t("settings.general.monitor_offline", { name: settings.monitor_name })}</option>}
             </select>
           </Field>
-          <Field label="贴靠位置">
+          <Field label={t("settings.general.dock_side")}>
             <select className={selectCls} value={settings.dock_side} onChange={e => update({ dock_side: e.target.value as AppSettings["dock_side"] })}>
-              <option value="right">屏幕右侧</option><option value="left">屏幕左侧</option><option value="top">屏幕顶部</option><option value="free">自由浮动</option>
+              <option value="right">{t("settings.general.dock_right")}</option><option value="left">{t("settings.general.dock_left")}</option><option value="top">{t("settings.general.dock_top")}</option><option value="free">{t("settings.general.dock_free")}</option>
             </select>
           </Field>
         </div>
@@ -70,74 +72,88 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
           <div className="pt-2 border-t border-white/5 grid grid-cols-2 gap-4">
             {(["free_x", "free_y"] as const).map(k => (
               <label key={k} className="block space-y-1">
-                <div className="flex justify-between text-xs text-zinc-400"><span>{k === "free_x" ? "横向位置" : "纵向位置"}</span><span className="font-mono">{Math.round(settings[k] * 100)}%</span></div>
-                <input type="range" min={0} max={1} step={0.01} value={settings[k]} aria-label={k === "free_x" ? "横向位置" : "纵向位置"} onChange={e => update({ [k]: Number(e.target.value) } as Partial<AppSettings>)} className="w-full accent-emerald-500" />
+                <div className="flex justify-between text-xs text-zinc-400"><span>{t(k === "free_x" ? "settings.general.pos_x" : "settings.general.pos_y")}</span><span className="font-mono">{Math.round(settings[k] * 100)}%</span></div>
+                <input type="range" min={0} max={1} step={0.01} value={settings[k]} aria-label={t(k === "free_x" ? "settings.general.pos_x" : "settings.general.pos_y")} onChange={e => update({ [k]: Number(e.target.value) } as Partial<AppSettings>)} className="w-full accent-emerald-500" />
               </label>
             ))}
           </div>
         )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-white/5">
-          <Field label="鼠标移开后自动折叠" hint={settings.dock_side === "free" ? "自由浮动模式下不会自动折叠。" : "折叠后贴边收缩为呼吸细线，悬停展开。"}>
+          <Field label={t("settings.general.auto_collapse")} hint={settings.dock_side === "free" ? t("settings.general.auto_collapse_free") : t("settings.general.auto_collapse_hint")}>
             <select disabled={settings.dock_side === "free"} className={selectCls} value={settings.auto_collapse_seconds} onChange={e => update({ auto_collapse_seconds: Number(e.target.value) })}>
-              <option value={0}>不折叠</option><option value={1}>1 秒</option><option value={2}>2 秒</option><option value={3}>3 秒</option><option value={5}>5 秒</option><option value={10}>10 秒</option>
+              <option value={0}>{t("settings.general.collapse_off")}</option><option value={1}>{t("settings.general.collapse_1s")}</option><option value={2}>{t("settings.general.collapse_2s")}</option><option value={3}>{t("settings.general.collapse_3s")}</option><option value={5}>{t("settings.general.collapse_5s")}</option><option value={10}>{t("settings.general.collapse_10s")}</option>
             </select>
           </Field>
-          <Row title="全屏应用运行时隐藏" subtitle="前台全屏游戏或视频时自动隐藏。">
-            <Switch checked={settings.hide_fullscreen} onChange={v => update({ hide_fullscreen: v })} label="全屏应用运行时隐藏" />
+          <Row title={t("settings.general.hide_fullscreen")} subtitle={t("settings.general.hide_fullscreen_sub")}>
+            <Switch checked={settings.hide_fullscreen} onChange={v => update({ hide_fullscreen: v })} label={t("settings.general.hide_fullscreen")} />
           </Row>
         </div>
       </Section>
 
       <RailWarningSettings settings={settings} usages={usages} update={update} busy={busy} onRefreshAll={onRefreshAll}/>
 
-      <Section title="外观与指标" icon="🎨">
+      <Section title={t("settings.general.appearance_section")} icon="🎨">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label="主题">
+          <Field label={t("settings.general.theme")}>
             <select className={selectCls} value={settings.theme} onChange={e => update({ theme: e.target.value as AppSettings["theme"] })}>
-              <option value="obsidian">暗夜黑 (Obsidian)</option><option value="translucent">半透明磨砂 (Translucent)</option>
+              <option value="obsidian">{t("settings.general.theme_obsidian")}</option><option value="translucent">{t("settings.general.theme_translucent")}</option>
             </select>
           </Field>
-          <Field label="百分比含义">
+          {/* Round5c 项目一：界面语言（默认 zh）。走既有设置通道持久化（update_settings）；
+              选项名固定用各自语言的本地写法，不随界面语言翻译。切换经 settings-updated
+              事件回流到各窗口的 I18nProvider，立即生效。 */}
+          <Field label={t("settings.general.language")}>
+            <select
+              className={selectCls}
+              value={normalizeLang(settings.language)}
+              aria-label={t("settings.general.language")}
+              onChange={e => update({ language: normalizeLang(e.target.value) })}
+            >
+              <option value="zh">简体中文</option>
+              <option value="en">English</option>
+            </select>
+          </Field>
+          <Field label={t("settings.general.percent_meaning")}>
             <select className={selectCls} value={settings.display_mode} onChange={e => update({ display_mode: e.target.value as AppSettings["display_mode"] })}>
-              <option value="used">已使用（如 20% 已用）</option><option value="remaining">剩余（如 80% 剩余）</option>
+              <option value="used">{t("settings.general.percent_used")}</option><option value="remaining">{t("settings.general.percent_remaining")}</option>
             </select>
           </Field>
-          <Field label="变红阈值" hint="只改变琥珀→红的视觉分界；服务商报告耗尽时始终为红。">
+          <Field label={t("settings.general.red_threshold")} hint={t("settings.general.red_threshold_hint")}>
             <select className={selectCls} value={settings.warning_threshold} onChange={e => update({ warning_threshold: Number(e.target.value) })}>
-              {[60, 70, 75, 80, 85, 90, 95].map(v => <option key={v} value={v}>{v}% 时变红</option>)}
+              {[60, 70, 75, 80, 85, 90, 95].map(v => <option key={v} value={v}>{t("settings.general.red_at", { v })}</option>)}
             </select>
           </Field>
         </div>
         <div className="pt-2 border-t border-white/5 space-y-3">
-          <Row title="显示时间外环（所有账号）" subtitle="在主圆环外侧显示白色细线，表示所选周期已流逝的比例（不代表额度使用率）；每个账号可在其设置页指定跟随的周期。">
-            <Switch checked={settings.show_elapsed} onChange={v => update({ show_elapsed: v })} label="显示时间外环（所有账号）" />
+          <Row title={t("settings.general.show_elapsed")} subtitle={t("settings.general.show_elapsed_sub")}>
+            <Switch checked={settings.show_elapsed} onChange={v => update({ show_elapsed: v })} label={t("settings.general.show_elapsed")} />
           </Row>
-          <Row title="显示耗尽预测" subtitle="按周期平均速度估算是否会在重置前用满。">
-            <Switch checked={settings.forecast} onChange={v => update({ forecast: v })} label="显示耗尽预测" />
+          <Row title={t("settings.general.forecast")} subtitle={t("settings.general.forecast_sub")}>
+            <Switch checked={settings.forecast} onChange={v => update({ forecast: v })} label={t("settings.general.forecast")} />
           </Row>
-          <Row title="减少动态效果" subtitle="动画机器人等连续动画改为静态表情；系统开启“减少动态”时同样生效。">
-            <Switch checked={settings.reduce_motion} onChange={v => update({ reduce_motion: v })} label="减少动态效果" />
+          <Row title={t("settings.general.reduce_motion")} subtitle={t("settings.general.reduce_motion_sub")}>
+            <Switch checked={settings.reduce_motion} onChange={v => update({ reduce_motion: v })} label={t("settings.general.reduce_motion")} />
           </Row>
         </div>
       </Section>
 
-      <Section title="成本显示" icon="💱" subtitle="Token 消耗页与详情卡的费用按此币种显示；换算只发生在界面显示层，估算与导出始终保留 USD 原值。">
+      <Section title={t("settings.general.cost_section")} icon="💱" subtitle={t("settings.general.cost_section_sub")}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label="成本显示币种">
+          <Field label={t("settings.general.cost_currency")}>
             <select className={selectCls} value={settings.display_currency ?? "USD"} onChange={e => update({ display_currency: e.target.value === "CNY" ? "CNY" : "USD" })}>
-              <option value="USD">USD（美元，估算原值）</option>
-              <option value="CNY">CNY（人民币，固定汇率折算）</option>
+              <option value="USD">{t("settings.general.currency_usd")}</option>
+              <option value="CNY">{t("settings.general.currency_cny")}</option>
             </select>
           </Field>
           <Field
-            label="USD → CNY 汇率"
-            hint={(settings.display_currency ?? "USD") === "CNY" ? "默认 7.2，可手改；仅用于界面折算，不联网取汇。" : "币种为 USD 时直接显示估算原值，汇率不生效。"}
+            label={t("settings.general.rate_label")}
+            hint={(settings.display_currency ?? "USD") === "CNY" ? t("settings.general.rate_hint_cny") : t("settings.general.rate_hint_usd")}
           >
             <input
               type="number" min={0.01} max={10000} step={0.01}
               className={selectCls}
               disabled={(settings.display_currency ?? "USD") !== "CNY"}
-              aria-label="USD 转 CNY 固定汇率"
+              aria-label={t("settings.general.rate_aria")}
               value={settings.usd_cny_rate ?? 7.2}
               onChange={e => {
                 // 钳制在后端校验界（0.01~10000）内，避免保存被整表拒绝。
@@ -147,58 +163,58 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
             />
           </Field>
         </div>
-        <p className="text-[11px] text-zinc-500">固定汇率只存在本机设置中；凡经折算显示的数字都会就近标注「按固定汇率 X.XX 估算」。</p>
+        <p className="text-[11px] text-zinc-500">{t("settings.general.cost_note")}</p>
       </Section>
 
-      <Section title="刷新" icon="⚡" aside={<button className={btnGhost} disabled={busy} onClick={() => void onRefreshAll().catch(e => toast("error", `刷新失败: ${String(e)}`))}>立即刷新全部</button>}>
+      <Section title={t("settings.general.refresh_section")} icon="⚡" aside={<button className={btnGhost} disabled={busy} onClick={() => void onRefreshAll().catch(e => toast("error", t("settings.general.refresh_fail", { err: String(e) })))}>{t("settings.general.refresh_now")}</button>}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label="自动刷新间隔" hint="读取失败时按退避自动拉长；服务商返回 Retry-After 时以其为准。">
+          <Field label={t("settings.general.refresh_interval")} hint={t("settings.general.refresh_interval_hint")}>
             <select className={selectCls} value={settings.refresh_interval_seconds} onChange={e => update({ refresh_interval_seconds: Number(e.target.value) })}>
-              {[[30, "30 秒"], [60, "1 分钟"], [120, "2 分钟"], [300, "5 分钟"], [600, "10 分钟"], [900, "15 分钟"], [1800, "30 分钟"]].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-              {![30, 60, 120, 300, 600, 900, 1800].includes(settings.refresh_interval_seconds) && <option value={settings.refresh_interval_seconds}>{settings.refresh_interval_seconds} 秒</option>}
+              {[[30, "settings.general.interval_30s"], [60, "settings.general.interval_1m"], [120, "settings.general.interval_2m"], [300, "settings.general.interval_5m"], [600, "settings.general.interval_10m"], [900, "settings.general.interval_15m"], [1800, "settings.general.interval_30m"]].map(([v, k]) => <option key={v} value={v}>{t(k as string)}</option>)}
+              {![30, 60, 120, 300, 600, 900, 1800].includes(settings.refresh_interval_seconds) && <option value={settings.refresh_interval_seconds}>{t("settings.general.interval_secs", { n: settings.refresh_interval_seconds })}</option>}
             </select>
           </Field>
-          <Field label="上次成功刷新">
-            <div className={`${selectCls} font-mono`}>{lastSuccess ? timeText(lastSuccess) : "尚无成功读数"}</div>
+          <Field label={t("settings.general.last_refresh")}>
+            <div className={`${selectCls} font-mono`}>{lastSuccess ? timeText(lastSuccess) : t("settings.general.no_refresh_yet")}</div>
           </Field>
         </div>
       </Section>
 
-      <Section title="监控授权与数据隐私" icon="🛡️" subtitle="零云端上传、零遥测。未授权的服务商不会进行任何网络连接与本地日志监控。">
-        <Row title="Token 消耗统计" subtitle="启用本地 Token 消耗扫描与历史记录分析。">
-          <Switch checked={settings.token_spend_enabled} onChange={v => update({ token_spend_enabled: v })} label="Token 消耗统计" />
+      <Section title={t("settings.general.privacy_section")} icon="🛡️" subtitle={t("settings.general.privacy_section_sub")}>
+        <Row title={t("settings.general.token_spend")} subtitle={t("settings.general.token_spend_sub")}>
+          <Switch checked={settings.token_spend_enabled} onChange={v => update({ token_spend_enabled: v })} label={t("settings.general.token_spend")} />
         </Row>
-        <Row title="WSL 用量（实验性）" subtitle="开启后经 wsl.exe 只读读取默认 WSL 发行版内的 Claude Code / Qwen Code 会话日志（~/.claude、~/.qwen 的 projects 目录，仅 .jsonl），与 Windows 侧同来源合并统计；文件路径键加 wsl: 前缀，同会话双侧重复按事件 id 折叠。独立文件数预算 2000、单文件上限 256KB；wsl.exe 不可用或读取失败时静默跳过并在统计说明中标注。SQLite 类来源（OpenCode 等）不支持 WSL 读取。">
-          <Switch checked={settings.token_spend_wsl ?? false} disabled={!settings.token_spend_enabled} onChange={v => update({ token_spend_wsl: v })} label="WSL 用量" />
+        <Row title={t("settings.general.wsl_usage")} subtitle={t("settings.general.wsl_usage_sub")}>
+          <Switch checked={settings.token_spend_wsl ?? false} disabled={!settings.token_spend_enabled} onChange={v => update({ token_spend_wsl: v })} label={t("settings.general.wsl_usage_short")} />
         </Row>
         <div className="pt-2 border-t border-white/5 space-y-3">
           <div className="flex items-center justify-between">
-            <div className="text-xs text-zinc-300 font-medium">已授权服务商 ({settings.authorized_providers?.length || 0} / {PROVIDERS.length})</div>
+            <div className="text-xs text-zinc-300 font-medium">{t("settings.general.authorized_count", { n: settings.authorized_providers?.length || 0, total: PROVIDERS.length })}</div>
             <div className="flex items-center gap-2">
               <button
                 className="text-[11px] text-emerald-400 hover:text-emerald-300 cursor-pointer"
                 onClick={() => update({ authorized_providers: PROVIDERS.map(p => p[0]) })}
               >
-                全选
+                {t("settings.general.select_all")}
               </button>
               <span className="text-zinc-600">·</span>
               <button
                 className="text-[11px] text-emerald-400 hover:text-emerald-300 cursor-pointer"
                 onClick={() => update({ authorized_providers: ["claude", "codex", "antigravity", "kimi"] })}
               >
-                常用
+                {t("settings.general.select_common")}
               </button>
               <span className="text-zinc-600">·</span>
               <button
                 className="text-[11px] text-zinc-400 hover:text-zinc-300 cursor-pointer"
                 onClick={() => update({ authorized_providers: [] })}
               >
-                取消全部
+                {t("settings.general.select_none")}
               </button>
             </div>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto p-1 bg-zinc-950/40 rounded-xl border border-white/5">
-            {PROVIDERS.map(([pid, name]) => {
+            {PROVIDERS.map(([pid]) => {
               const checked = settings.authorized_providers?.includes(pid) ?? false;
               return (
                 <label key={pid} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/5 cursor-pointer text-xs text-zinc-300">
@@ -213,7 +229,7 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
                     }}
                     className="accent-emerald-500 rounded"
                   />
-                  <span className="truncate">{name}</span>
+                  <span className="truncate">{providerName(pid, t)}</span>
                 </label>
               );
             })}
@@ -221,8 +237,8 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
         </div>
       </Section>
 
-      <Section title="网络代理" icon="🌐" subtitle="配置请求各服务商 Quota API 时使用的网络代理。Antigravity 本地服务始终走回环直连。">
-        <Row title="代理模式" subtitle="支持自动跟随系统/环境变量、手动 HTTP/HTTPS 或手动 SOCKS5 代理。">
+      <Section title={t("settings.general.proxy_section")} icon="🌐" subtitle={t("settings.general.proxy_section_sub")}>
+        <Row title={t("settings.general.proxy_mode")} subtitle={t("settings.general.proxy_mode_sub")}>
           <select
             className={selectCls}
             value={settings.network_proxy?.mode || "auto"}
@@ -233,15 +249,15 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
               }
             })}
           >
-            <option value="auto">自动探测（系统代理 / 环境变量）</option>
-            <option value="manual_http">手动 HTTP / HTTPS 代理</option>
-            <option value="manual_socks5">手动 SOCKS5 代理</option>
+            <option value="auto">{t("settings.general.proxy_auto")}</option>
+            <option value="manual_http">{t("settings.general.proxy_http")}</option>
+            <option value="manual_socks5">{t("settings.general.proxy_socks5")}</option>
           </select>
         </Row>
         {settings.network_proxy?.mode !== "auto" && (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-white/5">
             <div className="sm:col-span-2">
-              <Field label="代理主机 (Host)">
+              <Field label={t("settings.general.proxy_host")}>
                 <input
                   type="text"
                   className={selectCls}
@@ -257,7 +273,7 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
               </Field>
             </div>
             <div>
-              <Field label="端口 (Port)">
+              <Field label={t("settings.general.proxy_port")}>
                 <input
                   type="number"
                   min={1}
@@ -279,40 +295,41 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
         <div className="pt-2 border-t border-white/5 space-y-2">
           <div className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-950/60 border border-white/5 text-xs">
             <div className="space-y-0.5">
-              <span className="text-zinc-400">检测结果：</span>
-              <span className="text-zinc-200 font-mono font-medium ml-1">{proxyInfo?.detail || "正在检测…"}</span>
+              <span className="text-zinc-400">{t("settings.general.detect_result")}</span>
+              {/* proxyInfo.detail 为 Rust 探测输出，原样展示。TODO(EN-backend) */}
+              <span className="text-zinc-200 font-mono font-medium ml-1">{proxyInfo?.detail || t("settings.general.detecting")}</span>
             </div>
             <div className="flex gap-2 shrink-0">
-              <button className={btnGhost} onClick={fetchProxyInfo}>重新检测</button>
+              <button className={btnGhost} onClick={fetchProxyInfo}>{t("settings.general.redetect")}</button>
               <button className={btnGhost} disabled={testingProxy} onClick={() => void handleTestProxy()}>
-                {testingProxy ? "测试中…" : "检测连接"}
+                {testingProxy ? t("settings.general.testing") : t("settings.general.test_conn")}
               </button>
             </div>
           </div>
           {testResult && (
             <div className={`p-2.5 rounded-xl border text-xs font-mono ${testResult.ok ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-300" : "bg-red-950/30 border-red-500/40 text-red-300"}`}>
-              {testResult.ok ? `✓ 连接成功 (${testResult.duration_ms}ms) · 目标 ${testResult.target}` : `✗ 连接失败 · ${testResult.error || "未知错误"}`}
+              {testResult.ok ? t("settings.general.test_ok_line", { ms: testResult.duration_ms, target: testResult.target }) : t("settings.general.test_fail_line", { err: testResult.error || t("settings.general.unknown_error") })}
             </div>
           )}
         </div>
       </Section>
 
-      <Section title="启动" icon="🚀">
+      <Section title={t("settings.general.startup_section")} icon="🚀">
         <Row
-          title="登录 Windows 时启动 Pulse"
-          subtitle={isPortable ? "便携版开机自启将指向当前 EXE 路径；移动文件夹后首次手动运行将自动修复路径。" : startup === null ? "无法读取系统启动项状态" : "写入当前用户的注册表 Run 项，状态直接读自系统。"}
+          title={t("settings.general.startup_login")}
+          subtitle={isPortable ? t("settings.general.startup_portable_sub") : startup === null ? t("settings.general.startup_unknown_sub") : t("settings.general.startup_registry_sub")}
           disabled={startup === null}
         >
           <Switch
             checked={!!startup}
             disabled={startup === null}
-            label="登录 Windows 时启动 Pulse"
-            onChange={v => void invoke<boolean>("set_startup", { enable: v }).then(s => { setStartup(s); toast("success", s ? "已加入开机启动" : "已移除开机启动"); }).catch(e => toast("error", String(e)))}
+            label={t("settings.general.startup_login")}
+            onChange={v => void invoke<boolean>("set_startup", { enable: v }).then(s => { setStartup(s); toast("success", s ? t("settings.general.startup_on") : t("settings.general.startup_off")); }).catch(e => toast("error", String(e)))}
           />
         </Row>
-        <Field label="启动后">
+        <Field label={t("settings.general.after_start")}>
           <select className={selectCls} value={settings.start_behavior} onChange={e => update({ start_behavior: e.target.value })}>
-            <option value="rail">显示悬浮栏</option><option value="settings">打开设置</option><option value="tray">仅驻留托盘（悬浮栏隐藏）</option>
+            <option value="rail">{t("settings.general.start_rail")}</option><option value="settings">{t("settings.general.start_settings")}</option><option value="tray">{t("settings.general.start_tray")}</option>
           </select>
         </Field>
       </Section>

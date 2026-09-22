@@ -1,6 +1,8 @@
 // Round4 项目三/四：TokenSpend 页表格与订阅面板共用的纯展示层计算。
 // ledger 数据结构不动；这里的聚合与后端 scan 的按分组求和口径一致。
 import type {SubscriptionRecord} from '../types';
+import {getLang, translate} from './i18n';
+import type {Lang} from './i18n';
 
 export interface SpendRow {
   source: string; model: string; day: string; hour: string;
@@ -101,12 +103,14 @@ export function savableSubscriptions(subs: Record<string, SubscriptionRecord>): 
 /**
  * 订阅面板口径提示：读取窗口未覆盖本月 1 日时，"本月成本" 实际只统计窗口内天数，数值偏低。
  * 返回 null 表示窗口已覆盖整月，无需提示。
+ * lang 缺省回落模块级语言（zh 兜底）；调用方（TokenSpend）显式传 useLang().lang。
  */
-export function monthCoverageNote(days: number, now = new Date()): string | null {
+export function monthCoverageNote(days: number, now = new Date(), lang: Lang = getLang()): string | null {
   if (!Number.isFinite(days) || days <= 0) return null;
   const first = new Date(now.getFullYear(), now.getMonth(), 1);
   const windowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1));
   if (windowStart <= first) return null;
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `读取窗口自 ${windowStart.getFullYear()}-${pad(windowStart.getMonth() + 1)}-${pad(windowStart.getDate())} 起，未覆盖月初，本月成本偏低。`;
+  const start = `${windowStart.getFullYear()}-${pad(windowStart.getMonth() + 1)}-${pad(windowStart.getDate())}`;
+  return translate(lang, "spend.month_coverage_note", {start});
 }

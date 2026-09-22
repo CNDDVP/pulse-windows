@@ -2,9 +2,11 @@
 import {it,expect,vi,afterEach} from 'vitest';
 import {render,fireEvent,screen,act,cleanup} from '@testing-library/react';
 import {ScanPathsPanel} from './ScanPathsPanel';
+import {I18nProvider, setLang} from '../lib/i18n';
 const invoke=vi.hoisted(()=>vi.fn());
 vi.mock('@tauri-apps/api/core',()=>({invoke}));
-afterEach(()=>{cleanup();invoke.mockReset()});
+// en 抽查挂载受控 Provider 会把模块级语言置 en 且卸载不还原；每例后重置回 zh。
+afterEach(()=>{cleanup();invoke.mockReset();setLang('zh')});
 
 const expand=()=>fireEvent.click(screen.getByText(/扫描路径/));
 const dirInput=()=>screen.getByLabelText(/附加目录$/) as HTMLInputElement;
@@ -198,4 +200,31 @@ it('trims and drops empty entries on save instead of sending them to the backend
   await act(async()=>{fireEvent.click(screen.getByText('保存扫描路径'));});
   const call=invoke.mock.calls.find(c=>c[0]==='save_token_spend_extra_paths');
   expect(call![1]).toEqual({paths:{claude:['D:\\pad']}});
+});
+
+it('en spot-check: descriptions, honest dedup note and input validation render in English',async()=>{
+  invoke.mockImplementation((name:string)=>name==='get_token_spend_extra_paths'
+    ?Promise.resolve({claude:['D:\\dup']}):Promise.resolve({}));
+  render(<I18nProvider lang="en"><ScanPathsPanel /></I18nProvider>);
+  await act(async()=>{fireEvent.click(screen.getByText(/Scan paths/));});
+  // 说明段（上限与「下次读取生效」口径）。
+  const desc=screen.getByText(/Append custom scan directories per source/);
+  expect(desc.textContent).toContain('at most 20 entries per source');
+  expect(desc.textContent).toContain('the next time you run "Read usage records"');
+  // 双计口径（诚实文案逐句对应，不弱化）：按文件路径去重 / 稳定 id 折叠 / 路径命名空间来源会双计。
+  expect(screen.getByText(/deduplicated only by file path/)).toBeTruthy();
+  expect(screen.getByText(/folded by event id/)).toBeTruthy();
+  expect(screen.getByText(/KiloCode/)).toBeTruthy();
+  expect(screen.getByText(/copies are counted twice/)).toBeTruthy();
+  // 校验提示（lib 层经 translate(lang) 取词）。
+  const dirInput=()=>screen.getByLabelText(/additional directory$/) as HTMLInputElement;
+  fireEvent.change(dirInput(),{target:{value:'logs\\custom'}});
+  fireEvent.click(screen.getByText('Add'));
+  expect(screen.getByText('Must be an absolute path (e.g. D:\\logs or \\\\server\\share)')).toBeTruthy();
+  fireEvent.change(dirInput(),{target:{value:' D:\\dup '}});
+  fireEvent.click(screen.getByText('Add'));
+  expect(screen.getByText('This directory has already been added')).toBeTruthy();
+  // 删除按钮 aria 与存在性提示。
+  expect(screen.getByLabelText('Delete D:\\dup')).toBeTruthy();
+  expect(screen.getByText(`1/20`)).toBeTruthy();
 });

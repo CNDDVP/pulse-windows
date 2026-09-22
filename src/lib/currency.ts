@@ -3,6 +3,9 @@
 // 凡是经此处折算出的数字，界面必须就近标注「按固定汇率 X.XX 估算」。
 // 汇率是纯本地设置（默认 7.2，可手改），绝不联网取汇。
 
+import { getLang, translate } from "./i18n";
+import type { Lang } from "./i18n";
+
 export type DisplayCurrency = "USD" | "CNY";
 
 export const USD_CNY_DEFAULT_RATE = 7.2;
@@ -32,9 +35,14 @@ export function formatMoney(amount: number, c: DisplayCurrency): string {
   return `${currencySymbol(c)}${amount.toFixed(2)}`;
 }
 
-/** 换算口径标注：USD 显示估算原值，不需要标注；CNY 经固定汇率折算，必须就近标注。 */
-export function rateEstimateNote(c: DisplayCurrency, rate: number): string {
-  return c === "CNY" ? `按固定汇率 ${normalizeRate(rate).toFixed(2)} 估算` : "";
+/**
+ * 换算口径标注：USD 显示估算原值，不需要标注；CNY 经固定汇率折算，必须就近标注。
+ * lang 缺省回落模块级语言（zh 兜底）；已迁移的组件应显式传 useLang().lang，
+ * 避免受控 Provider 切换语言的首帧取到旧语言。尚未迁移的调用方（detail 域
+ * UsageDetailCard）暂走模块级默认——迁移时请同样显式传 lang。
+ */
+export function rateEstimateNote(c: DisplayCurrency, rate: number, lang: Lang = getLang()): string {
+  return c === "CNY" ? translate(lang, "spend.rate_estimate_note", { rate: normalizeRate(rate).toFixed(2) }) : "";
 }
 
 /**

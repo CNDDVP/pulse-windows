@@ -2,10 +2,12 @@
 import {it,expect,vi,afterEach} from 'vitest';
 import {render,fireEvent,screen,act,cleanup} from '@testing-library/react';
 import {SubscriptionPanel} from './SubscriptionPanel';
+import {I18nProvider, setLang} from '../lib/i18n';
 import type {SubscriptionRecord} from '../types';
 const invoke=vi.hoisted(()=>vi.fn());
 vi.mock('@tauri-apps/api/core',()=>({invoke}));
-afterEach(()=>{cleanup();invoke.mockReset()});
+// en 抽查挂载受控 Provider 会把模块级语言置 en 且卸载不还原；每例后重置回 zh。
+afterEach(()=>{cleanup();invoke.mockReset();setLang('zh')});
 
 const subs=(over:Record<string,SubscriptionRecord>={}):Record<string,SubscriptionRecord>=>({...over});
 const usd=(price:number):SubscriptionRecord=>({price,currency:'USD',cycle_days:30,start_date:'',note:''});
@@ -80,4 +82,32 @@ it('a failed read keeps the panel usable and shows the error instead of fake dat
   await act(async()=>{fireEvent.click(screen.getByText(/订阅记录/));});
   expect(screen.getByText('设置读取失败')).toBeTruthy();
   expect(screen.getAllByText('—')).toHaveLength(20);
+});
+
+it('en spot-check: header, columns, honest description and save flow render in English',async()=>{
+  invoke.mockImplementation((name:string)=>name==='get_subscriptions'
+    ?Promise.resolve({})
+    :name==='save_subscriptions'?Promise.resolve({}):Promise.resolve());
+  const {container}=render(
+    <I18nProvider lang="en">
+      <SubscriptionPanel subs={{claude:usd(5)}} onSubsChange={()=>{}} monthCostBySource={{claude:10}} monthCoverageNote={null} displayCurrency="CNY" fxRate={7.2} />
+    </I18nProvider>);
+  fireEvent.click(screen.getByText(/Subscriptions/));
+  // 折叠/展开、说明段（诚实口径逐句对应）。
+  expect(screen.getByText('Collapse ▴')).toBeTruthy();
+  expect(screen.getByText(/Multiple = this month's estimated cost ÷ subscription price/)).toBeTruthy();
+  expect(screen.getByText(/for reference only, and do not represent actual billing/)).toBeTruthy();
+  // 表头与 aria 标签。
+  expect(screen.getByText('Subscription price')).toBeTruthy();
+  expect(screen.getByText('Cycle (days)')).toBeTruthy();
+  expect(screen.getByText('Used this month (estimated)')).toBeTruthy();
+  expect(screen.getByLabelText('Claude Code subscription price')).toBeTruthy();
+  // CNY 换算 + 固定汇率口径标注（英译不弱化）。
+  expect(container.textContent).toContain('¥72.00');
+  expect(container.textContent).toContain('estimated at the fixed exchange rate 7.20');
+  expect(container.textContent).toContain('(the raw estimate is in USD)');
+  // 保存流程：按钮与成功提示走英译（msg 以词典键存取，渲染时取词）。
+  await act(async()=>{fireEvent.click(screen.getByText('Save subscription records'));});
+  expect(screen.getByText('Subscription records saved')).toBeTruthy();
+  expect(screen.getByText(/Enter 0 or leave the price empty/)).toBeTruthy();
 });

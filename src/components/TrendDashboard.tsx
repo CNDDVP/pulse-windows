@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {candles,compactTokens,formatActiveTime,heatmapColumns,type TrendMetrics} from "./trendMetrics";
+import {useLang} from "../lib/i18n";
 
 // 5 档配色（level 0..4）：空档 → 最深 → 最亮，GitHub 贡献格风格。
 const LEVEL_BG = ["bg-zinc-800", "bg-emerald-900", "bg-emerald-700", "bg-emerald-500", "bg-emerald-300"];
@@ -17,13 +18,15 @@ function MetricCard({ label, value, sub }: { label: string; value: string; sub?:
 
 /** 7 天分桶 K 线（OHLC）：SVG 自绘，涨绿跌红；每桶悬停显示起止日期与四值。 */
 function CandleChart({ buckets }: { buckets: ReturnType<typeof candles> }) {
+  // Round 5c：aria 与悬停 title 走 t()（未包 Provider 时回落 zh，与旧测试一致）。
+  const { t } = useLang();
   if (!buckets.length) return null;
   const W = 700, H = 160, pad = 18;
   const max = Math.max(...buckets.map(k => k.high), 1);
   const step = W / buckets.length;
   const y = (v: number) => H - pad - (v / max) * (H - pad * 2);
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-40 mt-1" role="img" aria-label="7 天分桶 K 线">
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-40 mt-1" role="img" aria-label={t("spend.trend.candles_title")}>
       <line x1={0} x2={W} y1={H - pad} y2={H - pad} stroke="currentColor" className="text-zinc-700" strokeWidth={1} />
       {buckets.map((k, i) => {
         const cx = (i + 0.5) * step;
@@ -33,7 +36,7 @@ function CandleChart({ buckets }: { buckets: ReturnType<typeof candles> }) {
         const bodyW = Math.max(step * 0.5, 2);
         return (
           <g key={k.start} className="trend-candle" data-up={k.up ? "1" : "0"}>
-            <title>{`${k.start} ~ ${k.end}：开 ${compactTokens(k.open)}，收 ${compactTokens(k.close)}，最高 ${compactTokens(k.high)}，最低 ${compactTokens(k.low)}`}</title>
+            <title>{t("spend.trend.candle_title", { start: k.start, end: k.end, open: compactTokens(k.open), close: compactTokens(k.close), high: compactTokens(k.high), low: compactTokens(k.low) })}</title>
             <line x1={cx} x2={cx} y1={y(k.high)} y2={y(k.low)} stroke={color} strokeWidth={1.5} />
             <rect x={cx - bodyW / 2} y={top} width={bodyW} height={Math.max(bottom - top, 2)} fill={color} rx={1} />
             {(i % 4 === 0 || i === buckets.length - 1) && (
@@ -53,6 +56,8 @@ export function TrendDashboard({ active = true }: { active?: boolean }) {
   const [error, setError] = useState("");
   const [exported, setExported] = useState("");
   const [exporting, setExporting] = useState(false);
+  // Round 5c：仪表盘全部用户可见文案走 t()（未包 Provider 时回落 zh，与旧测试一致）。
+  const { t } = useLang();
   // 与 TokenSpend 同款请求序号：切走页签后到达的旧回包不得覆盖新状态。
   const request = useRef(0);
 
@@ -64,6 +69,7 @@ export function TrendDashboard({ active = true }: { active?: boolean }) {
       if (seq === request.current) setMetrics(m);
     } catch (e) {
       const s = String(e);
+      // 「已取消」为后端哨兵；TODO(EN-backend)：Rust 侧消息原样展示，不翻译。
       if (seq === request.current && s !== "已取消" && !s.includes("已取消")) setError(s);
     } finally {
       if (seq === request.current) setBusy(false);
@@ -107,43 +113,44 @@ export function TrendDashboard({ active = true }: { active?: boolean }) {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-zinc-400">跨年趋势视图，以每日归档为主数据源（本地午夜切天，最多 370 天滚动窗口）。</p>
+      <p className="text-sm text-zinc-400">{t("spend.trend.description")}</p>
       <div className="flex gap-3">
-        <button disabled={busy} className="bg-emerald-700 px-3 rounded disabled:opacity-40" onClick={() => void load()}>{busy ? "正在读取…" : "读取趋势"}</button>
-        <button disabled={!days.length || exporting} className="bg-zinc-800 px-3 rounded disabled:opacity-40" onClick={() => void doExport()}>{exporting ? "正在导出…" : "导出趋势 JSON"}</button>
+        <button disabled={busy} className="bg-emerald-700 px-3 rounded disabled:opacity-40" onClick={() => void load()}>{busy ? t("spend.scanning") : t("spend.trend.load")}</button>
+        <button disabled={!days.length || exporting} className="bg-zinc-800 px-3 rounded disabled:opacity-40" onClick={() => void doExport()}>{exporting ? t("spend.exporting") : t("spend.trend.export")}</button>
       </div>
+      {/* TODO(EN-backend)：error 为 Rust 侧消息，原样展示不翻译 */}
       {error && <p className="text-amber-400">{error}</p>}
-      {exported && <p className="text-xs text-emerald-400 break-all">已导出到 {exported}</p>}
-      {!hasData && !busy && !error && <p className="text-sm text-zinc-500">暂无归档数据；先在「汇总」页签读取使用记录，归档会随后续扫描累积。</p>}
+      {exported && <p className="text-xs text-emerald-400 break-all">{t("spend.exported_to", { path: exported })}</p>}
+      {!hasData && !busy && !error && <p className="text-sm text-zinc-500">{t("spend.trend.empty", { summary: t("spend.tab.summary") })}</p>}
       {hasData && (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            <MetricCard label="活跃天数" value={`${metrics?.active_days ?? 0} 天`} sub={`窗口共 ${days.length} 天`} />
-            <MetricCard label="活跃时间" value={formatActiveTime(metrics?.active_seconds ?? 0)} sub="跨来源不去重、并行累计" />
-            <MetricCard label="当前连续" value={`${metrics?.current_streak ?? 0} 天`} sub="从今天回走" />
-            <MetricCard label="最长连续" value={`${metrics?.longest_streak ?? 0} 天`} sub="历史最长连续段" />
-            <MetricCard label="峰值单日" value={compactTokens(metrics?.peak_tokens ?? 0)} sub={metrics?.peak_day ?? "—"} />
-            <MetricCard label="窗口总量" value={compactTokens(total)} sub="全部口径 tokens" />
+            <MetricCard label={t("spend.trend.metric.active_days")} value={t("spend.trend.unit_days", { count: metrics?.active_days ?? 0 })} sub={t("spend.trend.sub.window_days", { count: days.length })} />
+            <MetricCard label={t("spend.trend.metric.active_time")} value={formatActiveTime(metrics?.active_seconds ?? 0)} sub={t("spend.trend.sub.active_time")} />
+            <MetricCard label={t("spend.trend.metric.current_streak")} value={t("spend.trend.unit_days", { count: metrics?.current_streak ?? 0 })} sub={t("spend.trend.sub.current_streak")} />
+            <MetricCard label={t("spend.trend.metric.longest_streak")} value={t("spend.trend.unit_days", { count: metrics?.longest_streak ?? 0 })} sub={t("spend.trend.sub.longest_streak")} />
+            <MetricCard label={t("spend.trend.metric.peak_day")} value={compactTokens(metrics?.peak_tokens ?? 0)} sub={metrics?.peak_day ?? "—"} />
+            <MetricCard label={t("spend.trend.metric.window_total")} value={compactTokens(total)} sub={t("spend.trend.sub.window_total")} />
           </div>
           <div className="p-4 bg-zinc-900/60 rounded-xl border border-white/5">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-sm font-semibold text-zinc-200">每日消耗热力图</h3>
-              <div className="flex items-center gap-1 text-[10px] text-zinc-500">少{LEVEL_BG.map(c => <span key={c} className={`w-3 h-3 rounded-[3px] ${c}`} data-level-legend />)}多</div>
+              <h3 className="text-sm font-semibold text-zinc-200">{t("spend.trend.heatmap_title")}</h3>
+              <div className="flex items-center gap-1 text-[10px] text-zinc-500">{t("spend.trend.legend_less")}{LEVEL_BG.map(c => <span key={c} className={`w-3 h-3 rounded-[3px] ${c}`} data-level-legend />)}{t("spend.trend.legend_more")}</div>
             </div>
             <div className="overflow-x-auto pb-1">
               <div className="grid grid-flow-col gap-[3px]" style={{ gridTemplateRows: "repeat(7,12px)", gridAutoColumns: "12px" }}>
                 {cols.map((col, ci) => col.map((cell, ri) => cell === null
                   ? <div key={`${ci}-${ri}`} />
-                  : <div key={`${ci}-${ri}`} data-level={cell.level} title={`${cell.day}：${compactTokens(cell.tokens)} tokens`} className={`rounded-[3px] ${LEVEL_BG[cell.level]}`} />))}
+                  : <div key={`${ci}-${ri}`} data-level={cell.level} title={t("spend.trend.cell_title", { day: cell.day, tokens: compactTokens(cell.tokens) })} className={`rounded-[3px] ${LEVEL_BG[cell.level]}`} />))}
               </div>
             </div>
           </div>
           <div className="p-4 bg-zinc-900/60 rounded-xl border border-white/5">
-            <h3 className="text-sm font-semibold text-zinc-200">7 天分桶 K 线</h3>
+            <h3 className="text-sm font-semibold text-zinc-200">{t("spend.trend.candles_title")}</h3>
             <CandleChart buckets={buckets} />
             <div className="flex justify-between text-[10px] text-zinc-500 mt-1">
-              <span>每桶 7 天（开=桶首日，收=桶末日）</span>
-              <span>峰值 {compactTokens(max)} tokens/日</span>
+              <span>{t("spend.trend.bucket_note")}</span>
+              <span>{t("spend.trend.peak_per_day", { tokens: compactTokens(max) })}</span>
             </div>
           </div>
         </>

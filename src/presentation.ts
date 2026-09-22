@@ -1,15 +1,20 @@
 import type {ProviderUsage,UsageWindow,ProviderConfig} from "./types";
-export function percentText(usage:ProviderUsage,mode:"used"|"remaining"="used"){
-  if(!["live","stale"].includes(usage.state)||usage.primary_percent===null)return usage.balances?.length&&["live","stale"].includes(usage.state)?(usage.state==="stale"?"余额*":"余额"):"—";
+import {getLang,translate} from "./lib/i18n";
+import type {Lang} from "./lib/i18n";
+
+// 文案全部走 translate(lang, key)（词典 rail.detail.* / rail.balance.*）；
+// lang 缺省回落模块级语言，组件调用点显式传 useLang().lang（同 currency.ts 约定）。
+export function percentText(usage:ProviderUsage,mode:"used"|"remaining"="used",lang:Lang=getLang()){
+  if(!["live","stale"].includes(usage.state)||usage.primary_percent===null)return usage.balances?.length&&["live","stale"].includes(usage.state)?translate(lang,usage.state==="stale"?"rail.balance.label_stale":"rail.balance.label"):"—";
   const n=mode==="remaining"?Math.max(0,100-usage.primary_percent):usage.primary_percent;
   return `${Number(n.toFixed(1))}%${usage.state==="stale"?"*":""}`;
 }
-export function resetText(at:string|null,now=Date.now()){
-  if(!at)return "未报告重置时间";const time=Date.parse(at);if(!Number.isFinite(time))return "重置时间不可用";
-  const seconds=Math.ceil((time-now)/1000);if(seconds<=0)return "等待重置后的新读数";
-  if(seconds>=86400)return `${Math.floor(seconds/86400)}天 ${Math.floor(seconds%86400/3600)}小时后重置`;
-  if(seconds>=3600)return `${Math.floor(seconds/3600)}小时 ${Math.ceil(seconds%3600/60)}分后重置`;
-  return `${Math.ceil(seconds/60)}分钟后重置`;
+export function resetText(at:string|null,now=Date.now(),lang:Lang=getLang()){
+  if(!at)return translate(lang,"rail.detail.reset_unreported");const time=Date.parse(at);if(!Number.isFinite(time))return translate(lang,"rail.detail.reset_invalid");
+  const seconds=Math.ceil((time-now)/1000);if(seconds<=0)return translate(lang,"rail.detail.reset_waiting");
+  if(seconds>=86400)return translate(lang,"rail.detail.reset_days",{d:Math.floor(seconds/86400),h:Math.floor(seconds%86400/3600)});
+  if(seconds>=3600)return translate(lang,"rail.detail.reset_hours",{h:Math.floor(seconds/3600),m:Math.ceil(seconds%3600/60)});
+  return translate(lang,"rail.detail.reset_minutes",{m:Math.ceil(seconds/60)});
 }
 export function elapsed(w:UsageWindow,now=Date.now()):number|null{
   if(!w.window_seconds||!w.resets_at)return null;const end=Date.parse(w.resets_at);if(!Number.isFinite(end)||end<=now)return null;
@@ -35,43 +40,48 @@ export function forecastKind(w:UsageWindow,now=Date.now()):ForecastKind|null{
   if(rate<=1)return "ok";
   return remainingSeconds<7200?"soon":"risk";
 }
-export function forecast(w:UsageWindow,now=Date.now()):string|null{
+export function forecast(w:UsageWindow,now=Date.now(),lang:Lang=getLang()):string|null{
   switch(forecastKind(w,now)){
-    case "exhausted":return "已达到包含额度";
-    case "ok":return "按当前平均速度，预计可用至窗口结束";
+    case "exhausted":return translate(lang,"rail.detail.forecast_exhausted");
+    case "ok":return translate(lang,"rail.detail.forecast_ok");
     case "soon":{const e=elapsed(w,now)!;const sec=w.window_seconds??0;
       const used=Number.isFinite(w.used_fraction)&&w.used_fraction>=0?w.used_fraction:w.used_percent/100;
       const remaining=(1-used)/(used/e)*sec;
-      return `按窗口平均速度估算，约 ${Math.max(1,Math.ceil(remaining/60))} 分钟后用满`;}
-    case "risk":return "按窗口平均速度估算，可能在重置前用满";
+      return translate(lang,"rail.detail.forecast_soon",{minutes:Math.max(1,Math.ceil(remaining/60))});}
+    case "risk":return translate(lang,"rail.detail.forecast_risk");
     default:return null;
   }
 }
 
-/** Monetary balances and plan credits are different units and never interchangeable. */
-export function balanceText(currency:string,amount:number):string {
-  if(currency==='Credit'||currency==='Credit-Topup')return `${amount>=1e8?(amount/1e8).toFixed(2)+' 亿':amount>=1e4?(amount/1e4).toFixed(2)+' 万':amount.toLocaleString('zh-CN',{maximumFractionDigits:2})} Credit`;
+/** Monetary balances and plan credits are different units and never interchangeable.
+ *  Credit 量级单位随语言取 zh（亿/万）或 en（B/M）——数值格式化随 locale，
+ *  同 toLocaleString 先例，不进词典。 */
+export function balanceText(currency:string,amount:number,lang:Lang=getLang()):string {
+  if(currency==='Credit'||currency==='Credit-Topup'){
+    if(lang==='en')return `${amount>=1e9?(amount/1e9).toFixed(2)+'B':amount>=1e6?(amount/1e6).toFixed(2)+'M':amount.toLocaleString('en-US',{maximumFractionDigits:2})} Credit`;
+    return `${amount>=1e8?(amount/1e8).toFixed(2)+' 亿':amount>=1e4?(amount/1e4).toFixed(2)+' 万':amount.toLocaleString('zh-CN',{maximumFractionDigits:2})} Credit`;
+  }
   if(currency==='CNY')return `¥${amount.toFixed(2)}`;
   return `${currency} ${amount.toFixed(2)}`;
 }
-export function balanceLabel(provider:string,currency:string):string {
-  if(currency==='Credit-Topup')return '加油包剩余';
-  return currency==='Credit'?'套餐剩余':provider==='stepfun'?'API 可用余额':'可用余额';
+export function balanceLabel(provider:string,currency:string,lang:Lang=getLang()):string {
+  if(currency==='Credit-Topup')return translate(lang,'rail.balance.label_topup');
+  return translate(lang,currency==='Credit'?'rail.balance.label_plan':provider==='stepfun'?'rail.balance.label_api':'rail.balance.label_available');
 }
 
 export type TimedWindow=UsageWindow & {period_note?:string};
 /** Only timing presentation receives estimates; original usage and forecasts stay untouched. */
-export function timingWindows(usage:ProviderUsage,cfg?:ProviderConfig):TimedWindow[] {
+export function timingWindows(usage:ProviderUsage,cfg?:ProviderConfig,lang:Lang=getLang()):TimedWindow[] {
   return usage.windows.map(w=>{
     const days=cfg?.elapsed_period_days;
     if(days!=null&&Number.isFinite(days)&&days>=1/24&&days<=366){
       if(w.window_seconds && w.window_seconds>0 && cfg?.elapsed_window !== w.id) {
-        return {...w,period_note:'按数据源周期计算'};
+        return {...w,period_note:translate(lang,'rail.detail.period_source')};
       }
-      return {...w,window_seconds:Math.round(days*86400),period_note:`按自定义周期估算（${days} 天）`};
+      return {...w,window_seconds:Math.round(days*86400),period_note:translate(lang,'rail.detail.period_custom',{days})};
     }
-    if(w.window_seconds && w.window_seconds>0)return {...w,period_note:'按数据源周期计算'};
-    if(usage.provider_id==='stepfun'&&w.id==='plan')return {...w,window_seconds:30*86400,period_note:'按 StepFun 30 天规则估算'};
-    return {...w,period_note:'尚无完整周期，请设置自定义周期'};
+    if(w.window_seconds && w.window_seconds>0)return {...w,period_note:translate(lang,'rail.detail.period_source')};
+    if(usage.provider_id==='stepfun'&&w.id==='plan')return {...w,window_seconds:30*86400,period_note:translate(lang,'rail.detail.period_stepfun')};
+    return {...w,period_note:translate(lang,'rail.detail.period_unknown')};
   });
 }

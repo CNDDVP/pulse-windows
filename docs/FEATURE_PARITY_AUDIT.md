@@ -34,8 +34,8 @@
 | 19 | iOS / macOS 小组件 | N/A | Windows 项目不适用 |
 | 20 | Homebrew 分发 | N/A | winget 替代见 #22 |
 | 21 | 代码签名安装包 | ⚖️ 付费项（Azure Trusted Signing） | SmartScreen 拦截是真实流失点 |
-| 22 | winget/scoop 分发 | 🗓 无 | Round 5：提交 winget-pkgs manifest |
-| 23 | 多语言界面（5 语） | 🗓 纯中文 | Round 5：先补 EN |
+| 22 | winget/scoop 分发 | ✅ Round 5c：manifest 生成器 + 提交文档（实际 PR 需用户在微软仓执行） | |
+| 23 | 多语言界面（5 语） | ✅ Round 5c：中/英双语（自研 i18n 框架 + 语言设置；后端消息暂中文已标注） | 繁/日/韩按需 |
 
 ## 界面与体验
 

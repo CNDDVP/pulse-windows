@@ -1,4 +1,9 @@
 import type {AppSettings, ProviderUsage, RailWarnings, RailAccountRule} from './types';
+// Round 5c 项目一：本模块是纯逻辑（非 React），经模块级 t() 取词（I18nProvider 在各窗口
+// 挂载时把当前语言同步到模块级，悬浮栏与设置页共用同一通道）；纯函数测试可用
+// translate(lang,…) 或维持默认 zh。产出的 reason/shortReason/excluded 文案同时显示在
+// 悬浮栏收纳条悬停提示与设置页「悬浮栏预警」预览里。
+import {t} from './lib/i18n';
 
 export type RailLevel='unknown'|'green'|'yellow'|'red';
 export interface RailSource {
@@ -25,7 +30,14 @@ export interface RailResult {
 }
 export const levelRank:Record<RailLevel,number>={unknown:-1,green:0,yellow:1,red:2};
 export const levelColor:Record<RailLevel,string>={unknown:'#71717a',green:'#10b981',yellow:'#f59e0b',red:'#ef4444'};
-export const levelName:Record<RailLevel,string>={unknown:'灰色',green:'绿色',yellow:'黄色',red:'红色'};
+// levelName 保持「按下标取词」的既有用法（RailWarningSettings 以 levelName[level] 直接索引），
+// 改为 getter：取值时机延迟到访问时，语言切换后立即生效。
+export const levelName:Record<RailLevel,string>={
+  get unknown(){return t('rail.warn.level.unknown');},
+  get green(){return t('rail.warn.level.green');},
+  get yellow(){return t('rail.warn.level.yellow');},
+  get red(){return t('rail.warn.level.red');},
+};
 export const defaultRailWarnings=():RailWarnings=>({scope:'all',account_ids:[],custom_thresholds:false,yellow:75,red:90,accounts:{}});
 export const defaultAccountRule=():RailAccountRule=>({mode:'primary',window_id:null,balances:{}});
 export function railConfig(settings:AppSettings):RailWarnings {
@@ -38,16 +50,16 @@ export function railConfig(settings:AppSettings):RailWarnings {
 }
 
 export function formatTimeAgo(dateStr:string|null|undefined,now=Date.now()):string {
-  if(!dateStr) return '尚未更新';
+  if(!dateStr) return t('rail.warn.time.never');
   const ts=Date.parse(dateStr);
-  if(!Number.isFinite(ts)) return '尚未更新';
+  if(!Number.isFinite(ts)) return t('rail.warn.time.never');
   const diffSec=Math.floor(Math.max(0,now-ts)/1000);
-  if(diffSec<10) return '刚刚';
-  if(diffSec<60) return `${diffSec} 秒前`;
+  if(diffSec<10) return t('rail.warn.time.just_now');
+  if(diffSec<60) return t('rail.warn.time.seconds',{n:diffSec});
   const diffMin=Math.floor(diffSec/60);
-  if(diffMin<60) return `${diffMin} 分钟前`;
+  if(diffMin<60) return t('rail.warn.time.minutes',{n:diffMin});
   const diffHour=Math.floor(diffMin/60);
-  if(diffHour<24) return `${diffHour} 小时前`;
+  if(diffHour<24) return t('rail.warn.time.hours',{n:diffHour});
   return new Date(ts).toLocaleDateString();
 }
 
@@ -60,24 +72,25 @@ export function evaluateRail(settings:AppSettings,usages:ProviderUsage[],now=Dat
     const name=account?.label||usage?.display_name||id;
     const add=(level:RailLevel,type:'window'|'balance'|'account',reason:string,extra?:Partial<RailSource>)=>
       sources.push({account:id,name,level,type,reason,updated:usage?.last_success_at??null,...extra});
-    if(!account||!account.enabled){add('unknown','account',!account?'所选账号已删除':'所选账号已停用');continue}
+    if(!account||!account.enabled){add('unknown','account',!account?t('rail.warn.src.account_deleted'):t('rail.warn.src.account_disabled'));continue}
     const rule=config.accounts[id]??defaultAccountRule();
-    if(!usage){add('unknown','account','尚未取得读数');continue}
+    if(!usage){add('unknown','account',t('rail.warn.src.no_reading'));continue}
 
     const standardBalances=usage.balances.filter(b=>/^[A-Z]{3}$/.test(b.currency));
     const nonCurrencyBalances=usage.balances.filter(b=>!/^[A-Z]{3}$/.test(b.currency));
     for(const b of nonCurrencyBalances){
-      excluded.push(`${name} · ${b.currency} 此计量类型暂未配置预警规则`);
+      excluded.push(t('rail.warn.excluded.unit_type',{name,currency:b.currency}));
     }
 
     const isPureBalance = account.primary_window === '__balance__';
     if(usage.windows.length===0&&standardBalances.length>0&&Object.keys(rule.balances).length===0&&rule.mode!=='window'&&(!account.primary_window || isPureBalance)){
-      excluded.push(...standardBalances.map(b=>`${name} · ${b.currency} 未配置余额阈值，未参与评级`));continue;
+      excluded.push(...standardBalances.map(b=>t('rail.warn.excluded.no_balance_rule',{name,currency:b.currency})));continue;
     }
     const timestamp=Date.parse(usage.last_success_at??'');
     if(usage.state!=='live'||!Number.isFinite(timestamp)||timestamp>now||now-timestamp>600000) {
-      const old=[...usage.windows.map(w=>`${w.name} 已使用 ${w.used_percent}%`),...usage.balances.map(b=>`${b.currency} ${b.amount.toFixed(2)}`)].join('；');
-      add('unknown','account',`${usage.state==='stale'?'上次读数（缓存，待刷新）':usage.error_message||'读数不可用或已过期'}${old?`：${old}`:''}`);continue;
+      // TODO(EN-backend)：usage.error_message 为 Rust 侧消息，拼接时原样保留不翻译。
+      const old=[...usage.windows.map(w=>t('rail.warn.old_window',{name:w.name,percent:w.used_percent})),...usage.balances.map(b=>t('rail.warn.old_balance',{currency:b.currency,amount:b.amount.toFixed(2)}))].join(t('rail.warn.list_sep'));
+      add('unknown','account',`${usage.state==='stale'?t('rail.warn.stale_cached'):usage.error_message||t('rail.warn.reading_unavailable')}${old?t('rail.warn.reading_suffix',{old}):''}`);continue;
     }
     let windows=usage.windows;
     for(const w of windows){const at=Date.parse(w.resets_at??'');if(Number.isFinite(at))resetKeys[`${id}:${w.id}`]=at;}
@@ -86,61 +99,61 @@ export function evaluateRail(settings:AppSettings,usages:ProviderUsage[],now=Dat
     else if(pin) windows=windows.filter(w=>w.id===pin);
     else if(rule.mode==='window') windows=[];
     else if(rule.mode==='primary'&&windows.length)windows=[windows.reduce((a,b)=>a.used_percent>=b.used_percent?a:b)];
-    if((pin||(rule.mode==='window'&&!isPureBalance))&&!windows.length)add('unknown','window','所选额度周期不可用，等待该周期数据');
+    if((pin||(rule.mode==='window'&&!isPureBalance))&&!windows.length)add('unknown','window',t('rail.warn.src.window_missing'));
     for(const w of windows){
       if(!Number.isFinite(w.used_percent)||w.used_percent<0|| (w.resets_at!==null&&(!Number.isFinite(Date.parse(w.resets_at))||Date.parse(w.resets_at)<=now))) {
-        add('unknown','window',`${w.name} 已重置或读数无效，等待更新`,{windowName:w.name});continue;
+        add('unknown','window',t('rail.warn.src.window_reset',{name:w.name}),{windowName:w.name});continue;
       }
       const level=w.used_percent>=red?'red':w.used_percent>=yellow?'yellow':'green';
-      add(level,'window',`${w.name} · 已使用 ${Number(w.used_percent.toFixed(1))}% · 黄色 ${yellow}% / 红色 ${red}%`,{
+      add(level,'window',t('rail.warn.src.window',{name:w.name,percent:Number(w.used_percent.toFixed(1)),yellow,red}),{
         windowName:w.name,usedPercent:w.used_percent,yellowThreshold:yellow,redThreshold:red
       });
     }
     for(const [currency,threshold] of Object.entries(rule.balances)){
       const balance=usage.balances.find(b=>b.currency===currency);
-      if(!balance||!Number.isFinite(balance.amount)){add('unknown','balance',`${currency} 余额不可用`,{currency});continue}
+      if(!balance||!Number.isFinite(balance.amount)){add('unknown','balance',t('rail.warn.src.balance_unavailable',{currency}),{currency});continue}
       const level=balance.amount<=threshold.red?'red':balance.amount<=threshold.yellow?'yellow':'green';
-      add(level,'balance',`余额 ${currency} ${balance.amount.toFixed(2)} · 黄色 ≤ ${threshold.yellow} / 红色 ≤ ${threshold.red}`,{
+      add(level,'balance',t('rail.warn.src.balance',{currency,amount:balance.amount.toFixed(2),yellow:threshold.yellow,red:threshold.red}),{
         currency,amount:balance.amount,yellowThreshold:threshold.yellow,redThreshold:threshold.red
       });
     }
-    for(const b of standardBalances)if(!rule.balances[b.currency])excluded.push(`${name} · ${b.currency} 未配置余额阈值，未参与评级`);
-    if(!usage.windows.length&&!usage.balances.length&&!Object.keys(rule.balances).length&&!pin)add('unknown','account','没有可评级的额度数据');
+    for(const b of standardBalances)if(!rule.balances[b.currency])excluded.push(t('rail.warn.excluded.no_balance_rule',{name,currency:b.currency}));
+    if(!usage.windows.length&&!usage.balances.length&&!Object.keys(rule.balances).length&&!pin)add('unknown','account',t('rail.warn.src.nothing_to_rate'));
   }
   const valid=sources.filter(s=>s.level!=='unknown'),missing=sources.filter(s=>s.level==='unknown');
   let level:RailLevel=valid.reduce<RailLevel>((best,s)=>levelRank[s.level]>levelRank[best]?s.level:best,'unknown');
   if(level==='green'&&missing.length)level='unknown';
-  let reason=level==='unknown'?(missing.length?'数据不完整，无法确认整体状态':ids.length?'没有参与评级的有效读数':'未选择已启用账号'):
-    sources.filter(s=>s.level===level).map(s=>`${s.name}：${s.reason}`).join('；');
-  if(missing.length)reason+=`；${missing.map(s=>`${s.name}：${s.reason}`).join('；')}`;
+  const reasonItem=(s:RailSource)=>t('rail.warn.reason_item',{name:s.name,reason:s.reason});
+  let reason=level==='unknown'?(missing.length?t('rail.warn.reason.incomplete'):ids.length?t('rail.warn.reason.no_valid_readings'):t('rail.warn.reason.no_accounts')):
+    sources.filter(s=>s.level===level).map(reasonItem).join(t('rail.warn.list_sep'));
+  if(missing.length)reason+=t('rail.warn.list_sep')+missing.map(reasonItem).join(t('rail.warn.list_sep'));
 
   let shortReason='';
   if(level==='unknown'){
     shortReason=missing.length
-      ? `灰色：数据不完整，无法确认整体状态`
+      ? t('rail.warn.short.unknown_incomplete')
       : ids.length
-      ? '灰色：没有参与评级的有效读数'
-      : '灰色：未选择已启用账号';
+      ? t('rail.warn.short.unknown_no_readings')
+      : t('rail.warn.short.unknown_no_accounts');
   } else if(level==='green'){
-    shortReason='绿色：所有关注账号额度充足';
+    shortReason=t('rail.warn.short.green');
   } else {
     const triggers=sources.filter(s=>s.level===level);
     const triggerAccounts=[...new Set(triggers.map(s=>s.name))];
     if(triggerAccounts.length===1){
       const s=triggers[0];
+      const threshold=String(level==='red'?s.redThreshold:s.yellowThreshold);
       if(s.type==='balance'){
-        const threshold=level==='red'?s.redThreshold:s.yellowThreshold;
-        shortReason=`${levelName[level]}：${s.name} · 余额 ${s.currency} ${s.amount?.toFixed(2)}，达到${levelName[level]}阈值 ≤ ${threshold}`;
+        shortReason=t('rail.warn.short.balance_trigger',{level:levelName[level],name:s.name,currency:String(s.currency),amount:String(s.amount?.toFixed(2)),threshold});
       } else {
-        const threshold=level==='red'?s.redThreshold:s.yellowThreshold;
         const windowText=s.windowName?`${s.windowName} `:'';
-        shortReason=`${levelName[level]}：${s.name} · ${windowText}已使用 ${Number(s.usedPercent?.toFixed(1))}%，达到${levelName[level]}阈值 ${threshold}%`;
+        shortReason=t('rail.warn.short.window_trigger',{level:levelName[level],name:s.name,window:windowText,percent:Number(s.usedPercent?.toFixed(1)),threshold});
       }
     } else {
-      shortReason=`${triggerAccounts.length} 个账号达到${levelName[level]}预警：${triggerAccounts.join('、')}`;
+      shortReason=t('rail.warn.short.multi_trigger',{count:triggerAccounts.length,level:levelName[level],names:triggerAccounts.join(t('rail.warn.name_sep'))});
     }
     if(missing.length>0){
-      shortReason+='（部分账号数据不可用）';
+      shortReason+=t('rail.warn.short.partial_suffix');
     }
   }
 
@@ -172,8 +185,8 @@ export function advanceRail(previous:RailTransition|null,next:RailResult,configK
   }
   const waiting:RailTransition={...previous,pending:next.level,since,shown:{
     ...previous.shown,
-    reason:`降级确认中（持续 10 秒后变色）；当前读数：${next.reason}`,
-    shortReason:`${previous.shown.shortReason}（降级确认中，持续 10 秒后变色）`
+    reason:t('rail.warn.pending.reason',{reason:next.reason}),
+    shortReason:t('rail.warn.pending.short',{short:previous.shown.shortReason})
   }};
   if(previous.pending===waiting.pending&&previous.since===waiting.since&&sameShown(previous.shown,waiting.shown))return previous;
   return waiting;

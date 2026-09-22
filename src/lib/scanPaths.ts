@@ -2,6 +2,8 @@
 // 后端 types::validate_token_spend_extra_paths 仍是权威校验（保存命令会整表校验、非法整次拒绝）；
 // 这里的规则与其同界，只为了让面板在添加时就给出即时反馈，而不是等保存才报错。
 import {SPEND_SOURCES} from './spend';
+import {getLang, translate} from './i18n';
+import type {Lang} from './i18n';
 
 /** 每来源附加扫描目录上限（与后端 TOKEN_SPEND_EXTRA_PATHS_PER_SOURCE 一致，types.rs:4）。 */
 export const EXTRA_PATHS_PER_SOURCE_LIMIT = 20;
@@ -39,15 +41,16 @@ function extraPathDedupKey(p: string): string {
 /**
  * 「添加」输入校验：返回错误文案；null = 可添加。
  * 超上限 / 重复（Windows 语义）/ 非绝对路径在此拒绝，不进草稿；保存时后端仍会整表校验。
+ * lang 缺省回落模块级语言（zh 兜底）；调用方（ScanPathsPanel）显式传 useLang().lang。
  */
-export function extraDirInputError(raw: string, existing: readonly string[]): string | null {
+export function extraDirInputError(raw: string, existing: readonly string[], lang: Lang = getLang()): string | null {
   const p = raw.trim();
-  if (!p) return '路径不能为空';
-  if (!isAbsoluteDirPath(p)) return '必须是绝对路径（如 D:\\logs 或 \\\\server\\share）';
-  if (p.length > EXTRA_PATH_MAX_LEN) return `路径过长（上限 ${EXTRA_PATH_MAX_LEN} 字符）`;
+  if (!p) return translate(lang, 'spend.scan_paths.err_empty');
+  if (!isAbsoluteDirPath(p)) return translate(lang, 'spend.scan_paths.err_not_absolute');
+  if (p.length > EXTRA_PATH_MAX_LEN) return translate(lang, 'spend.scan_paths.err_too_long', {limit: EXTRA_PATH_MAX_LEN});
   const key = extraPathDedupKey(p);
-  if (existing.some(e => extraPathDedupKey(e) === key)) return '该目录已添加';
-  if (existing.length >= EXTRA_PATHS_PER_SOURCE_LIMIT) return `每来源最多 ${EXTRA_PATHS_PER_SOURCE_LIMIT} 条`;
+  if (existing.some(e => extraPathDedupKey(e) === key)) return translate(lang, 'spend.scan_paths.err_duplicate');
+  if (existing.length >= EXTRA_PATHS_PER_SOURCE_LIMIT) return translate(lang, 'spend.scan_paths.err_limit', {limit: EXTRA_PATHS_PER_SOURCE_LIMIT});
   return null;
 }
 

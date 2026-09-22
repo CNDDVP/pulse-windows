@@ -240,6 +240,10 @@ pub struct AppSettings {
     /// 独立文件数预算 2000，wsl.exe 不可用/超时/无数据一律静默降级并在 Summary.notes 标注。
     /// SQLite 类来源（OpenCode 等）不做 WSL 读取（需 headless agent，README 注明）。
     pub token_spend_wsl: bool,
+    /// 界面语言（Round5c 项目一）："zh" | "en"，默认 zh。登记此字段是因为本结构体
+    /// deny_unknown_fields——不登记则前端携带语言设置保存时整单被拒。翻译只在前端
+    /// 词典（src/lib/i18n.ts）内完成；后端 emit 的消息本轮保持中文（TODO(EN-backend)）。
+    pub language: String,
     /// 成本显示币种（Round4 项目二）：仅 "USD" | "CNY"；换算只发生在前端展示层，
     /// 成本估算入库与导出始终保持 USD 原值。
     pub display_currency: String,
@@ -265,6 +269,7 @@ impl Default for AppSettings {
             subscriptions:BTreeMap::new(),
             token_spend_extra_paths:BTreeMap::new(),
             token_spend_wsl:false,
+            language:"zh".into(),
             display_currency:"USD".into(), usd_cny_rate:7.2,
             providers }
     }
@@ -283,6 +288,7 @@ impl AppSettings {
             || !self.free_x.is_finite() || !self.free_y.is_finite() || !(0.0..=1.0).contains(&self.free_x) || !(0.0..=1.0).contains(&self.free_y)
             || !["USD","CNY"].contains(&self.display_currency.as_str())
             || !self.usd_cny_rate.is_finite() || !(0.01..=10000.0).contains(&self.usd_cny_rate)
+            || !["zh","en"].contains(&self.language.as_str())
             || self.subscriptions.len()>64 || self.providers.len()>64 { return Err("设置版本或参数无效".into()); }
         for (src,sub) in &self.subscriptions {
             if !valid_id(src) { return Err(format!("订阅来源标识无效: {src}")); }
@@ -429,6 +435,24 @@ mod tests{
         let mut root=serde_json::to_value(AppSettings::default()).unwrap();
         root.as_object_mut().unwrap().insert("display_rate".into(),serde_json::json!(7.2));
         assert!(serde_json::from_value::<AppSettings>(root).is_err());
+    }
+    #[test]fn language_defaults_to_zh_and_tolerates_old_settings(){
+        // Round5c 项目一：界面语言默认 zh；旧 settings.json 缺该字段时 serde default 兜底。
+        assert_eq!(AppSettings::default().language,"zh");
+        let mut root=serde_json::to_value(AppSettings::default()).unwrap();
+        root.as_object_mut().unwrap().remove("language");
+        let s:AppSettings=serde_json::from_value(root).unwrap();
+        assert_eq!(s.language,"zh");
+        let mut root=serde_json::to_value(AppSettings::default()).unwrap();
+        root.as_object_mut().unwrap().insert("language".into(),serde_json::json!("en"));
+        assert_eq!(serde_json::from_value::<AppSettings>(root).unwrap().language,"en");
+    }
+    #[test]fn language_validate_accepts_only_zh_en(){
+        let mut s=AppSettings::default();assert!(s.validate().is_ok());
+        s.language="en".into();assert!(s.validate().is_ok());
+        s.language="fr".into();assert!(s.validate().is_err());
+        s.language="EN".into();assert!(s.validate().is_err(),"语言代码区分大小写");
+        s.language=String::new();assert!(s.validate().is_err());
     }
     #[test]fn provider_usage_rate_field_is_optional_on_wire(){
         // tok_per_min 缺省/None 不上链路（skip_serializing_if），老缓存文件可正常反序列化。

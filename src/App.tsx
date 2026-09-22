@@ -7,9 +7,21 @@ import type {AppSettings,ProviderUsage} from "./types";
 import {FloatingRail} from "./components/FloatingRail";
 import {UsageDetailCard} from "./components/UsageDetailCard";
 import {SettingsWindow} from "./pages/SettingsWindow";
+import {I18nProvider, normalizeLang, useLang} from "./lib/i18n";
 
 function windowLabel(): string {
   try { return getCurrentWebviewWindow().label; } catch { return "main"; }
+}
+
+// Round5c 项目一：加载/致命错误提示走 i18n。二者只在 settings 为空（语言未知）时出现，
+// Provider 受控 lang 会回落 zh——文案经 useLang().t() 供词，语言可判定时自然跟随。
+function LoadingHint(){
+  const {t}=useLang();
+  return <div className="p-3 bg-zinc-900 text-zinc-400 text-xs">{t("rail.loading")}</div>;
+}
+function LoadError(){
+  const {t}=useLang();
+  return <div className="p-4 bg-zinc-900 text-amber-300 text-sm">{t("rail.error.load_settings")}</div>;
 }
 
 /** The free-mode hover card lives in its own overlay window ("detail"); Rust tells it
@@ -82,18 +94,22 @@ function DetailOverlay() {
       }).catch(()=>{lastHeightRef.current="";});
     }
   },[usage,settings,layout,accountId]);
-  return <div className={`w-full h-full p-2 flex ${justifyClass} ${alignClass}`}
+  // Round5c 项目一：语言走既有设置通道——settings 派生语言经 Provider 受控下发；
+  // <html lang> 由 Provider 同步。
+  return <I18nProvider lang={normalizeLang(settings?.language)}>
+  <div className={`w-full h-full p-2 flex ${justifyClass} ${alignClass}`}
     onMouseEnter={()=>void invoke("set_detail_hover",{hovered:true})}
     onMouseLeave={()=>void invoke("set_detail_hover",{hovered:false})}
     onContextMenu={e=>e.preventDefault()}>
     {usage&&settings?<UsageDetailCard key={accountId||"none"} usage={usage} settings={settings} placement={placement} cardRef={cardRef as React.RefObject<HTMLElement>}/>:null}
-  </div>;
+  </div>
+  </I18nProvider>;
 }
 
 function MainApp({label}:{label:string}){
   const [settings,setSettings]=useState<AppSettings|null>(null);
   const [usages,setUsages]=useState<ProviderUsage[]>([]);
-  const [error,setError]=useState("");
+  const [error,setError]=useState(false);
   useEffect(()=>{
     let alive=true;const stops:(()=>void)[]=[];let settingsVersion=0,usageVersion=0;
     void(async()=>{
@@ -107,7 +123,7 @@ function MainApp({label}:{label:string}){
       try{
         const s=await invoke<AppSettings>("get_settings");
         if(alive&&sv===settingsVersion)setSettings(s);
-      }catch{if(alive)setError("无法加载配置。原设置已保留；请检查配置文件或查看启动诊断后重启 Pulse。");return}
+      }catch{if(alive)setError(true);return}
       try{
         const u=await invoke<ProviderUsage[]>("get_usages");
         if(alive&&uv===usageVersion)setUsages(u);
@@ -132,9 +148,16 @@ function MainApp({label}:{label:string}){
   // 减少动态效果：应用内开关挂到根元素，CSS 一处覆盖所有动画（A27）。
   useEffect(()=>{document.documentElement.classList.toggle("reduce-motion",!!settings?.reduce_motion);},[settings?.reduce_motion]);
   useEffect(()=>{if(settings&&!error)void invoke("update_ui_ready").catch(()=>{});},[settings,error]);
-  if(error)return <div className="p-4 bg-zinc-900 text-amber-300 text-sm">{error}</div>;
-  if(!settings)return <div className="p-3 bg-zinc-900 text-zinc-400 text-xs">正在加载…</div>;
-  return label==="settings"?<SettingsWindow initialSettings={settings} usages={usages} onSaved={setSettings}/>:<FloatingRail usages={usages} settings={settings}/>;
+  const content=error
+    ?<LoadError/>
+    :!settings
+      ?<LoadingHint/>
+      :label==="settings"
+        ?<SettingsWindow initialSettings={settings} usages={usages} onSaved={setSettings}/>
+        :<FloatingRail usages={usages} settings={settings}/>;
+  // Round5c 项目一：语言走既有设置通道——settings.language 经 Provider 受控下发，
+  // 设置保存后经 settings-updated 事件回流，语言切换立即生效；<html lang> 由 Provider 同步。
+  return <I18nProvider lang={normalizeLang(settings?.language)}>{content}</I18nProvider>;
 }
 
 export default function App(){

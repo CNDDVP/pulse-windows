@@ -1,6 +1,7 @@
 import {useEffect,useState} from "react";
 import type { HourlyUsage } from "../types";
 import { balanceText } from "../presentation";
+import { useLang } from "../lib/i18n";
 
 export function HourlyUsageChart({
   usages,
@@ -9,6 +10,7 @@ export function HourlyUsageChart({
   usages: HourlyUsage[];
   compact?: boolean;
 }) {
+  const { t, lang } = useLang();
   const [nowSeconds,setNowSeconds]=useState(()=>Math.floor(Date.now()/1000));
   useEffect(()=>{const timer=setInterval(()=>setNowSeconds(Math.floor(Date.now()/1000)),60000);return()=>clearInterval(timer);},[]);
   if (!usages || usages.length === 0) return null;
@@ -51,15 +53,15 @@ export function HourlyUsageChart({
   return (
     <div className={`mt-3 p-2.5 rounded-xl border border-white/5 bg-zinc-900/40 text-xs ${compact ? "" : "p-3"}`}>
       <div className="flex justify-between items-center mb-1.5">
-        <span className="font-medium text-zinc-300">24h 积分消耗趋势（已返回记录）</span>
+        <span className="font-medium text-zinc-300">{t("rail.chart.title")}</span>
         <span className="text-[11px] text-zinc-400 font-mono">
-          共 {balanceText("Credit", totalCredits)}
+          {t("rail.chart.total",{amount:balanceText("Credit", totalCredits, lang)})}
         </span>
       </div>
       <div className="h-12 flex items-end gap-[3px] pt-1">
         {hours.map((h, idx) => {
           const heightPct = Math.max(h.credits > 0 ? 10 : 3, Math.round((h.credits / maxHourCredits) * 100));
-          const title = `${h.hourLabel}：消耗 ${balanceText("Credit", h.credits)}，调用 ${h.calls} 次`;
+            const title = t("rail.chart.bar_title",{hour:h.hourLabel,credits:balanceText("Credit", h.credits, lang),calls:h.calls});
           return (
             <div
               key={idx}
@@ -77,8 +79,8 @@ export function HourlyUsageChart({
         })}
       </div>
       <div className="flex justify-between text-[10px] text-zinc-500 mt-1">
-        <span>24 小时前</span>
-        <span>当前（{totalCalls} 次调用）</span>
+        <span>{t("rail.chart.ago_24h")}</span>
+        <span>{t("rail.chart.now",{calls:totalCalls})}</span>
       </div>
     </div>
   );
