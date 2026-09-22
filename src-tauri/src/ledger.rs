@@ -46,7 +46,9 @@ fn parse(source:&str,v:&Value,state:&mut State,offset:u64)->Option<Event>{
         return Some(Event{id:format!("{ts}-{:x}",Sha256::digest(serde_json::to_vec(&totals).ok()?)),ts,model:if state.model.is_empty(){"unknown".into()}else{state.model.clone()},counts,partial:anomaly||state.model.is_empty()});
     }
     // ZCode CLI 的会话转录与 Claude Code 同构（assistant 消息带 message.usage），复用同一解析分支。
-    if source=="claude"||source=="zcode"{
+    // Qwen CLI（Round5A 项目三）同为 Claude Code 同构布局（~/.qwen/projects/**/*.jsonl，QWEN_CONFIG_DIR
+    // 可覆盖），同样复用本分支；本机无 ~/.qwen 目录，格式按同构假设实现——【未经真实数据验证】。
+    if ["claude","zcode","qwen"].contains(&source){
         if v["type"]!="assistant"{return None}let m=&v["message"];let u=m.get("usage")?;
         let ts=timestamp(&v["timestamp"])?;
         let counts=[count(&u["input_tokens"]),count(&u["output_tokens"]),count(&u["cache_read_input_tokens"]),count(&u["cache_creation_input_tokens"])];
@@ -81,16 +83,33 @@ fn parse(source:&str,v:&Value,state:&mut State,offset:u64)->Option<Event>{
         if ["input","output","cacheRead","cacheWrite"].iter().any(|k|negative(&u[k])){state.anomalies+=1}
         return Some(Event{id:v["id"].as_str().map(str::to_string).unwrap_or_else(||format!("offset-{offset}")),ts:timestamp(&v["timestamp"])?,model:m["model"].as_str().unwrap_or("unknown").into(),counts:[count(&u["input"]),count(&u["output"]),count(&u["cacheRead"]),count(&u["cacheWrite"])],partial:true});
     }
+    // Round5A 项目二：OpenCode storage/message 的助手消息（<messageID>.json 或 .jsonl 行，单对象形状）。
+    // 本机无 ~/.local/share/opencode 目录，schema 按上游 sst/opencode v1.0.0 源码（message-v2.ts：
+    // role/tokens{input,output,reasoning,cache{read,write}}/time{created,completed}/modelID）实现
+    // ——【未经真实数据验证】。input 是否已含 cache 因上游 provider 而异（AI SDK 各家口径不统一），
+    // 无法本地核实，故不去重、四分项直接并列，恒标 partial（与 gemini/openclaw 同等诚实度）。
+    if source=="opencode"{
+        if v["role"]!="assistant"{return None}let u=v.get("tokens")?;
+        if u["input"].is_null()&&u["output"].is_null(){return None}
+        let ts=timestamp(&v["time"]["completed"]).or_else(||timestamp(&v["time"]["created"]))?;
+        // 分项守卫：任一分项为负（count() 静默归零）→ 计入异常。
+        if negative(&u["input"])||negative(&u["output"])||negative(&u["cache"]["read"])||negative(&u["cache"]["write"]){state.anomalies+=1}
+        let counts=[count(&u["input"]),count(&u["output"]),count(&u["cache"]["read"]),count(&u["cache"]["write"])];
+        if counts.iter().all(|c|*c==0){return None}
+        return Some(Event{id:v["id"].as_str().map(str::to_string).unwrap_or_else(||format!("offset-{offset}")),ts,model:v["modelID"].as_str().unwrap_or("unknown").into(),counts,partial:true});
+    }
     None
 }
 fn discover<F>(root:&Path,source:&str,out:&mut Vec<(String,PathBuf)>,depth:usize,truncated:&mut bool,is_cancelled:&F)->Result<(),String>
 where F: Fn() -> bool {
     if is_cancelled() { return Err("已取消".into()); }
     if depth>18||out.len()>=10000{ *truncated = true; return Ok(()); }
-    // 目录不存在=该来源未安装（正常）；权限等其他错误才标扫描截断（A13）。
+    // 目录不存在=该来源未安装（正常）；路径指向文件（误配为目录，read_dir 返回 NotADirectory，
+    // Windows os error 267）同样静默跳过——若误标 truncated，Summary 会永久出现 coverage_gap，
+    // 与「仅一条路径无效」的实际不符；权限等其他错误才标扫描截断（A13）。
     let entries=match fs::read_dir(root){
         Ok(e)=>e,
-        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(()),
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound||e.kind()==std::io::ErrorKind::NotADirectory=>return Ok(()),
         Err(_)=>{ *truncated = true; return Ok(()); }
     };
     for entry in entries.flatten(){
@@ -100,7 +119,7 @@ where F: Fn() -> bool {
             let name=path.file_name().and_then(|s|s.to_str()).unwrap_or("");
             if ["cline","roocode","kilocode"].contains(&source) && name!="ui_messages.json"{continue}
             if source=="gemini" && !name.starts_with("session-"){continue}
-            if ["claude","codex","openclaw","zcode"].contains(&source)&&path.extension().is_none_or(|e|e!="jsonl"){continue}
+            if ["claude","codex","openclaw","zcode","qwen"].contains(&source)&&path.extension().is_none_or(|e|e!="jsonl"){continue}
             out.push((source.into(),path));
         }
     }
@@ -114,18 +133,59 @@ where F: Fn() -> bool {
     let mut part=vec![];discover(root,source,&mut part,0,truncated,is_cancelled)?;out.extend(part);
     Ok(())
 }
-fn sources_with_cancel<F>(is_cancelled:&F)->Result<(Vec<(String,PathBuf)>,bool),String>
+/// Round5A 项目四：设置 token_spend_extra_paths（来源 → 附加扫描目录）并入来源发现，
+/// 复用与默认根相同的 discover/collect 预算机制。排在默认根之后，异常目录不挤占默认根的发现预算。
+/// 防御式过滤（保存命令已校验，此处兜底不崩）：空串、非绝对路径与「不是目录的路径」静默忽略；
+/// 每来源最多取前 TOKEN_SPEND_EXTRA_PATHS_PER_SOURCE 条。诚实口径（与 README/面板披露一致）：
+/// 与默认根只按文件路径（path_key）去重——嵌套（同一文件被两个根各发现一次）路径相同、不会重复；
+/// 跨目录复制件对事件 id 稳定的来源（claude/zcode/qwen/codex/gemini/openclaw/opencode 的真实消息 id）
+/// 在统计 GROUP BY (source,event_id) 时折叠、也不双计，但会重复解析并使 scanned_files 翻倍；
+/// cline/roocode/kilocode（id 恒带 path_key 命名空间）与缺 id 的 offset- 兜底事件，复制件按路径重复计数。
+fn extra_scan_paths<F>(extra:&BTreeMap<String,Vec<String>>,out:&mut Vec<(String,PathBuf)>,truncated:&mut bool,is_cancelled:&F)->Result<(),String>
+where F: Fn() -> bool {
+    for (source,dirs) in extra{
+        for dir in dirs.iter().take(crate::types::TOKEN_SPEND_EXTRA_PATHS_PER_SOURCE){
+            if dir.is_empty(){continue}
+            let p=PathBuf::from(dir);
+            if !p.is_absolute(){continue}
+            collect(&p,source,out,truncated,is_cancelled)?;
+        }
+    }
+    Ok(())
+}
+fn sources_with_cancel<F>(is_cancelled:&F,extra:&BTreeMap<String,Vec<String>>)->Result<(Vec<(String,PathBuf)>,bool),String>
 where F: Fn() -> bool {
     let mut out=vec![];
     let mut truncated=false;
     if let Some(root)=crate::providers::credentials::home_path("CLAUDE_CONFIG_DIR",".claude"){collect(&root.join("projects"),"claude",&mut out,&mut truncated,is_cancelled)?;}
-    // ZCode：标准布局 ~/.zcode/projects；部分安装（实测）把 Claude 同构转录放在
-    // ~/.zcode/v2/agent-config/claude/<hash>/projects/ 下。两个根都收，目录缺失时 discover 静默跳过。
-    if let Some(root)=crate::providers::credentials::home_path("ZCODE_HOME",".zcode"){collect(&root.join("projects"),"zcode",&mut out,&mut truncated,is_cancelled)?;collect(&root.join("v2").join("agent-config").join("claude"),"zcode",&mut out,&mut truncated,is_cancelled)?;}
+    // ZCode：v2 claude 同构转录两根（~/.zcode/projects 与 v2/agent-config/claude）继续收集——它们与
+    // CLI 信封（cli/db/db.sqlite）分属不同会话空间（裸 UUID vs sess_*；本机实测时 projects 根不存在，
+    // 区间 2026-06-26..07-31 全部来自在场的 v2/agent-config/claude，与 db model_usage 的
+    // 2026-08-23..09-22 不相交），db 里的 claude-import-* 会话只导入消息历史、model_usage 为 0 行：
+    // 两根并存不双计（证据见 zcode_cli_db_events 注释）。
+    // CLI 信封的权威根是 cli/db/db.sqlite（Round5A 项目一）：cli/agents/**/transcript.jsonl（子代理转录）
+    // 与 cli/rollout/model-io-*.jsonl（主会话原始 IO）与 db model_usage 是同一批请求的重复记录，且单文件
+    // 实测可达 20GB/单行 16MB（超出 256MB/2MB 行扫描预算）——jsonl 信封根一律不收集，防双计。
+    if let Some(root)=crate::providers::credentials::home_path("ZCODE_HOME",".zcode"){
+        collect(&root.join("projects"),"zcode",&mut out,&mut truncated,is_cancelled)?;collect(&root.join("v2").join("agent-config").join("claude"),"zcode",&mut out,&mut truncated,is_cancelled)?;
+        let cli_db=root.join("cli").join("db").join("db.sqlite");
+        if cli_db.is_file(){out.push(("zcode".into(),cli_db));}
+    }
+    // Qwen CLI（Round5A 项目三）：Claude Code 同构布局 ~/.qwen/projects（QWEN_CONFIG_DIR 可覆盖），
+    // 复用 claude 解析分支；本机无该目录，格式未经真实数据验证（见 parse 注释）。
+    if let Some(root)=crate::providers::credentials::home_path("QWEN_CONFIG_DIR",".qwen"){collect(&root.join("projects"),"qwen",&mut out,&mut truncated,is_cancelled)?;}
+    // OpenCode（Round5A 项目二）：XDG_DATA_HOME 可覆盖 ~/.local/share；storage/message（现行文档布局）
+    // 与 storage/session/message（上游 v1.0.0 迁移代码证实存在的旧布局）两个形状都收，缺失目录静默跳过。
+    // 本机无 opencode 数据目录，schema 未经真实数据验证（见 parse 注释）。
+    if let Some(xdg)=crate::providers::credentials::home_path("XDG_DATA_HOME",".local/share"){
+        collect(&xdg.join("opencode").join("storage").join("message"),"opencode",&mut out,&mut truncated,is_cancelled)?;
+        collect(&xdg.join("opencode").join("storage").join("session").join("message"),"opencode",&mut out,&mut truncated,is_cancelled)?;
+    }
     if let Some(root)=crate::providers::credentials::home_path("CODEX_HOME",".codex"){collect(&root.join("sessions"),"codex",&mut out,&mut truncated,is_cancelled)?;collect(&root.join("archived_sessions"),"codex",&mut out,&mut truncated,is_cancelled)?;}
     if let Some(root)=crate::providers::credentials::home_path("GEMINI_CLI_HOME",".gemini"){collect(&root.join("tmp"),"gemini",&mut out,&mut truncated,is_cancelled)?;}
     if let Some(home)=dirs::home_dir(){collect(&home.join(".openclaw/agents"),"openclaw",&mut out,&mut truncated,is_cancelled)?;}
     if let Some(app)=dirs::config_dir(){for editor in ["Code","Code - Insiders","VSCodium"]{for (source,ext) in [("cline","saoudrizwan.claude-dev"),("roocode","rooveterinaryinc.roo-cline"),("kilocode","kilocode.kilo-code")]{collect(&app.join(editor).join("User/globalStorage").join(ext).join("tasks"),source,&mut out,&mut truncated,is_cancelled)?;}}}
+    extra_scan_paths(extra,&mut out,&mut truncated,is_cancelled)?;
     Ok((out,truncated))
 }
 fn database(path:&Path)->Result<Connection,String>{
@@ -134,14 +194,16 @@ fn database(path:&Path)->Result<Connection,String>{
     db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,source TEXT,size INTEGER,mtime INTEGER,prefix TEXT,offset INTEGER,state TEXT); CREATE TABLE IF NOT EXISTS events(path TEXT,source TEXT,event_id TEXT,ts INTEGER,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,partial INTEGER,PRIMARY KEY(path,event_id)); CREATE INDEX IF NOT EXISTS idx_events_source_ts ON events(source, ts); CREATE TABLE IF NOT EXISTS daily_archive(day TEXT,source TEXT,model TEXT,input INTEGER,output INTEGER,cache_read INTEGER,cache_write INTEGER,PRIMARY KEY(day,source,model)); CREATE TABLE IF NOT EXISTS daily_active(day TEXT PRIMARY KEY,seconds INTEGER); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER);").map_err(|_|"无法初始化统计缓存")?;Ok(db)
 }
 pub fn scan(days:u32)->Result<Summary,String>{
-    scan_with_cancel(days,&||false)
+    scan_with_cancel(days,&||false,BTreeMap::new())
 }
-pub fn scan_with_cancel<F>(days:u32,is_cancelled:&F)->Result<Summary,String>
+/// `extra` 为设置 token_spend_extra_paths（来源 → 附加扫描目录，已按绝对路径/上限校验）；
+/// 调用方（token_spend 命令）从内存设置快照传入，扫描期快照不变。
+pub fn scan_with_cancel<F>(days:u32,is_cancelled:&F,extra:BTreeMap<String,Vec<String>>)->Result<Summary,String>
 where F: Fn() -> bool + Send + Sync {
     if ![7,30,90].contains(&days){return Err("统计区间无效".into())}
     if is_cancelled() { return Err("已取消".into()); }
     let root=crate::config::get_config_dir();fs::create_dir_all(&root).map_err(|_|"无法创建统计缓存")?;
-    let (paths, truncated) = sources_with_cancel(is_cancelled)?;
+    let (paths, truncated) = sources_with_cancel(is_cancelled,&extra)?;
     scan_paths_with_cancel(days,&ledger_db_path(),paths,truncated,is_cancelled)
 }
 pub fn scan_paths(days:u32,db_path:&Path,paths:Vec<(String,PathBuf)>,truncated:bool)->Result<Summary,String>{
@@ -160,10 +222,29 @@ where F: Fn() -> bool + Send + Sync {
         if is_cancelled() { return Err("已取消".into()); }
         let result=(||->Result<(),String>{
             let metadata=fs::metadata(&path).map_err(|_|"metadata")?;
-            if metadata.len()>256*1024*1024{return Err("large".into())}
-            let mtime=metadata.modified().ok().and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok()).map(|t|t.as_nanos().min(i64::MAX as u128) as i64).unwrap_or(0);
+            let is_zdb=source=="zcode"&&path.file_name().and_then(|s|s.to_str())==Some("db.sqlite");
+            // WAL 副本可能比主库文件新（运行中的写入先落 -wal，主库要等 checkpoint 才变大），
+            // ZCode CLI 库的「是否有新数据」判定取主库与 -wal 的最大 mtime，避免漏读未 checkpoint 的增量。
+            // 刻意不计入 -shm：SQLite 连接（包括这里的只读投影连接）每次打开都会更新 -shm 的
+            // 读标记，其 mtime 必变——计入会让下方 size+mtime 短路在 ZCode 运行期间永远失效，
+            // 每轮扫描都触发 ~万行全量重投影。
+            let mtime=if is_zdb{sqlite_effective_mtime(&path)}else{metadata.modified().ok().and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok()).map(|t|t.as_nanos().min(i64::MAX as u128) as i64).unwrap_or(0)};
             let path_key=format!("{:x}",Sha256::digest(path.to_string_lossy().as_bytes()));
             let old:Option<(u64,i64,String,u64,String)>=db.query_row("SELECT size,mtime,prefix,offset,state FROM files WHERE path=?",[&path_key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).ok();
+            // Round5A 项目一：ZCode CLI 信封权威根——不作为 jsonl 解析，改走 model_usage 投影（注释见该函数）。
+            if is_zdb{
+                if old.as_ref().is_some_and(|(size,time,_,_,_)|*size==metadata.len()&&*time==mtime){return Ok(())}
+                if old.is_none()&&mtime>0&&mtime<window_start_ns{return Ok(())}
+                let tx=db.transaction().map_err(|_|"lock")?;
+                tx.execute("DELETE FROM events WHERE path=?",[&path_key]).map_err(|_|"db")?;
+                let mut st=State::default();
+                let n=zcode_cli_db_events(&path,&tx,&path_key,&mut st)?;
+                tx.execute("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?)",params![path_key,source,metadata.len(),mtime,"",0i64,serde_json::to_string(&st).map_err(|_|"state")?]).map_err(|_|"checkpoint")?;
+                tx.commit().map_err(|_|"commit")?;
+                if n>0{changed+=1;}
+                return Ok(());
+            }
+            if metadata.len()>256*1024*1024{return Err("large".into())}
             if old.as_ref().is_some_and(|(size,time,_,_,_)|*size==metadata.len()&&*time==mtime){return Ok(())}
             if old.is_none() && mtime>0 && mtime<window_start_ns {return Ok(())}
             let mut file=File::open(&path).map_err(|_|"read")?;let mut start=vec![0;metadata.len().min(1024) as usize];file.read_exact(&mut start).map_err(|_|"read")?;
@@ -199,10 +280,17 @@ where F: Fn() -> bool + Send + Sync {
             }else{
                 if metadata.len()>16*1024*1024{return Err("large json".into())}
                 let v:Value=serde_json::from_reader(file).map_err(|_|"json")?;
-                let array=v.as_array().or_else(||v["messages"].as_array()).ok_or("format")?;
-                for (i,line) in array.iter().enumerate(){
-                    if i % 100 == 0 && is_cancelled() { return Err("已取消".into()); }
-                    insert(line,i as u64,&mut state)?;
+                // 单对象消息文件（OpenCode storage/message 的 <messageID>.json，Round5A 项目二）：
+                // 带 role 的对象直接按单条记录解析，不再要求数组形状。
+                let single=v.get("role").is_some();
+                if single{insert(&v,0,&mut state)?;}
+                let array=v.as_array().or_else(||v["messages"].as_array());
+                match array{
+                    Some(a)=>for (i,line) in a.iter().enumerate(){
+                        if i % 100 == 0 && is_cancelled() { return Err("已取消".into()); }
+                        insert(line,i as u64,&mut state)?;
+                    },
+                    None=>if !single{return Err("format".into())},
                 }
                 offset=metadata.len();
             }
@@ -285,7 +373,7 @@ where F: Fn() -> bool + Send + Sync {
         } else {
             "费用暂不可用；不把未知模型价格当作零。".into()
         },
-        "Gemini/OpenClaw/编辑器记录为部分格式覆盖；Copilot、导出来源及其他目录尚未支持。".into()
+        "Gemini/OpenClaw/编辑器记录为部分格式覆盖；OpenCode、Qwen 本机无真实数据目录，解析未经真实数据验证；Copilot、导出来源及其他目录尚未支持。".into()
     ];
     if coverage_gap{
         notes.push("目录扫描达到上限或受限，已保留既有历史记录，统计可能存在缺口。".into());
@@ -303,6 +391,68 @@ where F: Fn() -> bool + Send + Sync {
         notes.push(format!("发现 {anomalies} 条分项矛盾事件（分项为负或缓存增量大于输入增量等），已标记 partial，计数时请留意。"));
     }
     Ok(Summary{rows,scanned_files:scanned,skipped_files:skipped,changed_files:changed,days,partial,anomalies,cost_estimate,month_cost_by_source,notes,duration_ms,coverage_gap})
+}
+
+/// SQLite 库文件的「有效 mtime」= 主库与 -wal 副本 mtime 的最大值（缺哪个跳哪个）。
+/// ZCode CLI 运行中写入先落 WAL，主库文件要等 checkpoint 才变化，只看主库会漏读增量。
+/// 刻意不计入 -shm：任何（含只读）连接每次打开库都会更新 -shm 的读标记使其 mtime 变化，
+/// 计入会让「size+mtime 未变则跳过」的短路在库被频繁打开期间永远失效。
+fn sqlite_effective_mtime(path:&Path)->i64{
+    let mut best=0i64;
+    let mut candidates=vec![path.to_path_buf()];
+    for suffix in ["-wal"]{let mut s=path.as_os_str().to_os_string();s.push(suffix);candidates.push(PathBuf::from(s));}
+    for p in candidates{if let Ok(m)=fs::metadata(&p){if let Ok(t)=m.modified(){if let Ok(d)=t.duration_since(std::time::UNIX_EPOCH){best=best.max(d.as_nanos().min(i64::MAX as u128) as i64);}}}}
+    best
+}
+/// Round5A 项目一：把 ZCode CLI 权威根 `~/.zcode/cli/db/db.sqlite` 的 `model_usage` 表投影成账本事件
+/// （每条模型请求一行，id 即该表主键，天然幂等去重）。ZCODE_HOME 覆盖根目录。
+///
+/// 防双计与语义探查结论（2026-09-23 只读实测本机 ZCode 3.10.1 数据，样本即真实文件，未复制内容）：
+/// 1) **cli/rollout/model-io-*.jsonl 与 cli/agents/**/transcript.jsonl 是同一批请求的重复记录，不收集**。
+///    对 sess_443e472a 逐请求比对：rollout 48 个 model_io 事件与 db 行按时间序一一对应，
+///    (input,output,cache_read) 逐值相等（合计 5,888,252 vs 5,888,218，尾差 34≈0.0006%，来自
+///    status='error' 的重试行只在 db 留痕）；agents 目录 31 个转录全是 sess_subagent_* 子代理会话，
+///    其请求同样出现在 model_usage（query_source='subagent'，867 行），15/23 个 agents 会话目录与
+///    rollout 文件同名重叠。db 是权威超集（161 个会话有 usage，query_source 覆盖 main_turn/subagent/
+///    workflow_child/compact/session_title 等），收集 jsonl 根必然双计；且 rollout 实测单文件最大 20GB、
+///    单行 16MB，超出 256MB/2MB 行扫描预算，jsonl 路线不可行。
+/// 2) **v2 claude 格式转录与 CLI 信封并存不双计**：v2 根会话 id 为裸 UUID（2026-06-26..07-31），
+///    CLI 信封为 sess_*（db model_usage 时间区间 2026-08-23..09-22），区间与 id 空间均不相交；
+///    db 中 claude-import-* 会话（7 个）model_usage 为 0 行（只导入消息历史）。
+/// 3) **usage 是逐请求增量，不是会话累计**：同会话相邻 model_complete 的 outputTokens 非单调
+///    （实测 119→323→214→219→179…），故无需 codex 式 totals-delta，逐行直接计数。
+/// 4) **cached ⊆ input**（OpenAI 风格含缓存输入）：实测全部 9,433 行 cache_read≤input 且
+///    computed_total=input+output → 与 codex/gemini 同口径：非缓存输入 = input − cache_read。
+///    cache_creation_input_tokens 列在全部真实行中为 0（列存在但当前无提供方写入），按独立分项
+///    计入 cache_write 桶、不从 input 里扣——该并列口径未经真实数据验证，若未来出现非零值需复核。
+/// 5) 历史取舍：rollout jsonl 早至 2026-08-03、db usage 自 2026-08-23 起——db 更短但 jsonl 不可读
+///    （预算超限）且与 db 重叠，取 db 是唯一不双计的选择；更早消耗如实缺失（与"缺失文件不代表
+///    零消耗"同口径，不伪造）。
+fn zcode_cli_db_events(path:&Path,tx:&rusqlite::Transaction,path_key:&str,state:&mut State)->Result<usize,String>{
+    let src=rusqlite::Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|_|"zcode cli 库打不开")?;
+    src.busy_timeout(std::time::Duration::from_secs(2)).map_err(|_|"zcode cli 库锁定")?;
+    let mut stmt=src.prepare("SELECT id,model_id,status,started_at,input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens FROM model_usage").map_err(|_|"zcode cli 库查询失败")?;
+    let mut ins=tx.prepare("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?)").map_err(|_|"db")?;
+    let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,i64>(6)?,r.get::<_,i64>(7)?))).map_err(|_|"zcode cli 库读取失败")?;
+    let mut n=0usize;
+    for (id,model,status,started_at,input,output,cache_read,cache_write) in rows.flatten(){
+        // 分项守卫：列值负数（count 语义会静默归零）→ 计入异常并钳 0；全零行跳过。
+        let raw=[input,output,cache_read,cache_write];
+        if raw.iter().any(|c|*c<0){state.anomalies+=1}
+        let c0=raw.map(|c|c.max(0) as u64);
+        if c0.iter().all(|c|*c==0){continue}
+        // cached ⊆ input 语义被破坏（cache_read>input）→ 分项矛盾，同 codex/gemini 守卫。
+        let anomaly=c0[2]>c0[0];
+        if anomaly{state.anomalies+=1}
+        let counts=[c0[0].saturating_sub(c0[2]),c0[1],c0[2],c0[3]];
+        // started_at 为毫秒时间戳；running 行可能随后增长，ON CONFLICT 无需——事件按 path 全删重建。
+        let ts=(started_at/1000).max(0);
+        let empty=model.as_deref().map(str::is_empty).unwrap_or(true);
+        let unknown=empty||model.is_none();
+        ins.execute(params![path_key,"zcode",id,ts,if unknown{"unknown"}else{model.as_deref().unwrap_or_default()},counts[0],counts[1],counts[2],counts[3],(anomaly||status!="completed"||unknown) as u8]).map_err(|_|"record")?;
+        n+=1;
+    }
+    Ok(n)
 }
 
 /// Round4 项目三口径披露：month_cost_by_source 实际覆盖「本月 ∩ 扫描窗口」。
@@ -720,6 +870,236 @@ fn estimate_model_cost(model: &str, counts: &[u64; 4]) -> Option<f64> {
         assert_eq!(s.changed_files,1);assert_eq!(s.rows.len(),1);
         assert_eq!(s.rows[0].source,"zcode");assert_eq!(s.rows[0].model,"glm-5");
         assert_eq!((s.rows[0].input,s.rows[0].output,s.rows[0].cache_read,s.rows[0].cache_write),(11,4,6,2));
+    }
+    /// 合成 ZCode CLI 库 fixture：仅建 model_usage 中被投影的列（与真实表同名列；真实表还有几十个
+    /// 未引用列，SELECT 不受影响）。值形态对齐真实探查：cached ⊆ input、started_at 毫秒。
+    fn zcode_db_fixture()->(tempfile::TempDir,PathBuf){
+        let d=tempfile::tempdir().unwrap();
+        let path=d.path().join("db.sqlite");
+        let c=rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch("CREATE TABLE model_usage(id TEXT PRIMARY KEY,model_id TEXT,status TEXT,started_at INTEGER,input_tokens INTEGER,output_tokens INTEGER,cache_read_input_tokens INTEGER,cache_creation_input_tokens INTEGER);").unwrap();
+        let mut ins=c.prepare("INSERT INTO model_usage VALUES(?,?,?,?,?,?,?,?)").unwrap();
+        // 376501 输入含 376384 缓存读（真实行形态）：非缓存输入=117。
+        ins.execute(params!["u1","GLM-5.3","completed",1_787_509_531_012i64,376_501i64,44,376_384,0]).unwrap();
+        // 全零行必须跳过（synthetic 语义同 claude）。
+        ins.execute(params!["u2","GLM-5.3","completed",1_787_509_531_013i64,0,0,0,0]).unwrap();
+        // 非完成状态：计真实消耗但降级 partial（模型取不同名，避免与前一行合并进同一 day/hour 桶）。
+        ins.execute(params!["u3","GLM-5.3-Flash","error",1_787_509_531_014i64,1_000,50,0,0]).unwrap();
+        drop(ins);c.close().unwrap();
+        (d,path)
+    }
+    #[test]
+    fn zcode_cli_db_projects_model_usage_to_events(){
+        let (d,dbf)=zcode_db_fixture();let db=d.path().join("cache.db");
+        let s=scan_paths(90,&db,vec![("zcode".into(),dbf.clone())],false).unwrap();
+        assert_eq!(s.changed_files,1);assert_eq!(s.skipped_files,0);
+        let u1:Vec<&Row>=s.rows.iter().filter(|r|r.model=="GLM-5.3"&&!r.partial).collect();
+        assert_eq!(u1.len(),1);
+        assert_eq!((u1[0].input,u1[0].output,u1[0].cache_read,u1[0].cache_write),(117,44,376_384,0),"input is cached-inclusive: non-cached input = input - cache_read");
+        // error 状态行计入但降级 partial（真实消耗不丢）。
+        let err:Vec<&Row>=s.rows.iter().filter(|r|r.partial).collect();
+        assert_eq!(err.len(),1);assert_eq!(err[0].input,1_000);assert_eq!(err[0].output,50);
+        // 幂等重扫：库未变（size+有效 mtime 相同）→ 不重投影，行仍在。
+        let b=scan_paths(90,&db,vec![("zcode".into(),dbf)],false).unwrap();
+        assert_eq!(b.changed_files,0);
+        assert_eq!(b.rows.iter().map(|r|r.input).sum::<u64>(),1_117);
+    }
+    #[test]
+    fn zcode_cli_db_contradictions_and_unknown_models_are_flagged(){
+        let d=tempfile::tempdir().unwrap();let dbf=d.path().join("db.sqlite");
+        let c=rusqlite::Connection::open(&dbf).unwrap();
+        c.execute_batch("CREATE TABLE model_usage(id TEXT PRIMARY KEY,model_id TEXT,status TEXT,started_at INTEGER,input_tokens INTEGER,output_tokens INTEGER,cache_read_input_tokens INTEGER,cache_creation_input_tokens INTEGER);").unwrap();
+        let mut ins=c.prepare("INSERT INTO model_usage VALUES(?,?,?,?,?,?,?,?)").unwrap();
+        // cache_read > input：cached ⊆ input 被破坏 → 异常 + partial，非缓存输入钳 0。
+        ins.execute(params!["bad","GLM-5.3","completed",1_787_509_531_012i64,100,5,200,0]).unwrap();
+        // 负数分项：钳 0 + 异常（count 语义不得静默归零掩盖）。
+        ins.execute(params!["neg","GLM-5.3","completed",1_787_509_531_013i64,-8,4,0,0]).unwrap();
+        // model_id 为 NULL：unknown + partial，不清零计数。
+        ins.execute(params!["nomodel",Option::<String>::None,"completed",1_787_509_531_014i64,10,2,0,0]).unwrap();
+        drop(ins);c.close().unwrap();
+        let db=d.path().join("cache.db");
+        let s=scan_paths(90,&db,vec![("zcode".into(),dbf)],false).unwrap();
+        assert_eq!(s.anomalies,2,"cache>input and negative components must be counted as anomalies");
+        let by:BTreeMap<&str,&Row>=s.rows.iter().map(|r|(r.model.as_str(),r)).collect();
+        // bad（缓存钳 0）与 neg（负数钳 0）同模型同秒 → 合并进同一 day/hour 桶：output 5+4=9。
+        assert_eq!((by["GLM-5.3"].input,by["GLM-5.3"].output,by["GLM-5.3"].cache_read),(0,9,200));
+        assert!(by["GLM-5.3"].partial);
+        let m=by.get("unknown").unwrap();
+        assert_eq!((m.input,m.output),(10,2));assert!(m.partial);
+    }
+    #[test]
+    fn zcode_cli_db_sidecar_wal_mtime_is_honored(){
+        // -wal 副本比主库新（模拟运行中未 checkpoint 的写入）：有效 mtime 取最大值。
+        let (d,dbf)=zcode_db_fixture();
+        let main=fs::metadata(&dbf).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as i64;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(d.path().join("db.sqlite-wal"),b"x").unwrap();
+        assert!(sqlite_effective_mtime(&dbf)>main,"wal sidecar must count toward the effective mtime");
+        // -shm 不计入：只读连接每次打开库都会顶新 -shm 的 mtime（实测必变），
+        // 计入会让 size+mtime 短路在 ZCode 运行期间永远失效 → 每轮全量重投影。
+        let with_wal=sqlite_effective_mtime(&dbf);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(d.path().join("db.sqlite-shm"),b"x").unwrap();
+        assert_eq!(sqlite_effective_mtime(&dbf),with_wal,"a fresher -shm must NOT count toward the effective mtime");
+        // 无副本时退化为文件自身 mtime。
+        let plain=d.path().join("plain.bin");fs::write(&plain,b"z").unwrap();
+        let pmt=fs::metadata(&plain).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as i64;
+        assert_eq!(sqlite_effective_mtime(&plain),pmt);
+    }
+    #[test]
+    fn zcode_cli_db_schema_drift_is_skipped_not_fatal(){
+        // 未来 ZCode 改表名/列名：prepare 失败 → skipped++（partial 披露），不得 panic 或误清历史。
+        let d=tempfile::tempdir().unwrap();let dbf=d.path().join("db.sqlite");
+        let c=rusqlite::Connection::open(&dbf).unwrap();
+        c.execute_batch("CREATE TABLE other(x INTEGER);").unwrap();c.close().unwrap();
+        let db=d.path().join("cache.db");
+        let s=scan_paths(90,&db,vec![("zcode".into(),dbf)],false).unwrap();
+        assert_eq!(s.skipped_files,1);assert!(s.partial);assert!(s.rows.is_empty());
+    }
+    #[test]
+    fn opencode_message_json_parses(){
+        let mut s=State::default();
+        // 上游 v1.0.0 Assistant 形状（message-v2.ts）：tokens{input,output,reasoning,cache{read,write}}。
+        let v=json!({"id":"msg_1","sessionID":"ses_1","role":"assistant","modelID":"claude-sonnet-4","providerID":"anthropic","time":{"created":1_787_509_531_012i64,"completed":1_787_509_540_000i64},"tokens":{"input":10,"output":4,"reasoning":0,"cache":{"read":6,"write":2}}});
+        let e=parse("opencode",&v,&mut s,0).unwrap();
+        assert_eq!(e.counts,[10,4,6,2]);assert_eq!(e.model,"claude-sonnet-4");assert_eq!(e.id,"msg_1");
+        assert_eq!(e.ts,1_787_509_540,"completed (ms) wins as the event timestamp");
+        // 部分格式覆盖：恒标 partial（input 是否含缓存无法本地核实）。
+        assert!(e.partial);
+        // 用户消息与缺 tokens 的行不算事件。
+        assert!(parse("opencode",&json!({"role":"user","tokens":{"input":1,"output":1}}),&mut s,1).is_none());
+        assert!(parse("opencode",&json!({"role":"assistant"}),&mut s,2).is_none());
+        // 缺 completed 回退 created。
+        let e2=parse("opencode",&json!({"id":"m2","role":"assistant","time":{"created":1_787_509_531_012i64},"tokens":{"input":1,"output":1}}),&mut s,3).unwrap();
+        assert_eq!(e2.ts,1_787_509_531);
+        // 负分项 → 异常 + 钳 0，不清零整行。
+        let e3=parse("opencode",&json!({"id":"m3","role":"assistant","time":{"created":1_787_509_531_012i64},"tokens":{"input":-5,"output":3}}),&mut s,4).unwrap();
+        assert_eq!(e3.counts,[0,3,0,0]);assert_eq!(s.anomalies,1);
+    }
+    #[test]
+    fn opencode_message_files_are_counted_in_scan(){
+        let d=tempfile::tempdir().unwrap();
+        let msg=d.path().join("storage").join("message").join("ses_1");
+        fs::create_dir_all(&msg).unwrap();
+        let mk=|id:&str,role:&str,i:u64|json!({"id":id,"role":role,"modelID":"m","time":{"created":chrono::Utc::now().timestamp_millis()},"tokens":{"input":i,"output":2,"reasoning":0,"cache":{"read":0,"write":0}}}).to_string();
+        let a=msg.join("msg_a.json");let b=msg.join("msg_b.json");
+        fs::write(&a,mk("a","assistant",10)).unwrap();
+        fs::write(&b,mk("b","user",99)).unwrap();
+        let db=d.path().join("cache.db");
+        let s=scan_paths(7,&db,vec![("opencode".into(),a),("opencode".into(),b)],false).unwrap();
+        assert_eq!(s.changed_files,1,"single-object message .json must parse; the user message yields no event");
+        assert_eq!(s.rows[0].source,"opencode");assert!(s.rows[0].partial);
+        assert_eq!(s.rows[0].input,10);assert_eq!(s.rows[0].output,2);
+        assert_eq!(s.skipped_files,0);
+    }
+    #[test]
+    fn opencode_discovery_takes_both_layout_shapes(){
+        let d=tempfile::tempdir().unwrap();
+        let a=d.path().join("storage").join("message").join("s1").join("m.json");
+        let b=d.path().join("storage").join("session").join("message").join("s2").join("m2.jsonl");
+        fs::create_dir_all(a.parent().unwrap()).unwrap();fs::create_dir_all(b.parent().unwrap()).unwrap();
+        fs::write(&a,"{}").unwrap();fs::write(&b,"").unwrap();
+        for root in [d.path().join("storage").join("message"),d.path().join("storage").join("session").join("message")].iter(){
+            let mut truncated=false;let mut out=vec![];
+            collect(root,"opencode",&mut out,&mut truncated,&||false).unwrap();
+            assert_eq!(out.len(),1);
+        }
+    }
+    #[test]
+    fn qwen_transcripts_reuse_claude_parsing(){
+        let mut s=State::default();
+        let v=json!({"type":"assistant","timestamp":"2026-09-20T08:00:00Z","message":{"id":"q1","model":"qwen3-max","usage":{"input_tokens":12,"output_tokens":5,"cache_read_input_tokens":3,"cache_creation_input_tokens":1}}});
+        let e=parse("qwen",&v,&mut s,0).unwrap();
+        assert_eq!(e.counts,[12,5,3,1]);assert_eq!(e.model,"qwen3-max");assert_eq!(e.id,"q1");assert!(!e.partial);
+        // 同构守卫同样生效：全零 synthetic 占位不算事件。
+        let zero=json!({"type":"assistant","timestamp":"2026-09-20T08:00:01Z","message":{"id":"q2","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}});
+        assert!(parse("qwen",&zero,&mut s,1).is_none());
+    }
+    #[test]
+    fn qwen_sessions_are_counted_in_scan(){
+        let d=tempfile::tempdir().unwrap();let db=d.path().join("cache.db");
+        let proj=d.path().join("projects").join("D--proj");
+        fs::create_dir_all(&proj).unwrap();
+        let v=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"q1","model":"qwen3-max","usage":{"input_tokens":12,"output_tokens":5}}});
+        let sess=proj.join("sess.jsonl");
+        fs::write(&sess,format!("{v}\n")).unwrap();
+        fs::write(proj.join("meta.json"),"{\"x\":1}").unwrap();
+        let s=scan_paths(7,&db,vec![("qwen".into(),sess)],false).unwrap();
+        assert_eq!(s.changed_files,1);
+        assert_eq!(s.rows[0].source,"qwen");assert_eq!(s.rows[0].model,"qwen3-max");
+        assert_eq!((s.rows[0].input,s.rows[0].output),(12,5));
+    }
+    #[test]
+    fn qwen_discovery_only_takes_jsonl(){
+        // ~/.qwen/projects 同构布局：目录里混有非转录 .json（CLAUDE.md 缓存等），只收 .jsonl。
+        let d=tempfile::tempdir().unwrap();
+        let proj=d.path().join("projects").join("D--proj");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(proj.join("sess.jsonl"),"").unwrap();
+        fs::write(proj.join("meta.json"),"{\"x\":1}").unwrap();
+        let mut truncated=false;let mut out=vec![];
+        collect(&d.path().join("projects"),"qwen",&mut out,&mut truncated,&||false).unwrap();
+        assert_eq!(out.len(),1,"only .jsonl transcripts are collected for qwen");
+        assert_eq!(out[0].0,"qwen");assert!(out[0].1.ends_with("sess.jsonl"));
+    }
+    #[test]
+    fn extra_scan_paths_collect_and_count(){
+        // Round5A 项目四：临时目录里的合成文件按对应 source 一并收集并计入统计。
+        let d=tempfile::tempdir().unwrap();
+        let sub=d.path().join("custom-logs");
+        fs::create_dir_all(&sub).unwrap();
+        let v=json!({"type":"assistant","timestamp":chrono::Utc::now().to_rfc3339(),"message":{"id":"x1","model":"glm-5","usage":{"input_tokens":10,"output_tokens":5}}});
+        fs::write(sub.join("session.jsonl"),format!("{v}\n")).unwrap();
+        let mut extra=BTreeMap::new();
+        extra.insert("zcode".into(),vec![sub.to_string_lossy().to_string()]);
+        let mut truncated=false;let mut out=vec![];
+        extra_scan_paths(&extra,&mut out,&mut truncated,&||false).unwrap();
+        assert_eq!(out.len(),1);assert_eq!(out[0].0,"zcode");assert!(out[0].1.ends_with("session.jsonl"));
+        let db=d.path().join("cache.db");
+        let s=scan_paths(7,&db,out,false).unwrap();
+        assert_eq!(s.changed_files,1);assert_eq!(s.rows[0].source,"zcode");
+        assert_eq!((s.rows[0].input,s.rows[0].output),(10,5));
+    }
+    #[test]
+    fn extra_scan_paths_ignore_illegal_entries(){
+        // 非法路径忽略不崩：相对路径与空串跳过；不存在的绝对路径按“目录缺失”静默跳过。
+        let d=tempfile::tempdir().unwrap();
+        let mut extra=BTreeMap::new();
+        extra.insert("claude".into(),vec!["relative/dir".into(),String::new(),d.path().join("missing").to_string_lossy().to_string()]);
+        let mut truncated=false;let mut out=vec![];
+        extra_scan_paths(&extra,&mut out,&mut truncated,&||false).unwrap();
+        assert!(out.is_empty(),"no entry may survive validation failures");
+        // 取消请求照常传播。
+        let mut out2=vec![];
+        assert_eq!(extra_scan_paths(&extra,&mut out2,&mut truncated,&||true).unwrap_err(),"已取消");
+    }
+    #[test]
+    fn extra_scan_paths_file_instead_of_dir_is_skipped_without_truncation(){
+        // 误把文件路径配成扫描目录（绝对路径校验拦不住）：read_dir 返回 NotADirectory
+        // （Windows os error 267），不得标 truncated——否则 Summary 永久出现 coverage_gap，
+        // 与「仅一条路径无效」的实际不符；按无效路径静默跳过。
+        let d=tempfile::tempdir().unwrap();
+        let file=d.path().join("notes.jsonl");fs::write(&file,"{}\n").unwrap();
+        let mut extra=BTreeMap::new();
+        extra.insert("claude".into(),vec![file.to_string_lossy().to_string()]);
+        let mut truncated=false;let mut out=vec![];
+        extra_scan_paths(&extra,&mut out,&mut truncated,&||false).unwrap();
+        assert!(out.is_empty());
+        assert!(!truncated,"a file path misconfigured as a directory is a silent skip, not a coverage gap");
+    }
+    #[test]
+    fn extra_scan_paths_cap_per_source(){
+        // 防御式上限：保存命令会拒绝超量，这里兜底只取每来源前 20 条，不崩不越界。
+        let d=tempfile::tempdir().unwrap();
+        let mut dirs=vec![];
+        for i in 0..25{let p=d.path().join(format!("d{i}"));fs::create_dir_all(&p).unwrap();fs::write(p.join("s.jsonl"),"").unwrap();dirs.push(p.to_string_lossy().to_string());}
+        let mut extra=BTreeMap::new();
+        extra.insert("claude".into(),dirs);
+        let mut truncated=false;let mut out=vec![];
+        extra_scan_paths(&extra,&mut out,&mut truncated,&||false).unwrap();
+        assert_eq!(out.len(),20,"at most TOKEN_SPEND_EXTRA_PATHS_PER_SOURCE dirs per source");
+        // 超出上限的第 21..25 个目录不得被收集。
+        assert!(!out.iter().any(|(_,p)|p.to_string_lossy().contains("d20")));
     }
     #[test]fn claude_component_contradiction_is_flagged_and_counted(){
         let mut s=State::default();

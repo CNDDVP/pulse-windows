@@ -27,7 +27,9 @@ pub async fn token_spend(days:u32,state:State<'_,AppState>)->Result<crate::ledge
     if is_cancelled() {
         return Err("已取消".into());
     }
-    tauri::async_runtime::spawn_blocking(move||crate::ledger::scan_with_cancel(days, &is_cancelled)).await.map_err(|_|"统计任务失败")?
+    // Round5A 项目四：自定义扫描路径随本次扫描的设置快照传入（扫描期快照不变）。
+    let extra_paths=state.settings.lock().await.token_spend_extra_paths.clone();
+    tauri::async_runtime::spawn_blocking(move||crate::ledger::scan_with_cancel(days, &is_cancelled, extra_paths)).await.map_err(|_|"统计任务失败")?
 }
 #[tauri::command]
 pub fn cancel_token_spend(state:State<'_,AppState>){
@@ -152,6 +154,45 @@ pub async fn save_subscriptions(subscriptions:BTreeMap<String,SubscriptionRecord
     state.clear_config_error();
     app.emit("settings-updated",&saved).map_err(|_|"订阅已保存，但窗口通知失败".to_string())?;
     Ok(saved.subscriptions)
+}
+/// 自定义扫描路径读取（Round5A 项目四）：随设置持久化，读为纯查询。
+#[tauri::command]
+pub async fn get_token_spend_extra_paths(state:State<'_,AppState>)->Result<BTreeMap<String,Vec<String>>,String>{
+    Ok(state.settings.lock().await.token_spend_extra_paths.clone())
+}
+/// 自定义扫描路径保存（Round5A 项目四）：沿用订阅记录模式——先校验（来源标识、每来源上限
+/// TOKEN_SPEND_EXTRA_PATHS_PER_SOURCE、非空绝对路径；存在性不校验，目录可先配置后创建），
+/// 再走 settings_io 串行落盘（失败不落盘不动内存），成功后广播 settings-updated。
+#[tauri::command]
+pub async fn save_token_spend_extra_paths(paths:BTreeMap<String,Vec<String>>,state:State<'_,AppState>,app:AppHandle)->Result<BTreeMap<String,Vec<String>>,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
+    crate::types::validate_token_spend_extra_paths(&paths)?;
+    let _io=state.settings_io.lock().await;
+    let mut settings=state.settings.lock().await.clone();
+    settings.token_spend_extra_paths=paths;
+    let had_error=state.config_error().is_some();
+    let saved=tauri::async_runtime::spawn_blocking(move||{
+        if had_error{crate::config::backup_settings()?;}
+        crate::config::save_settings(&settings)?;Ok::<_,String>(settings)
+    }).await.map_err(|_|"扫描路径保存任务失败")??;
+    *state.settings.lock().await=saved.clone();
+    state.clear_config_error();
+    app.emit("settings-updated",&saved).map_err(|_|"扫描路径已保存，但窗口通知失败".to_string())?;
+    Ok(saved.token_spend_extra_paths)
+}
+/// 扫描路径存在性提示（Round5A 项目四「存在性提示不阻断」的查询端）：返回路径当前形态。
+/// Missing=不存在（扫描按「来源未安装」静默跳过）；Other=存在但不是目录（误配，如填了文件路径，
+/// 扫描同样静默跳过）。只作面板逐条提示，不参与保存校验——存在性一律不校验，目录可先配置后创建。
+#[derive(serde::Serialize,Clone,Copy,PartialEq,Debug)]
+#[serde(rename_all="lowercase")]
+pub enum ScanPathKind{Missing,Dir,Other}
+#[tauri::command]
+pub fn scan_path_kind(path:String)->ScanPathKind{
+    match std::fs::metadata(&path){
+        Ok(m) if m.is_dir()=>ScanPathKind::Dir,
+        Ok(_)=>ScanPathKind::Other,
+        Err(_)=>ScanPathKind::Missing,
+    }
 }
 #[derive(serde::Serialize)]
 pub struct MonitorOption{pub name:String,pub label:String}#[tauri::command]
@@ -1121,6 +1162,17 @@ mod tests {
         assert!(!super::needs_initial_refresh(None,&account,true));
     }
     use super::*;
+
+    #[test]
+    fn scan_path_kind_reports_dir_missing_and_non_directory() {
+        // 存在性提示（不阻断）的查询端：目录 / 缺失 / 「是文件」三种形态各归其类。
+        let d=tempfile::tempdir().unwrap();
+        let dir=d.path().join("logs");std::fs::create_dir_all(&dir).unwrap();
+        let file=d.path().join("notes.jsonl");std::fs::write(&file,b"{}\n").unwrap();
+        assert_eq!(super::scan_path_kind(dir.to_string_lossy().to_string()),super::ScanPathKind::Dir);
+        assert_eq!(super::scan_path_kind(d.path().join("missing").to_string_lossy().to_string()),super::ScanPathKind::Missing);
+        assert_eq!(super::scan_path_kind(file.to_string_lossy().to_string()),super::ScanPathKind::Other);
+    }
 
     #[test]
     fn test_sanitize_diagnostics_string() {

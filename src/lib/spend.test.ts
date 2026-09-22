@@ -100,7 +100,7 @@ describe('monthCoverageNote', () => {
 describe('SPEND_SOURCES', () => {
   it('matches the plan source list for subscription entries', () => {
     expect(SPEND_SOURCES.map(([id]) => id)).toEqual(
-      ['claude', 'codex', 'gemini', 'cline', 'roocode', 'kilocode', 'openclaw', 'zcode'],
+      ['claude', 'codex', 'gemini', 'cline', 'roocode', 'kilocode', 'openclaw', 'zcode', 'qwen', 'opencode'],
     );
   });
 });

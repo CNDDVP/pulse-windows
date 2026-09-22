@@ -217,6 +217,16 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
     setApplied(merged);
     setSettings(cur => ({ ...cur, subscriptions: subs }));
   };
+  // Token 消耗页的扫描路径走独立命令（save_token_spend_extra_paths）落盘；与订阅记录同理
+  // （A03 同类竞态）：面板保存后若不同步本窗口快照，下一次普通设置保存会把旧的
+  // token_spend_extra_paths 整表写回去，静默丢掉刚保存的扫描路径。
+  const applyScanPaths = (paths: AppSettings["token_spend_extra_paths"]) => {
+    if (!paths) return;
+    const merged = { ...appliedRef.current, token_spend_extra_paths: paths };
+    appliedRef.current = merged;
+    setApplied(merged);
+    setSettings(cur => ({ ...cur, token_spend_extra_paths: paths }));
+  };
   const patch = (id: string, value: Partial<ProviderConfig>) => setSettings(s => ({ ...s, providers: { ...s.providers, [id]: { ...s.providers[id], ...value } } }));
 
   // Account pages keep an explicit save because credentials and labels are typed, not toggled.
@@ -697,7 +707,7 @@ export function SettingsWindow({ initialSettings, usages: externalUsages, onSave
 
         <div className="flex-1 overflow-y-auto p-6">
           {view.kind === "general" && <GeneralPage settings={settings} update={update} screens={screens} usages={usages} busy={busy} onRefreshAll={refreshAll} toast={showToast} />}
-          <div className={view.kind === "spend" ? "" : "hidden"}><TokenSpend active={view.kind === "spend"} settings={settings} onSubscriptionsSaved={applySubscriptions} /></div>
+          <div className={view.kind === "spend" ? "" : "hidden"}><TokenSpend active={view.kind === "spend"} settings={settings} onSubscriptionsSaved={applySubscriptions} onScanPathsSaved={applyScanPaths} /></div>
           {view.kind === "notifications" && <NotificationsPage settings={settings} update={update} toast={showToast} />}
           {view.kind === "hotkeys" && <HotkeysPage settings={settings} save={saveHotkeys} onError={m => m && showToast("error", m)} />}
           {view.kind === "diagnostics" && <DiagnosticsPage usages={usages} settings={settings} busy={busy} setBusy={setBusy} toast={showToast} open={id => setView({ kind: "account", id })} />}

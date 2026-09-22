@@ -15,11 +15,11 @@ it('renders one row per audited source; missing data shows — and never fabrica
   render(<SubscriptionPanel subs={{}} onSubsChange={()=>{}} monthCostBySource={null} monthCoverageNote={null} displayCurrency="USD" fxRate={7.2} />);
   // 展开面板
   fireEvent.click(screen.getByText(/订阅记录/));
-  for(const label of ['Claude Code','Codex','Gemini CLI','Cline','Roo Code','Kilo Code','OpenClaw','ZCode']){
+  for(const label of ['Claude Code','Codex','Gemini CLI','Cline','Roo Code','Kilo Code','OpenClaw','ZCode','Qwen CLI','OpenCode']){
     expect(screen.getByText(label)).toBeTruthy();
   }
-  // 未读取使用记录：本月已用与倍数两列共 16 个「—」（脚注里出现的是长句，不计）。
-  expect(screen.getAllByText('—')).toHaveLength(16);
+  // 未读取使用记录：本月已用与倍数两列共 20 个「—」= 10 来源 × 2（脚注里出现的是长句，不计）。
+  expect(screen.getAllByText('—')).toHaveLength(20);
 });
 
 it('shows the monthly estimate and an orange multiple ≥1; multiple stays — without a recorded price',async()=>{
@@ -79,5 +79,5 @@ it('a failed read keeps the panel usable and shows the error instead of fake dat
   render(<SubscriptionPanel subs={{}} onSubsChange={()=>{}} monthCostBySource={null} monthCoverageNote={null} displayCurrency="USD" fxRate={7.2} />);
   await act(async()=>{fireEvent.click(screen.getByText(/订阅记录/));});
   expect(screen.getByText('设置读取失败')).toBeTruthy();
-  expect(screen.getAllByText('—')).toHaveLength(16);
+  expect(screen.getAllByText('—')).toHaveLength(20);
 });

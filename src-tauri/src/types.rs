@@ -1,5 +1,22 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+/// Round5A 项目四：每个来源的自定义扫描路径上限（token_spend_extra_paths）。
+pub const TOKEN_SPEND_EXTRA_PATHS_PER_SOURCE: usize = 20;
+/// 校验 token_spend_extra_paths（AppSettings::validate 与保存命令共用同一份规则）：
+/// 来源标识走 valid_id；每来源最多 20 条；每条必须是非空绝对路径。
+/// 不校验存在性——目录可先配置后创建，缺失时扫描按“来源未安装”静默跳过。
+pub fn validate_token_spend_extra_paths(map:&BTreeMap<String, Vec<String>>) -> Result<(), String> {
+    if map.len()>64 { return Err("扫描路径来源过多".into()); }
+    for (src,dirs) in map {
+        if !valid_id(src) { return Err(format!("扫描路径来源标识无效: {src}")); }
+        if dirs.len()>TOKEN_SPEND_EXTRA_PATHS_PER_SOURCE { return Err(format!("来源 {src} 的扫描路径超过 {} 条上限", TOKEN_SPEND_EXTRA_PATHS_PER_SOURCE)); }
+        for p in dirs {
+            if p.is_empty() || !std::path::Path::new(p).is_absolute() { return Err(format!("来源 {src} 的扫描路径必须是绝对路径: {p}")); }
+            if p.len()>1024 { return Err(format!("来源 {src} 的扫描路径过长: {p}")); }
+        }
+    }
+    Ok(())
+}
 pub const PROVIDERS: &[(&str, &str)] = &[
     ("claude", "Claude Code"), ("codex", "Codex"), ("antigravity", "Antigravity"),
     ("cursor", "Cursor"), ("copilot", "GitHub Copilot"), ("grok", "Grok"),
@@ -214,6 +231,10 @@ pub struct AppSettings {
     pub hotkeys: HotkeySettings,
     /// 订阅记录（Round4 项目三）：来源标识 → 订阅价/币种/周期/开始日/备注。
     pub subscriptions: BTreeMap<String, SubscriptionRecord>,
+    /// 自定义扫描路径（Round5A 项目四）：来源标识 → 附加扫描目录（绝对路径，每来源上限 20）。
+    /// 诚实口径：与默认扫描根只按文件路径去重——同一文件复制进多个目录（或目录嵌套在默认根内）
+    /// 会以不同路径重复计数（README 与设置说明披露）。
+    pub token_spend_extra_paths: BTreeMap<String, Vec<String>>,
     /// 成本显示币种（Round4 项目二）：仅 "USD" | "CNY"；换算只发生在前端展示层，
     /// 成本估算入库与导出始终保持 USD 原值。
     pub display_currency: String,
@@ -237,6 +258,7 @@ impl Default for AppSettings {
             rail_warnings:RailWarnings::default(),
             notifications:NotificationSettings::default(), hotkeys:HotkeySettings::default(),
             subscriptions:BTreeMap::new(),
+            token_spend_extra_paths:BTreeMap::new(),
             display_currency:"USD".into(), usd_cny_rate:7.2,
             providers }
     }
@@ -260,6 +282,7 @@ impl AppSettings {
             if !valid_id(src) { return Err(format!("订阅来源标识无效: {src}")); }
             sub.validate().map_err(|e|format!("订阅记录 {src} 无效：{e}"))?;
         }
+        validate_token_spend_extra_paths(&self.token_spend_extra_paths)?;
         for p in &self.authorized_providers {
             if !PROVIDERS.iter().any(|(id, _)| id == p) {
                 return Err(format!("未知的已授权服务商: {p}"));
@@ -331,6 +354,34 @@ mod tests{
         root.as_object_mut().unwrap().remove("subscriptions");
         let s:AppSettings=serde_json::from_value(root).unwrap();
         assert!(s.subscriptions.is_empty());
+    }
+    #[test]fn token_spend_extra_paths_validate(){
+        // 合法：绝对路径、每来源 ≤20 条。
+        let mut s=AppSettings::default();
+        s.token_spend_extra_paths.insert("claude".into(),vec!["D:\\logs\\custom".into()]);
+        assert!(s.validate().is_ok());
+        // 相对路径与空串拒绝。
+        s.token_spend_extra_paths.insert("claude".into(),vec!["relative/dir".into()]);
+        assert!(s.validate().is_err(),"扫描路径必须绝对");
+        s.token_spend_extra_paths.insert("claude".into(),vec![String::new()]);
+        assert!(s.validate().is_err());
+        // 来源键走 valid_id。
+        s.token_spend_extra_paths.insert("claude".into(),vec!["D:\\logs".into()]);
+        s.token_spend_extra_paths.insert("bad source!".into(),vec!["D:\\logs".into()]);
+        assert!(s.validate().is_err());
+        s.token_spend_extra_paths.remove("bad source!");
+        // 每来源上限 20。
+        s.token_spend_extra_paths.insert("claude".into(),(0..21).map(|i|format!("D:\\logs\\d{i}")).collect());
+        assert!(s.validate().is_err(),"超过 20 条拒绝");
+        s.token_spend_extra_paths.insert("claude".into(),(0..20).map(|i|format!("D:\\logs\\d{i}")).collect());
+        assert!(s.validate().is_ok());
+    }
+    #[test]fn settings_without_extra_paths_field_loads_with_defaults(){
+        // 旧 settings.json 没有 token_spend_extra_paths 字段：serde default 兜底。
+        let mut root=serde_json::to_value(AppSettings::default()).unwrap();
+        root.as_object_mut().unwrap().remove("token_spend_extra_paths");
+        let s:AppSettings=serde_json::from_value(root).unwrap();
+        assert!(s.token_spend_extra_paths.is_empty());
     }
     #[test]fn display_currency_and_rate_validate(){
         let mut s=AppSettings::default();

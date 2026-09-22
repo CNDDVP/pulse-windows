@@ -8,14 +8,14 @@
 
 | # | Token Monitor 功能 | 我们的状态 | 备注/轮次 |
 |---|---|---|---|
-| 1 | 38+ 工具本地 Token 审计 | 🔨 7 来源（claude/codex/gemini/cline/roocode/kilocode/openclaw + 本轮 zcode） | Round 5 续扩：OpenCode/Qwen CLI/Kiro/Trae/CherryStudio/LM Studio |
+| 1 | 38+ 工具本地 Token 审计 | ✅ Round 5a：11 来源（+ZCode 信封与 CLI 库、OpenCode、Qwen CLI）；Kiro/Trae/CherryStudio 等按需继续 | 本机主力 ZCode 全链路已覆盖 |
 | 2 | 24+ 供应商实时额度限制 | ✅ 领先：18+ 额度引擎（API 级，含 StepFun 扫码+无感续期） | 持续跟进新供应商限额窗口细分 |
 | 3 | 会话级明细（每 prompt 拆分） | 🗓 无 | Round 5：从 events/转录按会话聚合 |
 | 4 | 缓存命中统计（分项展示） | ✅ Round 4：模型明细四分项 + 命中率展示；守卫 Round 3 已落 | |
 | 5 | 实时 token 速率 tok/s | ✅ Round 4：tok/min（活动灯旁路采集、60 秒窗口、详情卡速率行） | |
 | 6 | 成本估算 | ✅ 内置主流模型单价库 | |
 | 7 | 多币种成本（USD/CNY…） | ✅ Round 4：CNY/USD 展示层换算（固定汇率可改，诚实标注） | |
-| 8 | 自定义扫描路径 | 🗓 仅少量 env override | Round 5：每来源可配置附加目录 |
+| 8 | 自定义扫描路径 | ✅ Round 5a：每来源附加目录（设置面板 + 校验 + 按源去重口径披露） | |
 | 9 | WSL 用量合并 | 🗓 无 | Round 5（Windows 适用） |
 | 10 | 已删除会话用量保留（日归档） | 🔨 本轮落地 daily_archive（max-upsert） | 工作流 dwfrun-0b481add |
 | 11 | 趋势仪表盘（热力图/streak/K线/堆叠柱） | ✅ Round 3：TrendDashboard（趋势 tab，370 天窗口） | |

@@ -80,6 +80,9 @@ export interface AppSettings {
   usd_cny_rate?: number;
   /** Round4 项目三：订阅记录（来源标识 → 价格/币种/周期/开始日/备注），走既有设置持久化。 */
   subscriptions?: Record<string, SubscriptionRecord>;
+  /** Round5A 项目四：自定义扫描路径（来源 → 绝对路径目录列表，每来源上限 20）。
+   *  与默认扫描根只按文件路径去重：同一文件复制进多个目录（或目录嵌套默认根内）会重复计数。 */
+  token_spend_extra_paths?: Record<string, string[]>;
   notifications: NotificationSettings; hotkeys: HotkeySettings;
   providers: Record<string, ProviderConfig>;
 }
