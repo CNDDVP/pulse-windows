@@ -77,6 +77,40 @@
 - **重置周期自愈**：离线缓存严格跟随每个额度窗口自身的重置时间戳——应用关闭期间到达重置点的周期自动识别为已重置，不再展示过期旧数据；移除原先 10 分钟的强制定时过期。
 - 安全边界：缓存复用仍受"凭据/身份变更即清缓存"守卫覆盖，复用时继承原数据血缘并诚实标注离线状态。
 
+## [0.7.0] - 2026-09-23
+
+### 新增：对齐上游 Token Monitor 的七大功能批次（Round 2~6，约 +13000 行）
+
+- **账本日聚合归档（daily_archive）**：源工具按保留期清理日志（Claude Code 默认 30 天）后，趋势历史不再丢失；归档时区偏移冻结进 meta 表，day 键永不漂移；max-upsert 语义防双计防回退。
+- **趋势仪表盘**：Token Spend 新「趋势」页签——370 天日用量热力图（5 档强度）、7 天分桶 K 线（OHLC）、活跃天数/当前与最长连续/峰值单日/窗口总量/活跃时长指标卡（活跃时间带"跨来源不去重"口径标注）；`trend_metrics` 命令 + 趋势 JSON 导出。
+- **本地审计来源扩至 13 个**：新增 ZCode CLI（claude 同构转录双根 + CLI 信封库权威根，防双计探查）、OpenCode、Qwen CLI、Kiro（会话头真实计数器；SQLite 仅估计值按"缺失不造假"原则不读）、Cherry Studio（V2/legacy）；`token_spend_extra_paths` 自定义扫描路径（每来源 ≤20 条，按源去重口径精确披露）。
+- **多设备同步（MVP）**：托管/连接/关闭三态；实例内嵌 hub（0.0.0.0:45539，`/v1/sync` + `/v1/devices`，128 位 secret 常量时间鉴权、请求 deadline 清扫、双重载荷上限）；客户端 60s 轮询、失败静默保留旧数据；趋势页设备汇总行。隐私边界：仅日聚合 + 设备元信息，绝不传转录/路径/凭据。
+- **实时 Token 速率**：活动灯旁路采集 usage（不改活动灯语义），60 秒滑动窗口 tok/min，悬浮栏详情卡速率行（无数据显示"—"）。
+- **成本多币种**：CNY/USD 展示层换算（固定汇率可改，界面标注"按固定汇率估算"；导出保持 USD 原值并注明）。
+- **订阅记录**：按来源记录订阅价/周期，展示本月估算成本与倍数（≥1 橙色提醒），随导出输出。
+- **会话级明细**：「会话」页签按转录文件/CLI session 键聚合，懒加载逐事件明细（500 条上限诚实截断）；只读元数据，绝不读转录正文。
+- **WSL 用量合并（opt-in）**：文件型来源经 wsl.exe 合并统计（System32 全路径 exec + 字符白名单防注入、独立预算、失败诚实降级）。
+- **供应商状态页**：Anthropic/OpenAI 官方状态端点四色指示灯（手动刷新；无公开端点的供应商诚实标注）。
+- **英文界面（i18n）**：自研极简框架（zh/en 词典 + t() + I18nProvider + 语言设置）；全量抽取 + 口径文案逐句对应英译；Rust 消息暂中文已标注 TODO(EN-backend)。
+- **浅色模式**：语义色彩令牌系统（--surface/--text/--accent/…）深浅两套映射 + 主题设置；对比度 AA 校验（修复 3 处白字实底回归）。
+- **Discord Rich Presence（opt-in）**：广播活动状态 + 账号数 + 今日 token 总量（默认关、聚合数字、连接失败静默）。
+- **CSV/JSON 导出**：Token Spend 明细与趋势数据导出（RFC4180 转义、重名不覆盖、display_currency 注记）。
+- **缓存分项与命中率**：模型明细 input/output/cache_read/cache_write 四分项 + 命中率（分母 0 不显示）；分项一致性守卫（违规事件 partial + 计数透出）。
+- **winget 分发准备**：`gen-winget-manifest.ps1`（1.12.0 规范、SHA256 断言、自测）+ 提交文档；代码签名管道与文档就绪（`docs/CODE_SIGNING.md`）。
+
+### 修复
+
+- **更新检查**：网络错误分类提示（死代理/超时给出可操作建议）；新增 Releases Atom 备用通道（api.github.com 限流/不可达时仍可检查与下载）。
+- **StepFun**：用量明细 400 后保留套餐与现金余额；分页拉取与去重；登录前清旧会话 Cookie 防多账号串号；web_bound 凭据标记与升级迁移。
+- **设置**：订阅/扫描路径面板的 A03 类竞态桥（防普通设置保存整表回写）；代理展示脱敏；保存失败回滚副作用。
+- **公开仓治理**：删除根目录内部交接文档；9 个 docs 的本机绝对路径中性化；README 重写为供应商能力矩阵（额度/审计/会话明细三列）+ 诚实注意事项。
+
+### 结构
+
+- 新增模块：`sync_hub.rs`、`discord_presence.rs`、`provider_status.rs`、`updater` Atom 通道；账本新增 daily_archive/daily_active/meta 表；前端新增 i18n/theme/currency/spend/scanPaths/syncDevices 纯函数层与 TrendDashboard/SessionList/ProviderStatus/SubscriptionPanel/ScanPathsPanel 组件。
+- 回归测试大规模扩充：cargo 130 → **288**、vitest 95 → **268**、tsc/oxlint 0 错误。
+- 七轮工作流交付，每轮经全量门禁 + 三名换人独立复核员 + 逐发现独立确认（`docs/FEATURE_PARITY_AUDIT.md` 对齐 35 项中 34 项）。
+
 ## [0.6.6] - 2026-09-22
 
 ### 修复：StepFun 网页会话链路 36 项复审闭环（S1-S8 + 11 + 6 + 4 + 7）
