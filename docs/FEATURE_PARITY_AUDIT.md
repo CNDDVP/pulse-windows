@@ -33,7 +33,7 @@
 | 18 | 多设备实时同步（hub 三后端 + SSE） | ✅ Round 6：MVP——托管/连接/关闭三态、内嵌 hub（secret 鉴权/常量时间比较/deadline 清扫）、60s 轮询、设备视图 | Cloudflare Worker/iOS 后端未做（无需求），SSE 推送为后续增强 |
 | 19 | iOS / macOS 小组件 | N/A | Windows 项目不适用 |
 | 20 | Homebrew 分发 | N/A | winget 替代见 #22 |
-| 21 | 代码签名安装包 | ⚖️ 付费项（Azure Trusted Signing） | SmartScreen 拦截是真实流失点 |
+| 21 | 代码签名安装包 | ⚖️→**豁免**（用户 2026-09-23 裁决：接受无签名分发——SHA256SUMS + 应用内更新中心已覆盖完整性；签名管道与三选项文档就绪于 docs/CODE_SIGNING.md，日后可随时补 v0.7.1 签名版） | |
 | 22 | winget/scoop 分发 | ✅ Round 5c：manifest 生成器 + 提交文档（实际 PR 需用户在微软仓执行） | |
 | 23 | 多语言界面（5 语） | ✅ Round 5c：中/英双语（自研 i18n 框架 + 语言设置；后端消息暂中文已标注） | 繁/日/韩按需 |
 
