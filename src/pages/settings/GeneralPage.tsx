@@ -1,4 +1,5 @@
 import {RailWarningSettings} from "./RailWarningSettings";
+import {SyncSettings} from "./SyncSettings";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, MonitorOption, ProviderUsage, ProxyDetection, NetworkTestResult } from "../../types";
@@ -245,6 +246,10 @@ export function GeneralPage({ settings, update, screens, usages, busy, onRefresh
           </div>
         </div>
       </Section>
+
+      {/* Round 6：多设备同步（docs/ROUND6_PLAN.md）——模式三选/托管地址+密钥/连接配置/
+          最近同步状态行（诚实降级）。 */}
+      <SyncSettings settings={settings} update={update} toast={toast} />
 
       <Section title={t("settings.general.proxy_section")} icon="🌐" subtitle={t("settings.general.proxy_section_sub")}>
         <Row title={t("settings.general.proxy_mode")} subtitle={t("settings.general.proxy_mode_sub")}>

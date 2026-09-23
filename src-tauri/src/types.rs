@@ -249,6 +249,13 @@ pub struct AppSettings {
     /// 已启用账号数、今日 token 总量（读 ledger 当日聚合；需同时开启 token_spend_enabled）。
     /// 隐私边界：不广播账号名/供应商名明细；每 60s 节流；连接失败静默。
     pub discord_presence_enabled: bool,
+    /// 多设备同步模式（Round 6，docs/ROUND6_PLAN.md）："off" | "host" | "connect"。
+    /// host=本实例开 hub（tiny_http 45539）；connect=作为客户端连其他实例的 hub。
+    /// 访问密钥不落 settings.json——host 侧在 Windows 凭据管理器（sync-hub-secret），
+    /// connect 侧同为凭据管理器（sync-client-secret）。
+    pub sync_mode: String,
+    /// connect 模式的远端 hub 地址（http(s)://host[:port]，不含路径）；host/off 时忽略。
+    pub sync_connect_url: String,
     /// 成本显示币种（Round4 项目二）：仅 "USD" | "CNY"；换算只发生在前端展示层，
     /// 成本估算入库与导出始终保持 USD 原值。
     pub display_currency: String,
@@ -276,6 +283,8 @@ impl Default for AppSettings {
             token_spend_wsl:false,
             language:"zh".into(),
             discord_presence_enabled:false,
+            sync_mode:"off".into(),
+            sync_connect_url:String::new(),
             display_currency:"USD".into(), usd_cny_rate:7.2,
             providers }
     }
@@ -295,7 +304,12 @@ impl AppSettings {
             || !["USD","CNY"].contains(&self.display_currency.as_str())
             || !self.usd_cny_rate.is_finite() || !(0.01..=10000.0).contains(&self.usd_cny_rate)
             || !["zh","en"].contains(&self.language.as_str())
-            || self.subscriptions.len()>64 || self.providers.len()>64 { return Err("设置版本或参数无效".into()); }
+            || self.subscriptions.len()>64 || self.providers.len()>64
+            || !["off","host","connect"].contains(&self.sync_mode.as_str())
+            || self.sync_connect_url.len()>2048 { return Err("设置版本或参数无效".into()); }
+        if self.sync_mode=="connect" && !valid_connect_url(&self.sync_connect_url) {
+            return Err("同步服务器地址无效：需为 http(s)://主机[:端口] 形式".into());
+        }
         for (src,sub) in &self.subscriptions {
             if !valid_id(src) { return Err(format!("订阅来源标识无效: {src}")); }
             sub.validate().map_err(|e|format!("订阅记录 {src} 无效：{e}"))?;
@@ -338,6 +352,17 @@ impl AppSettings {
     }
 }
 pub fn valid_id(id:&str)->bool { !id.is_empty() && id.len()<=100 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b==b'-' || b==b'_') }
+
+/// connect 模式远端 hub 地址的最小结构校验（与 sync_hub::normalize_base_url 同口径）：
+/// 非空、http(s) 前缀、有主机名、无空白/控制字符、≤2048。不含路径（路径由客户端拼接）。
+pub fn valid_connect_url(url:&str)->bool {
+    let t=url.trim();
+    if t.is_empty() || t.len()>2048 { return false; }
+    if !t.starts_with("http://") && !t.starts_with("https://") { return false; }
+    if t.chars().any(|c| c.is_control() || c.is_whitespace()) { return false; }
+    let host=t.split("://").nth(1).unwrap_or("");
+    !host.is_empty() && !host.starts_with('/')
+}
 
 #[cfg(test)]
 mod tests{
@@ -472,6 +497,45 @@ mod tests{
         s.language="fr".into();assert!(s.validate().is_err());
         s.language="EN".into();assert!(s.validate().is_err(),"语言代码区分大小写");
         s.language=String::new();assert!(s.validate().is_err());
+    }
+    #[test]fn sync_mode_defaults_off_and_tolerates_old_settings(){
+        // Round 6 多设备同步：三态默认 off；旧 settings.json 缺字段时 serde default 兜底
+        // （零网络行为是缺省语义）；connect 模式要求合法 http(s) 地址，secret 不落本文件。
+        let d=AppSettings::default();
+        assert_eq!(d.sync_mode,"off");
+        assert_eq!(d.sync_connect_url,"");
+        assert!(d.validate().is_ok());
+        let mut root=serde_json::to_value(AppSettings::default()).unwrap();
+        root.as_object_mut().unwrap().remove("sync_mode");
+        root.as_object_mut().unwrap().remove("sync_connect_url");
+        let s:AppSettings=serde_json::from_value(root).unwrap();
+        assert_eq!(s.sync_mode,"off");
+        let mut root=serde_json::to_value(AppSettings::default()).unwrap();
+        root.as_object_mut().unwrap().insert("sync_mode".into(),serde_json::json!("host"));
+        assert!(serde_json::from_value::<AppSettings>(root).unwrap().sync_mode=="host");
+    }
+    #[test]fn sync_mode_validate_rules(){
+        let mut s=AppSettings::default();
+        s.sync_mode="side".into();assert!(s.validate().is_err(),"仅 off/host/connect");
+        s.sync_mode="connect".into();assert!(s.validate().is_err(),"connect 必须带地址");
+        s.sync_connect_url="ftp://hub".into();assert!(s.validate().is_err(),"仅 http(s)");
+        s.sync_connect_url="http://".into();assert!(s.validate().is_err(),"缺主机名");
+        s.sync_connect_url="http://192.168.1.5:45539/".into();assert!(s.validate().is_ok());
+        s.sync_connect_url="https://hub.example.com".into();assert!(s.validate().is_ok());
+        s.sync_connect_url="http://x".repeat(700);assert!(s.validate().is_err(),"地址过长");
+        s.sync_mode="host".into();s.sync_connect_url=String::new();
+        assert!(s.validate().is_ok(),"host 模式不要求 connect 地址");
+        s.sync_mode="off".into();s.sync_connect_url="任意串".into();
+        assert!(s.validate().is_ok(),"off 模式忽略 connect 地址");
+    }
+    #[test]fn connect_url_structure_rules(){
+        assert!(valid_connect_url("http://192.168.1.5:45539"));
+        assert!(valid_connect_url("https://hub.example.com/"));
+        assert!(!valid_connect_url(""));
+        assert!(!valid_connect_url("ftp://hub"));
+        assert!(!valid_connect_url("http://"));
+        assert!(!valid_connect_url("http://a b"));
+        assert!(!valid_connect_url(&"http://x".repeat(700)));
     }
     #[test]fn provider_usage_rate_field_is_optional_on_wire(){
         // tok_per_min 缺省/None 不上链路（skip_serializing_if），老缓存文件可正常反序列化。

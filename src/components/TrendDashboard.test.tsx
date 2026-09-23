@@ -3,6 +3,7 @@ import {it,expect,vi,afterEach} from 'vitest';
 import {render,screen,fireEvent,act,cleanup} from '@testing-library/react';
 import {TrendDashboard} from './TrendDashboard';
 import {I18nProvider, setLang} from '../lib/i18n';
+import {localTodayKey} from '../lib/syncDevices';
 const invoke=vi.hoisted(()=>vi.fn());
 vi.mock('@tauri-apps/api/core',()=>({invoke}));
 // en 抽查挂载受控 Provider 会把模块级语言置 en 且卸载不还原；每例后重置回 zh。
@@ -120,4 +121,122 @@ it('en spot-check: description, metric cards with honest qualifiers, heatmap and
   expect(screen.getByText('7-day bucketed candlesticks')).toBeTruthy();
   expect(screen.getByText(/open = first day of the bucket/)).toBeTruthy();
   expect(screen.getByText(/Peak 100 tokens\/day/)).toBeTruthy();
+});
+
+// ---------------------------------------------------------------------------
+// Round 6：设备筛选/汇总行（每设备今日 tokens + 在线状态；合并视图）。合成 fixture。
+// ---------------------------------------------------------------------------
+
+const today=localTodayKey();
+const yday=(d:number)=>{const dt=new Date();dt.setDate(dt.getDate()-d);return localTodayKey(dt)};
+const NOW=Date.now();
+
+const syncMocks=(opts:{
+  mode:string;
+  devices:unknown[];
+  profileId?:string;
+  failSnapshot?:boolean;
+})=>{
+  invoke.mockImplementation((name:string)=>{
+    if(name==='trend_metrics') return Promise.resolve(payload);
+    if(name==='export_trend') return Promise.resolve('D:\\data\\exports\\token-trend-x.json');
+    if(name==='sync_hub_status') return Promise.resolve({mode:opts.mode,connect_url:'',hub_running:opts.mode==='host',hub_port:45539,hub_error:null,device_count:opts.devices.length+1,hub_secret_configured:true,client_secret_configured:true,last_poll:null,last_push:null});
+    if(name==='get_profile_info') return Promise.resolve({profile_id:opts.profileId??'self-id',created_at:'',mode:'installed'});
+    if(name==='sync_devices_snapshot') return opts.failSnapshot?Promise.reject('设备快照无效：bad json'):Promise.resolve({version:7,devices:opts.devices});
+    return Promise.resolve();
+  });
+};
+
+it('device row renders local + remote chips with today tokens and online status; merged "all" view sums both',async()=>{
+  syncMocks({mode:'connect',profileId:'self-id',devices:[
+    // 在线设备：今日 12000 tokens；其 2026-09-13(+5000)/2026-09-14(+2000) 叠加进合并视图。
+    {device_id:'dev-a',device_name:'Living PC',app_version:'0.6.6',last_active:new Date(NOW-30_000).toISOString(),
+     days:[{day:today,source:'claude',model:'m',input:12000,output:0,cache_read:0,cache_write:0},
+           {day:yday(9),source:'claude',model:'m',input:5000,output:0,cache_read:0,cache_write:0},
+           {day:yday(10),source:'claude',model:'m',input:2000,output:0,cache_read:0,cache_write:0}]},
+    // 离线设备：3 个轮询拍（180s）无心跳。
+    {device_id:'dev-b',device_name:'Old Laptop',app_version:'0.6.5',last_active:new Date(NOW-600_000).toISOString(),days:[]},
+  ]});
+  const {container}=render(<TrendDashboard/>);
+  await act(async()=>{});
+  // 汇总行：本机 + 两台远端 + 全部设备；今日 tokens 与在线状态逐台可见。
+  expect(screen.getByTestId('device-summary-row')).toBeTruthy();
+  expect(screen.getByText('全部设备')).toBeTruthy();
+  expect(screen.getByText('本机')).toBeTruthy();
+  expect(screen.getByText('Living PC')).toBeTruthy();
+  expect(screen.getByText('Old Laptop')).toBeTruthy();
+  expect(screen.getAllByText('12K').length).toBeGreaterThan(0);   // dev-a 今日 12000
+  expect(screen.getAllByText('0').length).toBeGreaterThan(0);     // dev-b 今日 0（诚实显示，不隐藏）
+  expect(container.textContent).toContain('在线');
+  expect(container.textContent).toContain('离线');
+  // 在线判定：dev-a 在 180s 窗口内，dev-b 超出。
+  expect(screen.getByTestId('device-dot-dev-a').className).toContain('ok');
+  expect(screen.getByTestId('device-dot-dev-b').className).not.toContain('ok');
+  expect(container.textContent).toContain('合并视图');
+  // 默认「全部设备」合并视图：窗口总量 = 本机 253（1..12 + 75 + 100）+ 远端 19000 = 19253 → 19.3K。
+  expect(container.textContent).toContain('19.3K');
+  // 合并视图含远端：活跃时长诚实显示「—」（同步载荷不含 active_seconds）。
+  expect(screen.getByText('—', {selector:'p'})).toBeTruthy();
+  expect(container.textContent).toContain('同步载荷不含活跃时长');
+});
+
+it('selecting a remote device filters the dashboard to its synced window with an honest scope note',async()=>{
+  syncMocks({mode:'connect',profileId:'self-id',devices:[
+    {device_id:'dev-a',device_name:'Living PC',app_version:'0.6.6',last_active:new Date(NOW-30_000).toISOString(),
+     days:[{day:today,source:'claude',model:'m',input:12000,output:0,cache_read:0,cache_write:0},
+           {day:yday(1),source:'claude',model:'m',input:3000,output:0,cache_read:0,cache_write:0}]},
+  ]});
+  const {container}=render(<TrendDashboard/>);
+  await act(async()=>{});
+  fireEvent.click(screen.getByText('Living PC'));
+  await act(async()=>{});
+  // 口径说明切换为「仅该设备同步的最近 30 天」。
+  expect(container.textContent).toContain('仅该设备同步的最近 30 天日聚合');
+  // 该设备序列：今日 12000（4 档）、昨日 3000（25% → 2 档）。
+  expect(container.querySelectorAll('[data-level="4"]').length).toBeGreaterThan(0);
+  expect(container.querySelectorAll('[data-level="2"]').length).toBeGreaterThan(0);
+  // 峰值卡来自设备序列（12000 → 12K），活跃时长为「—」。
+  expect(container.textContent).toContain('12K');
+  expect(container.textContent).toContain('同步载荷不含活跃时长');
+  // 导出随当前视图：导出的是该设备合并序列（days 为设备两天）。
+  fireEvent.click(screen.getByText('导出趋势 JSON'));
+  await act(async()=>{});
+  const call=invoke.mock.calls.find(c=>c[0]==='export_trend')!;
+  const exported=(call![1] as {metrics:{days:{day:string;tokens:number}[]}}).metrics;
+  expect(exported.days.map(d=>d.tokens)).toEqual([3000,12000]);
+});
+
+it('switching back to 本机 restores the local-only view and the 64h 50m active time',async()=>{
+  syncMocks({mode:'host',profileId:'self-id',devices:[
+    {device_id:'dev-a',device_name:'Living PC',app_version:'0.6.6',last_active:new Date(NOW-30_000).toISOString(),
+     days:[{day:today,source:'claude',model:'m',input:12000,output:0,cache_read:0,cache_write:0}]},
+  ]});
+  const {container}=render(<TrendDashboard/>);
+  await act(async()=>{});
+  fireEvent.click(screen.getByText('本机'));
+  await act(async()=>{});
+  expect(container.textContent).toContain('仅本机 daily_archive');
+  expect(container.textContent).toContain('64h 50m');
+  expect(container.textContent).toContain('跨来源不去重、并行累计');
+});
+
+it('sync mode off hides the device row entirely (no stale snapshot display)',async()=>{
+  syncMocks({mode:'off',profileId:'self-id',devices:[
+    {device_id:'dev-a',device_name:'Living PC',app_version:'0.6.6',last_active:new Date(NOW-30_000).toISOString(),days:[]},
+  ]});
+  const {container}=render(<TrendDashboard/>);
+  await act(async()=>{});
+  expect(screen.queryByTestId('device-summary-row')).toBeNull();
+  // 同步关闭 → 既有本机视图完整保留（活跃时长照常显示）。
+  expect(container.textContent).toContain('64h 50m');
+});
+
+it('snapshot read failure degrades honestly: error text shown, local chip still renders',async()=>{
+  syncMocks({mode:'connect',profileId:'self-id',failSnapshot:true,devices:[]});
+  const {container}=render(<TrendDashboard/>);
+  await act(async()=>{});
+  expect(screen.getByTestId('device-summary-row')).toBeTruthy();
+  expect(container.textContent).toContain('设备快照无效：bad json');
+  expect(screen.getByText('本机')).toBeTruthy();
+  expect(container.textContent).toContain('尚未同步到其他设备');
 });

@@ -93,6 +93,12 @@ export interface AppSettings {
    *  经本地 IPC 通信，广播聚合信息（正在写代码/空闲、启用账号数、今日 token 总量），
    *  不广播账号名/供应商明细；连接失败静默。 */
   discord_presence_enabled?: boolean;
+  /** Round 6 多设备同步（docs/ROUND6_PLAN.md）："off" | "host" | "connect"。
+   *  host=本实例开 hub（45539）；connect=作为客户端连其他实例的 hub。访问密钥不落
+   *  settings.json——分别存 Windows 凭据管理器（sync-hub-secret / sync-client-secret）。 */
+  sync_mode?: "off" | "host" | "connect";
+  /** connect 模式的远端 hub 地址（http(s)://host[:port]，不含路径）；host/off 时忽略。 */
+  sync_connect_url?: string;
   notifications: NotificationSettings; hotkeys: HotkeySettings;
   providers: Record<string, ProviderConfig>;
 }
@@ -144,4 +150,50 @@ export interface NotificationFullStatus {
   is_portable: boolean;
   plugin_permission: string;
   last_error: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// 多设备同步（Round 6，docs/ROUND6_PLAN.md）：与 src-tauri sync_hub / commands 对齐
+// ---------------------------------------------------------------------------
+
+/** 一次上推/拉取的结果记录（诚实降级：失败与时间都暴露给 UI）。 */
+export interface SyncPollRecord {
+  at: string;
+  ok: boolean;
+  error?: string | null;
+  devices?: number | null;
+  version?: number | null;
+}
+
+/** sync_hub_status 命令返回：设置页「多设备同步」区块的数据源。 */
+export interface SyncHubStatusInfo {
+  mode: string;
+  connect_url: string;
+  hub_running: boolean;
+  hub_port: number;
+  hub_error: string | null;
+  device_count: number;
+  hub_secret_configured: boolean;
+  client_secret_configured: boolean;
+  last_poll: SyncPollRecord | null;
+  last_push: SyncPollRecord | null;
+}
+
+/** 单行日聚合（day/source/model + 四列 token 计数），与后端 SyncDayRow 同构。 */
+export interface SyncDayRow {
+  day: string; source: string; model: string;
+  input: number; output: number; cache_read: number; cache_write: number;
+}
+
+/** hub 侧设备记录；last_active 由 hub 收到推送时盖时间戳（不信任客户端自报）。 */
+export interface SyncDeviceRecord {
+  device_id: string; device_name: string; app_version: string;
+  last_active: string; days: SyncDayRow[];
+}
+
+/** GET /v1/devices 响应 & sync-devices.json 落盘格式（客户端合并视图快照）。 */
+export interface SyncDevicesSnapshot {
+  version: number;
+  generated_at?: string | null;
+  devices: SyncDeviceRecord[];
 }

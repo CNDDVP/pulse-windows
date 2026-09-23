@@ -16,6 +16,7 @@ pub mod settings_close;
 pub mod rail_state;
 pub mod provider_status;
 pub mod discord_presence;
+pub mod sync_hub;
 use std::{collections::HashMap,time::{Duration,Instant},sync::atomic::{AtomicBool,AtomicU64,Ordering},sync::Arc};
 use tauri::{AppHandle,Emitter,Manager};
 use tokio::sync::{Mutex,Semaphore};
@@ -673,6 +674,7 @@ pub fn run(){
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(state)
+        .manage(sync_hub::Runtime::new())
         .manage(updater::UpdateService::default())
         .setup(|app|{
             let app_handle=app.handle().clone();
@@ -809,6 +811,8 @@ pub fn run(){
                     tokio::time::sleep(Duration::from_secs(interval)).await;
                 }
             });
+            // Round 6 多设备同步的句柄先于下方 async move 克隆（app_handle 会被移走）。
+            let sync_handle=app_handle.clone();
             tauri::async_runtime::spawn(async move{
                 let poll_handle=app_handle.clone();
                 let expire_handle=app_handle.clone();
@@ -827,6 +831,9 @@ pub fn run(){
             // 关态每拍仅 settings try_lock + 原子标志读取——零网络/零 IPC/零文件 IO，
             // 由 runner_switch_off_never_touches_network 单测钉住。
             discord_presence::spawn(presence_handle);
+            // Round 6 多设备同步：manager（hub 生命周期/端口占用回退）+ 60s 客户端轮询。
+            // 常驻线程按设置三态自门控：off 态零网络、零绑定（sync_hub::spawn）。
+            sync_hub::spawn(sync_handle);
             Ok(())
         })
         .on_menu_event(|app,event|{
@@ -850,6 +857,6 @@ pub fn run(){
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![updater::update_status,updater::update_ui_ready,updater::update_check,updater::update_download,updater::update_cancel,updater::update_discard,updater::update_preferences,updater::update_apply,commands::publish_rail_warning,commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::refresh_account,commands::drag_begin,commands::drag_move,commands::drag_end,commands::drag_cancel,commands::rail_menu_cmd,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::settings_window_ready,commands::request_close_settings,commands::acknowledge_close,commands::pending_settings_close,commands::confirm_close_settings,commands::set_credential,commands::delete_credential,commands::delete_account,commands::diagnostics,commands::test_account,commands::token_spend,commands::cancel_token_spend,commands::export_ledger,commands::trend_metrics,commands::export_trend,commands::token_spend_sessions,commands::token_spend_session_detail,commands::get_subscriptions,commands::save_subscriptions,commands::get_token_spend_extra_paths,commands::save_token_spend_extra_paths,commands::scan_path_kind,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::get_notification_status,commands::register_notification_identity,commands::unregister_notification_identity,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::get_detail_layout,commands::detail_layout_ready,commands::resize_detail,commands::hide_detail,commands::detail_account,commands::set_detail_hover,commands::is_portable,commands::get_profile_info,commands::check_profile_status,commands::clear_profile_credentials,commands::create_isolated_profile,commands::get_runtime_info,commands::check_importable_config,commands::import_installed_config,commands::detect_network_proxy,commands::test_network_connection,commands::check_local_antigravity,commands::quick_add_antigravity_account,commands::open_external_url,commands::open_stepfun_login,commands::fetch_provider_status])
+        .invoke_handler(tauri::generate_handler![updater::update_status,updater::update_ui_ready,updater::update_check,updater::update_download,updater::update_cancel,updater::update_discard,updater::update_preferences,updater::update_apply,commands::publish_rail_warning,commands::get_settings,commands::update_settings,commands::get_usages,commands::refresh_usages,commands::refresh_account,commands::drag_begin,commands::drag_move,commands::drag_end,commands::drag_cancel,commands::rail_menu_cmd,commands::set_window_state,commands::open_settings,commands::close_settings_window,commands::settings_window_ready,commands::request_close_settings,commands::acknowledge_close,commands::pending_settings_close,commands::confirm_close_settings,commands::set_credential,commands::delete_credential,commands::delete_account,commands::diagnostics,commands::test_account,commands::token_spend,commands::cancel_token_spend,commands::export_ledger,commands::trend_metrics,commands::export_trend,commands::token_spend_sessions,commands::token_spend_session_detail,commands::get_subscriptions,commands::save_subscriptions,commands::get_token_spend_extra_paths,commands::save_token_spend_extra_paths,commands::scan_path_kind,commands::monitors,commands::startup_enabled,commands::set_startup,commands::notification_status,commands::get_notification_status,commands::register_notification_identity,commands::unregister_notification_identity,commands::test_notification,commands::begin_free_drag,commands::commit_free_position,commands::show_detail,commands::get_detail_layout,commands::detail_layout_ready,commands::resize_detail,commands::hide_detail,commands::detail_account,commands::set_detail_hover,commands::is_portable,commands::get_profile_info,commands::check_profile_status,commands::clear_profile_credentials,commands::create_isolated_profile,commands::get_runtime_info,commands::check_importable_config,commands::import_installed_config,commands::detect_network_proxy,commands::test_network_connection,commands::check_local_antigravity,commands::quick_add_antigravity_account,commands::open_external_url,commands::open_stepfun_login,commands::fetch_provider_status,commands::sync_hub_status,commands::sync_hub_reset_secret,commands::sync_set_connect_secret,commands::sync_lan_urls,commands::sync_devices_snapshot])
         .run(tauri::generate_context!()).expect("Pulse runtime failed");
 }

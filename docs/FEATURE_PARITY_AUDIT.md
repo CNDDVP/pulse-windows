@@ -30,7 +30,7 @@
 
 | # | Token Monitor 功能 | 我们的状态 | 备注/轮次 |
 |---|---|---|---|
-| 18 | 多设备实时同步（hub 三后端 + SSE） | ⚖️ 战略大工程 | Round 6+，与"单机零依赖"哲学需取舍 |
+| 18 | 多设备实时同步（hub 三后端 + SSE） | ✅ Round 6：MVP——托管/连接/关闭三态、内嵌 hub（secret 鉴权/常量时间比较/deadline 清扫）、60s 轮询、设备视图 | Cloudflare Worker/iOS 后端未做（无需求），SSE 推送为后续增强 |
 | 19 | iOS / macOS 小组件 | N/A | Windows 项目不适用 |
 | 20 | Homebrew 分发 | N/A | winget 替代见 #22 |
 | 21 | 代码签名安装包 | ⚖️ 付费项（Azure Trusted Signing） | SmartScreen 拦截是真实流失点 |

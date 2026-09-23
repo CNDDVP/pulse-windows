@@ -63,7 +63,10 @@ export const timeText = (iso: string | null | undefined) => {
 
 export const ageText = (iso: string | null | undefined, T: TFn = moduleT, now = Date.now()) => {
   if (!iso) return "—";
-  const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
+  const ts = Date.parse(iso);
+  // 不可解析的时间戳（如畸形快照）返回 "—"，与 timeText 同口径，不渲染「NaN 小时前」。
+  if (!Number.isFinite(ts)) return "—";
+  const s = Math.max(0, Math.round((now - ts) / 1000));
   return s < 60 ? T("settings.ago.sec", { n: s }) : s < 3600 ? T("settings.ago.min", { n: Math.floor(s / 60) }) : T("settings.ago.hour", { n: Math.floor(s / 3600) });
 };
 

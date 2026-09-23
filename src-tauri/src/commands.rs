@@ -1558,3 +1558,134 @@ pub fn open_external_url(url: String) -> Result<(), String> {
 pub async fn open_stepfun_login(window:tauri::WebviewWindow,app:tauri::AppHandle,account_id:String)->Result<(),String>{
  crate::stepfun_session::open_stepfun_login(window,app,account_id).await
 }
+
+// ---------------------------------------------------------------------------
+// 多设备同步（Round 6：docs/ROUND6_PLAN.md）。核心逻辑与线程在 sync_hub 模块；
+// 这里只暴露设置页需要的三类入口：状态查询、host 密钥生成/重置、connect 密钥写入。
+// ---------------------------------------------------------------------------
+
+/// 同步运行状态（设置页「多设备同步」区块的状态行）。
+#[derive(serde::Serialize,Clone)]
+pub struct SyncHubStatusInfo {
+    pub mode: String,
+    pub connect_url: String,
+    pub hub_running: bool,
+    pub hub_port: u16,
+    pub hub_error: Option<String>,
+    pub device_count: usize,
+    pub hub_secret_configured: bool,
+    pub client_secret_configured: bool,
+    pub last_poll: Option<crate::sync_hub::PollRecord>,
+    pub last_push: Option<crate::sync_hub::PollRecord>,
+}
+
+#[tauri::command]
+pub async fn sync_hub_status(state:State<'_,crate::sync_hub::Runtime>,settings:State<'_,AppState>)->Result<SyncHubStatusInfo,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
+    let st=state.snapshot();
+    let (mode,connect_url)={
+        let s=settings.settings.lock().await;
+        (s.sync_mode.clone(),s.sync_connect_url.clone())
+    };
+    // 凭据存在性读 Windows 凭据管理器：阻塞调用放 spawn_blocking，不占 IPC 执行线程。
+    let (hub_secret,client_secret)=tauri::async_runtime::spawn_blocking(||{
+        let hub=crate::secrets::WindowsSecrets.get(crate::sync_hub::HUB_SECRET_ID).ok().flatten().is_some();
+        let client=crate::secrets::WindowsSecrets.get(crate::sync_hub::CLIENT_SECRET_ID).ok().flatten().is_some();
+        (hub,client)
+    }).await.map_err(|_|"凭据状态查询任务失败".to_string())?;
+    Ok(SyncHubStatusInfo{
+        mode,connect_url,
+        hub_running:st.hub_running,hub_port:st.hub_port,hub_error:st.hub_error,
+        device_count:st.device_count,
+        hub_secret_configured:hub_secret,client_secret_configured:client_secret,
+        last_poll:st.last_poll,last_push:st.last_push,
+    })
+}
+
+/// 生成/重置 host 访问密钥（128 位随机，OS CSPRNG）。返回值仅本次可见（一次性显示，
+/// 不落 settings.json——存 Windows 凭据管理器 sync-hub-secret）。若 hub 在跑，
+/// manager 线程在下一拍用新密钥重启监听。
+#[tauri::command]
+pub async fn sync_hub_reset_secret(state:State<'_,crate::sync_hub::Runtime>)->Result<String,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
+    let secret=tauri::async_runtime::spawn_blocking(||{
+        let s=crate::sync_hub::generate_secret();
+        crate::secrets::WindowsSecrets.put(crate::sync_hub::HUB_SECRET_ID,&s)?;
+        Ok::<String,String>(s)
+    }).await.map_err(|_|"密钥生成任务失败".to_string())??;
+    state.kick.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+    Ok(secret)
+}
+
+/// 写入/清除 connect 模式远端密钥（用户从托管方复制得到）。传空串即清除。
+/// 只入 Windows 凭据管理器（sync-client-secret），不落 settings.json。
+#[tauri::command]
+pub async fn sync_set_connect_secret(secret:String)->Result<(),String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
+    let t=secret.trim().to_string();
+    tauri::async_runtime::spawn_blocking(move||{
+        if t.is_empty(){
+            crate::secrets::WindowsSecrets.delete(crate::sync_hub::CLIENT_SECRET_ID)
+        }else{
+            if !(8..=128).contains(&t.len())
+                || !t.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_'){
+                return Err("访问密钥需为 8~128 位字母、数字、短横线或下划线".into());
+            }
+            crate::secrets::WindowsSecrets.put(crate::sync_hub::CLIENT_SECRET_ID,&t)
+        }
+    }).await.map_err(|_|"密钥保存任务失败".to_string())?
+}
+
+/// 设置页 host 模式展示的本机可达地址列表（hub 绑定 0.0.0.0，任一网卡接口均可连）。
+/// 默认路由出口 IP 用 UDP connect 探测（connect 只选路由、不发包）；主机名（COMPUTERNAME）
+/// 作为备份条目。探测失败时返回仅含主机名的表（或空表），由界面诚实提示，不编造地址。
+#[tauri::command]
+pub async fn sync_lan_urls()->Result<Vec<String>,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
+    let port=crate::sync_hub::DEFAULT_PORT;
+    let mut out:Vec<String>=Vec::new();
+    if let Ok(sock)=std::net::UdpSocket::bind(std::net::SocketAddr::from(([0,0,0,0],0))){
+        // 目标取公网字面量仅为让系统选出默认路由对应的本机 IP；无任何包发出。
+        if sock.connect(std::net::SocketAddr::from(([8,8,8,8],80))).is_ok(){
+            if let Ok(addr)=sock.local_addr(){
+                let ip=addr.ip();
+                if !ip.is_loopback()&&!ip.is_unspecified(){out.push(format!("http://{ip}:{port}"));}
+            }
+        }
+    }
+    if let Ok(name)=std::env::var("COMPUTERNAME"){
+        let cleaned:String=name.trim().chars().filter(|c|!c.is_control()&&*c!=' ').take(100).collect();
+        if !cleaned.is_empty(){
+            let url=format!("http://{cleaned}:{port}");
+            if !out.contains(&url){out.push(url);}
+        }
+    }
+    Ok(out)
+}
+
+/// 前端读取客户端合并视图快照（sync-devices.json：本机+远端设备日聚合，轮询线程落盘）。
+/// 文件缺失（同步从未开启或尚未完成第一拍拉取）返回 Ok(None)；文件存在但解析失败返回
+/// Err——由界面诚实显示降级，不静默当作无数据。本机自注册行（device_id==本机 profile
+/// id）在此剔除：本机行由 daily_archive 直出，快照若再含同一行，前端一旦拿不到
+/// profile id（get_profile_info 偶发失败/首帧竞速）去重即失效，会双计 token 并以
+/// 设备名重复显示本机。
+#[tauri::command]
+pub async fn sync_devices_snapshot()->Result<Option<crate::sync_hub::DevicesSnapshot>,String>{
+    if crate::updater::applying(){return Err("正在退出升级，请稍后操作".into())}
+    let path=crate::config::get_config_dir().join(crate::sync_hub::SYNC_DEVICES_FILE);
+    tauri::async_runtime::spawn_blocking(move||{
+        let bytes=match std::fs::read(&path){
+            Ok(b)=>b,
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(None),
+            Err(e)=>return Err(format!("读取设备快照失败：{e}")),
+        };
+        match serde_json::from_slice::<crate::sync_hub::DevicesSnapshot>(&bytes){
+            Ok(mut s)=>{
+                let me=crate::config::get_profile_id();
+                s.devices.retain(|d| d.device_id!=me);
+                Ok(Some(s))
+            },
+            Err(e)=>Err(format!("设备快照无效：{e}")),
+        }
+    }).await.map_err(|_|"设备快照读取任务失败".to_string())?
+}

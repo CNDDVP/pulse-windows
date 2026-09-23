@@ -21,7 +21,7 @@ tauri-plugin-global-shortcut = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.43", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks", "system-proxy"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks", "system-proxy", "blocking"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
@@ -34,6 +34,8 @@ fs2 = "0.4"
 # Round5d 项目二：Discord Rich Presence（opt-in 默认关）。维护中的 IPC 客户端 crate
 # （github.com/vionya/discord-rich-presence，1.1.0 于 2026-01 发布）；锁定精确版本。
 discord-rich-presence = "=1.1.0"
+# Round 6 多设备同步（docs/ROUND6_PLAN.md）：实例内嵌 hub 的最小 HTTP 服务。锁定精确版本。
+tiny_http = "=0.12.0"
 
 [dev-dependencies]
 tempfile = "3"
@@ -53,6 +55,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_Security",
     "Win32_Security_Credentials",
+    "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
     "Win32_System_Registry",
     "UI_Notifications",
